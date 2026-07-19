@@ -1437,7 +1437,8 @@ CREATE TABLE lake_fish
     forbidden    int,
     Distribution char(1) NULL,
     note         nvarchar(1024),
-	status       tinyint,                      -- bitmask: 1 - at risk, 2 - invasive (per-water-body flag set in EditLakeFish)
+	status       tinyint,                      -- bitmask (per-water-body flag set in EditLakeFish): 1 - at risk, 2 - invasive,
+                                                --   4 - special concern, 8 - threatened, 16 - non-native
 	method       nvarchar(max),                -- how to fish
     last_catch   datetime, 
     stamp        datetime2,
