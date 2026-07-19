@@ -56,7 +56,15 @@ bld/
 # Visual Studio 2015/2017 cache/options directory
 .vs/
 # Uncomment if you have tasks that create the project's static files in wwwroot
-#wwwroot/
+mssql/Data
+mssql/UNIT_TESTS/config.ini
+mssql/UNIT_TESTS/cleaned.txt
+mssql/UNIT_TESTS/cleaned.txt
+mssql/tools
+mssql/lakeeditor.sql
+mssql/fisheditor.sql 
+mssql/ffi2.sql 
+mssql/
 
 # Visual Studio 2017 auto generated files
 Generated\ Files/
