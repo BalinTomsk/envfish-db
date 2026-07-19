@@ -1,5 +1,6 @@
 SET QUOTED_IDENTIFIER ON
 GO
+
 /*
   Unit tests for the Catch Log (catch memo) feature: dbo.catch_memo, dbo.catch_memo_photo,
   dbo.catch_pending_fish, dbo.sp_add_catch_memo, dbo.fn_catch_memo_list, dbo.fn_catch_memo_get,

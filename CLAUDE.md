@@ -21,7 +21,7 @@ and [Structure unit tests](#structure-unit-tests) for how, and `mssql\UNIT_TESTS
 ## Golden rule: never edit the generated file
 
 - **Make all schema changes in the `scriptNN_xxxxxx.sql` source files** under `mssql/`.
-- **`mssql/ffi2.sql` is GENERATED — do not hand-edit it.** It is rebuilt from the
+- **`mssql/ffi2.sql` is GENERATED — do not hand-edit it  (will be created after running: envfish-db\mssql\UNIT_TESTS\autorun.bat ).** It is rebuilt from the
   `scriptNN` files by `mssql/generate_db_script_ffi2.cmd` and is the image consumed by
   the database unit tests. Any manual edit to `ffi2.sql` is overwritten on the next build.
  
