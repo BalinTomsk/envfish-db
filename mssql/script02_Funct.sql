@@ -2379,6 +2379,58 @@ FROM (
 )x ORDER BY code
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_through_river' AND xtype = 'FN')
+    DROP function dbo.fn_lake_through_river
+GO
+
+-- The single watercourse (river/stream/creek/canal, locType 2/4/64/128) that flows THROUGH the
+-- given lake/pond/reservoir (locType 1/8/8192). "Through" is a Tributaries side=2 row with
+-- Main_Lake_id = the watercourse and Lake_id = the lake. A watercourse passing through a lake is
+-- the water entering and leaving it, so it IS that lake's source and mouth point.
+-- Returns NULL when the water body has no through-watercourse, has more than one distinct
+-- through-watercourse (ambiguous - the caller must not guess), or is not a lake/pond/reservoir.
+-- Caller: FishTracker.Editor.EditLakeLink.ButtonSubmit_Click (auto-fill of an empty Source/Mouth point).
+--     SELECT dbo.fn_lake_through_river('45c0706e-d3aa-47eb-80b1-3f4712817916');
+CREATE function dbo.fn_lake_through_river(@lake uniqueidentifier)
+RETURNS uniqueidentifier
+WITH SCHEMABINDING
+AS
+BEGIN
+    DECLARE @river uniqueidentifier =
+    (
+        SELECT CASE WHEN COUNT(DISTINCT t.Main_Lake_id) = 1
+                    THEN CAST(MIN(CAST(t.Main_Lake_id AS varchar(36))) AS uniqueidentifier) END
+        FROM dbo.Tributaries t
+            JOIN dbo.Lake r ON r.lake_id = t.Main_Lake_id AND r.locType IN (2,4,64,128)
+            JOIN dbo.Lake l ON l.lake_id = t.Lake_id      AND l.locType IN (1,8,8192)
+        WHERE t.side = 2 AND t.Lake_id = @lake
+    );
+    RETURN @river;
+END
+GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_through_lakes' AND xtype = 'IF')
+    DROP function dbo.fn_river_through_lakes
+GO
+
+-- The lakes/ponds/reservoirs (locType 1/8/8192) that the given watercourse (river/stream/creek/
+-- canal, locType 2/4/64/128) is recorded as flowing THROUGH — the reverse of fn_lake_through_river.
+-- "Through" is a Tributaries side=2 row with Main_Lake_id = the watercourse, Lake_id = the lake.
+-- Caller: FishTracker.Resources.wfRiverViewer.BuildThroughLakesNote (the "Lake through" line on the
+-- river view's Course section).
+--     SELECT * FROM dbo.fn_river_through_lakes('45c0706e-d3aa-47eb-80b1-3f4712817916');
+CREATE function dbo.fn_river_through_lakes(@river uniqueidentifier)
+  RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN
+    SELECT DISTINCT l.lake_id, l.lake_name
+        FROM dbo.Tributaries t
+            JOIN dbo.Lake r ON r.lake_id = t.Main_Lake_id AND r.locType IN (2,4,64,128)
+            JOIN dbo.Lake l ON l.lake_id = t.Lake_id      AND l.locType IN (1,8,8192)
+        WHERE t.side = 2 AND t.Main_Lake_id = @river
+GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_EditTributary' AND xtype = 'IF')
     DROP function dbo.fn_EditTributary
 GO
