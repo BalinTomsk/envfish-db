@@ -1136,8 +1136,6 @@ AS
     SELECT mli, lat, lon, country, state, sid, stamp, 0 AS flag FROM cte w 
         WHERE backoffstate > 0
             AND NOT EXISTS ( SELECT 1 FROM cte WHERE backoffstate = 0 )
- 
-
 GO
 -------------------------------------------------------------------------------------------------------
 
