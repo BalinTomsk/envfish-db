@@ -1835,3 +1835,144 @@ ELSE
 
 ROLLBACK TRAN CM_Test38
 GO
+
+-- ============================================================================
+-- TEST 39: fn_default_latest_catch_json picks the newest PUBLIC, complete, noted memo --
+--          skipping a private memo, a note-less memo, and an incomplete draft even though
+--          each is dated more recently than the eligible "winner"
+-- ============================================================================
+BEGIN TRAN CM_Test39
+    declare @test_name sysname = N'CM_Test39 [fn_default_latest_catch_json] : picks newest public/complete/noted memo, skipping ineligible newer ones'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Json nvarchar(max), @MemoOut uniqueidentifier, @LakeName nvarchar(64), @Note nvarchar(max), @PhotoOut nvarchar(64), @MemoOutStr varchar(36), @PhotoPicOut nvarchar(max);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+DECLARE @LakeOld         uniqueidentifier = NEWID();
+DECLARE @LakeWinner      uniqueidentifier = NEWID();
+DECLARE @LakePrivate     uniqueidentifier = NEWID();
+DECLARE @LakeNoNote      uniqueidentifier = NEWID();
+DECLARE @LakeIncomplete  uniqueidentifier = NEWID();
+DECLARE @Author39        uniqueidentifier = NEWID();
+
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES
+    (@LakeOld,        2, N'Test39 Old Lake'),
+    (@LakeWinner,     2, N'Test39 Winner Lake'),
+    (@LakePrivate,    2, N'Test39 Private Lake'),
+    (@LakeNoNote,     2, N'Test39 NoNote Lake'),
+    (@LakeIncomplete, 2, N'Test39 Incomplete Lake');
+
+-- (a) older eligible memo -- has a note, complete, public -- but not the newest
+DECLARE @MemoOld uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@MemoOld, @lake_id=@LakeOld, @userid=@Author39,
+    @text=N'Old note', @catch_date='2026-01-01', @private=0;
+
+-- (b) the memo that SHOULD be returned -- has a note, complete, public, newest among eligible
+DECLARE @MemoWinner uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@MemoWinner, @lake_id=@LakeWinner, @userid=@Author39,
+    @text=N'Winner note', @catch_date='2026-05-01', @private=0;
+
+-- (c) newest overall, but private -- must be skipped
+DECLARE @MemoPrivate uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@MemoPrivate, @lake_id=@LakePrivate, @userid=@Author39,
+    @text=N'Private note', @catch_date='2026-07-20', @private=1;
+
+-- (d) newer than the winner, public, complete -- but no note -- must be skipped
+DECLARE @MemoNoNote uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@MemoNoNote, @lake_id=@LakeNoNote, @userid=@Author39,
+    @text=NULL, @catch_date='2026-06-01', @private=0;
+
+-- (e) has a note, public, but no catch date and no photo (incomplete draft) -- must be skipped
+DECLARE @MemoIncomplete uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@MemoIncomplete, @lake_id=@LakeIncomplete, @userid=@Author39,
+    @text=N'Incomplete note', @catch_date=NULL, @private=0;
+
+-- 2. execute unit test
+
+SET @Json = dbo.fn_default_latest_catch_json();
+SET @MemoOut   = JSON_VALUE(@Json, '$.catch_memo_id');
+SET @LakeName  = JSON_VALUE(@Json, '$.lake_name');
+SET @Note      = JSON_VALUE(@Json, '$.catch_memo_text');
+SET @PhotoOut  = JSON_VALUE(@Json, '$.catch_memo_photo_id');
+SET @PhotoPicOut = JSON_VALUE(@Json, '$.catch_memo_photo_pic');
+SET @MemoOutStr = CAST(@MemoOut AS varchar(36));
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @MemoOut <> @MemoWinner OR @LakeName <> N'Test39 Winner Lake' OR @Note <> N'Winner note' OR @PhotoOut IS NOT NULL OR @PhotoPicOut IS NOT NULL
+   RAISERROR ('TEST 39 FAIL [%dms]: expected the winner memo/lake/note with no photo, got memo=%s lake=%s note=%s photo=%s', 16, -1, @ElapsedMs, @MemoOutStr, @LakeName, @Note, @PhotoOut)
+ELSE
+    print 'TEST 39 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: newest public/complete/noted memo returned; private/note-less/incomplete newer memos skipped'
+
+ROLLBACK TRAN CM_Test39
+GO
+
+-- ============================================================================
+-- TEST 40: fn_default_latest_catch_json picks the memo's most-liked non-hidden photo
+--          (a hidden photo is never eligible even if it would otherwise rank first)
+-- ============================================================================
+BEGIN TRAN CM_Test40
+    declare @test_name sysname = N'CM_Test40 [fn_default_latest_catch_json] : picks the most-liked non-hidden photo'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Json nvarchar(max), @PhotoOut uniqueidentifier, @PhotoOutStr varchar(36), @PhotoPicBase64 nvarchar(max), @PhotoPicDecoded varbinary(max);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test: one eligible memo, 3 photos -- p2 gets 2 likes (best),
+--    p3 is hidden after being liked once (must never be picked despite the like)
+
+DECLARE @Lake40   uniqueidentifier = NEWID();
+DECLARE @Author40 uniqueidentifier = NEWID();
+DECLARE @Liker40a uniqueidentifier = NEWID();
+DECLARE @Liker40b uniqueidentifier = NEWID();
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake40, 2, N'Test40 Lake');
+
+DECLARE @Memo40 uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@Memo40, @lake_id=@Lake40, @userid=@Author40,
+    @text=N'Photo pick note', @catch_date='2026-06-15', @private=0;
+
+EXEC dbo.sp_add_catch_memo_photo @memo_id=@Memo40, @userid=@Author40, @pic=0x01, @label=N'p1', @ord=0;
+EXEC dbo.sp_add_catch_memo_photo @memo_id=@Memo40, @userid=@Author40, @pic=0x02, @label=N'p2', @ord=1;
+EXEC dbo.sp_add_catch_memo_photo @memo_id=@Memo40, @userid=@Author40, @pic=0x03, @label=N'p3', @ord=2;
+
+DECLARE @P2 uniqueidentifier = (SELECT catch_memo_photo_id FROM dbo.fn_catch_memo_photo_list(@Memo40) WHERE catch_memo_photo_ord = 1);
+DECLARE @P3 uniqueidentifier = (SELECT catch_memo_photo_id FROM dbo.fn_catch_memo_photo_list(@Memo40) WHERE catch_memo_photo_ord = 2);
+
+EXEC dbo.sp_toggle_catch_memo_photo_like @photo_id=@P2, @userid=@Liker40a;
+EXEC dbo.sp_toggle_catch_memo_photo_like @photo_id=@P2, @userid=@Liker40b;
+EXEC dbo.sp_toggle_catch_memo_photo_like @photo_id=@P3, @userid=@Liker40a;
+EXEC dbo.sp_del_catch_memo_photo @photo_id=@P3, @userid=@Author40, @is_admin=0;   -- hides p3 (still liked once)
+
+-- 2. execute unit test
+
+SET @Json = dbo.fn_default_latest_catch_json();
+SET @PhotoOut = TRY_CAST(JSON_VALUE(@Json, '$.catch_memo_photo_id') AS uniqueidentifier);
+SET @PhotoOutStr = CAST(@PhotoOut AS varchar(36));
+SET @PhotoPicBase64 = JSON_VALUE(@Json, '$.catch_memo_photo_pic');
+SET @PhotoPicDecoded = CAST(N'' AS XML).value('xs:base64Binary(sql:variable("@PhotoPicBase64"))', 'varbinary(max)');
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @PhotoOut IS NULL OR @PhotoOut <> @P2 OR @PhotoPicDecoded IS NULL OR @PhotoPicDecoded <> 0x02
+   RAISERROR ('TEST 40 FAIL [%dms]: expected the most-liked non-hidden photo p2 with its bytes embedded, got id=%s', 16, -1, @ElapsedMs, @PhotoOutStr)
+ELSE
+    print 'TEST 40 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: most-liked non-hidden photo id + bytes embedded; hidden-but-liked photo skipped'
+
+ROLLBACK TRAN CM_Test40
+GO

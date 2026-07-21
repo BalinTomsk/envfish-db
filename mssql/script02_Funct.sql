@@ -4216,6 +4216,64 @@ RETURN
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_default_latest_catch_json' AND xtype = 'FN')
+    DROP function dbo.fn_default_latest_catch_json
+GO
+-- fn_default_latest_catch_json : a cut-down sibling of fn_catch_memo_json -- same single-JSON-object
+-- shape, but for the "Latest Catch" card on Default.aspx (replaces the old "Recently Edited" /
+-- "Latest Waters" cards there) instead of the admin "Download JSON" export: just the fields the
+-- compact homepage card needs (note, display date, water body, one photo). The photo's bytes are
+-- embedded directly as base64 (catch_memo_photo_pic -- FOR JSON base64-encodes varbinary
+-- automatically, same as fn_catch_memo_json), so the card is fully self-contained: Default.aspx
+-- renders it as a data: URI and never has to make a second database round trip through
+-- ~/Editor/HandlerImage.ashx (which itself re-queries the DB per photo) just to show this one image.
+-- Applies the same public/complete visibility rule as the guest branch of fn_catch_memo_list -- a
+-- private memo, or an incomplete draft (no catch date AND no visible photo), is never returned --
+-- plus a non-empty-note requirement on top. catch_memo_photo_id/_pic are the memo's single "best"
+-- photo (most-liked, ties broken by upload order -- same ranking as fn_catch_memo_photo_gallery's
+-- guest branch), or both NULL when the memo has no non-hidden photo. Returns NULL when no memo
+-- qualifies.
+-- Called by: FishTracker Default.aspx.cs (LoadLatestCatch).
+--     SELECT dbo.fn_default_latest_catch_json();
+CREATE OR ALTER FUNCTION dbo.fn_default_latest_catch_json()
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            m.catch_memo_id,
+            m.catch_memo_lake_id,
+            l.lake_name,
+            m.catch_memo_text,
+            COALESCE(CAST(m.catch_memo_catch_date AS DATE), CAST(m.catch_memo_created AS DATE)) AS catch_memo_display_date,
+            best.catch_memo_photo_id,
+            best.catch_memo_photo_pic
+        FROM dbo.catch_memo m
+        LEFT JOIN dbo.Lake l ON l.Lake_id = m.catch_memo_lake_id
+        OUTER APPLY (
+            SELECT TOP 1 p.catch_memo_photo_id, p.catch_memo_photo_pic
+            FROM dbo.catch_memo_photo p
+            WHERE p.catch_memo_photo_memoid = m.catch_memo_id
+              AND p.catch_memo_photo_hidden = 0
+            ORDER BY ( SELECT COUNT(*) FROM dbo.catch_memo_photo_like l2
+                       WHERE l2.catch_memo_photo_like_photoid = p.catch_memo_photo_id ) DESC,
+                     p.catch_memo_photo_ord ASC,
+                     p.catch_memo_photo_stamp ASC
+        ) best
+        WHERE m.catch_memo_private = 0
+          AND m.catch_memo_text IS NOT NULL AND LTRIM(RTRIM(m.catch_memo_text)) <> N''
+          AND ( m.catch_memo_catch_date IS NOT NULL
+                OR EXISTS ( SELECT 1 FROM dbo.catch_memo_photo p2
+                            WHERE p2.catch_memo_photo_memoid = m.catch_memo_id
+                              AND p2.catch_memo_photo_hidden  = 0 ) )
+        ORDER BY COALESCE(m.catch_memo_catch_date, m.catch_memo_created) DESC
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_message_inbox' AND xtype = 'IF')
     DROP function dbo.fn_user_message_inbox
 GO
