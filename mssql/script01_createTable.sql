@@ -2285,11 +2285,6 @@ CREATE TABLE ows_meteo
     , type                int                       -- 1 - WG, 2-- Open
 	, ows                 nvarchar(max)				-- JSON doc with weater
     , stamp               datetime
-    , backoffstate        int NOT NULL              -- 0 normal, 1 daily, 2 weekly, 3 monthly HTTP 503 backoff
-    , backoff_daily_503_count  int NOT NULL
-    , backoff_weekly_503_count int NOT NULL
-    , backoff_last_503_date    date NULL
-    , backoff_next_date        date NULL
 )
 GO
 
@@ -2300,21 +2295,6 @@ ALTER TABLE [dbo].[ows_meteo] ADD constraint DF_ows_meteo_stamp DEFAULT (getdate
 GO
 
 ALTER TABLE [dbo].[ows_meteo] ADD constraint DF_ows_meteo_type DEFAULT (1) FOR type
-GO
-
-ALTER TABLE [dbo].[ows_meteo] ADD constraint DF_ows_meteo_backoffstate DEFAULT (0) FOR backoffstate
-GO
-
-ALTER TABLE [dbo].[ows_meteo] ADD constraint DF_ows_meteo_backoff_daily DEFAULT (0) FOR backoff_daily_503_count
-GO
-
-ALTER TABLE [dbo].[ows_meteo] ADD constraint DF_ows_meteo_backoff_weekly DEFAULT (0) FOR backoff_weekly_503_count
-GO
-
-ALTER TABLE [dbo].[ows_meteo] ADD constraint CH_ows_meteo_backoffstate CHECK (backoffstate IN (0, 1, 2, 3))
-GO
-
-CREATE NONCLUSTERED INDEX IX_ows_meteo_backoff_next ON dbo.ows_meteo (backoff_next_date, backoffstate)
 GO
 
 ALTER TABLE [dbo].[ows_meteo]  WITH CHECK ADD  CONSTRAINT [FK_ows_meteo_id] FOREIGN KEY([WaterStation_id])

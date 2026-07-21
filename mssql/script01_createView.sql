@@ -1119,7 +1119,7 @@ WITH SCHEMABINDING
 AS
     WITH cte AS
     (
-        SELECT w.mli, w.lat, w.lon, w.country, w.state, sid, w.stamp, w.backoffstate, o.backoffstate as meteostate
+        SELECT w.mli, w.lat, w.lon, w.country, w.state, sid, w.stamp, w.backoffstate
         FROM dbo.WaterStation w 
         LEFT JOIN dbo.ows_meteo o ON o.mli=w.mli 
         WHERE EXISTS (select 1 from dbo.lake_fish f where f.lake_Id = w.lakeId)  -- if water body has fishes
@@ -1129,13 +1129,13 @@ AS
     SELECT mli, lat, lon, country, state, sid, stamp, 1 AS flag FROM 
     (
         SELECT mli, lat, lon, country, state, sid, stamp FROM cte 
-            WHERE backoffstate = 0 AND meteostate = 0
+            WHERE backoffstate = 0
         ORDER BY NEWID() OFFSET 0 ROWS
     ) AS FirstSet
     UNION ALL
     SELECT mli, lat, lon, country, state, sid, stamp, 0 AS flag FROM cte w 
-        WHERE (backoffstate > 0  OR meteostate > 0)
-            AND NOT EXISTS ( SELECT 1 FROM cte WHERE backoffstate = 0 AND meteostate = 0 )
+        WHERE backoffstate > 0
+            AND NOT EXISTS ( SELECT 1 FROM cte WHERE backoffstate = 0 )
  
 
 GO
