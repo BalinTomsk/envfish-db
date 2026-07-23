@@ -1430,8 +1430,8 @@ GO
  *    @tablename  sysname           - this table will be update to related id
  *    @colname    sysname           - this @tablename.column will be update to related id
  *
- *  Usage: 
-            EXEC sp_add_fish_image 'f83d9508-bf50-41b8-b22c-7accbb6713dd', 0xFF, N'fish_zoo', N'fish_zoo_image', 1, N'source', N'author', N'www.ca', N'label', N'location', 40, -80, N'tag', '2026-01-01'
+ *  Usage:
+            EXEC sp_add_fish_image 'f83d9508-bf50-41b8-b22c-7accbb6713dd', 0xFF, N'fish_zoo', N'fish_zoo_image', 1, 0, N'source', N'author', N'www.ca', N'label', N'location', 40, -80, N'tag', '2026-01-01'
  */
 /*
  select * from fish_image 
@@ -1440,7 +1440,7 @@ GO
 */
 CREATE PROCEDURE [dbo].[sp_add_fish_image]
     @fish_id   uniqueidentifier, @image varbinary(max), @tablename sysname, @colname sysname,
-    @gender bit, @source nvarchar(255), @author nvarchar(255), @link nvarchar(255), @label nvarchar(255),
+    @gender bit, @juvenile bit, @source nvarchar(255), @author nvarchar(255), @link nvarchar(255), @label nvarchar(255),
     @location nvarchar(255), @lat float, @lon float, @tag nvarchar(255), @stamp nvarchar(255)
 AS
 SET NOCOUNT ON
@@ -1459,11 +1459,11 @@ BEGIN TRY
         IF @imageId IS NULL
         BEGIN
             INSERT INTO dbo.fish_image
-                ( fish_id, fish_image_pic, fish_image_gender, fish_image_source, fish_image_author,
+                ( fish_id, fish_image_pic, fish_image_gender, fish_image_juvenile, fish_image_source, fish_image_author,
                   fish_image_link, fish_image_label, fish_image_location, fish_image_lat, fish_image_lon,
                   fish_image_tag, fish_image_stamp, fish_image_hash )
             VALUES
-                ( @fish_id, @image, @gender, @source, @author,
+                ( @fish_id, @image, @gender, @juvenile, @source, @author,
                   @link, @label, @location, @lat, @lon,
                   @tag, @stamp, @newHash );
             SET @imageId = SCOPE_IDENTITY();

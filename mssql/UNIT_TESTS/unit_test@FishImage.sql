@@ -41,7 +41,7 @@ BEGIN TRY
     SET @tStart = SYSUTCDATETIME();
     EXEC dbo.sp_add_fish_image
         @fish_id = @TestFishId, @image = @TestImage1, @tablename = N'fish_zoo', @colname = N'fish_zoo_image',
-        @gender = 1, @source = N'unit-test', @author = N'copilot', @link = N'http://test',
+        @gender = 1, @juvenile = 0, @source = N'unit-test', @author = N'copilot', @link = N'http://test',
         @label = N'test-label', @location = N'test-location', @lat = 45.0, @lon = -75.0,
         @tag = N'test-tag', @stamp = N'2026-01-01';
     SELECT @ImageId1 = fish_image_id FROM dbo.fish_image
@@ -58,7 +58,7 @@ BEGIN TRY
     SET @tStart = SYSUTCDATETIME();
     EXEC dbo.sp_add_fish_image
         @fish_id = @TestFishId, @image = @TestImage1, @tablename = N'fish_zoo', @colname = N'fish_zoo_image',
-        @gender = 0, @source = N'unit-test', @author = N'copilot', @link = N'http://test',
+        @gender = 0, @juvenile = 0, @source = N'unit-test', @author = N'copilot', @link = N'http://test',
         @label = N'test-label', @location = N'test-location', @lat = 45.0, @lon = -75.0,
         @tag = N'test-tag', @stamp = N'2026-01-01';
     DECLARE @DupCount int;
@@ -93,7 +93,7 @@ BEGIN TRY
     SET @tStart = SYSUTCDATETIME();
     EXEC dbo.sp_add_fish_image
         @fish_id = NULL, @image = @TestImage2, @tablename = N'fish_zoo', @colname = N'fish_zoo_image',
-        @gender = 0, @source = N'unit-test', @author = N'copilot', @link = N'http://test',
+        @gender = 0, @juvenile = 0, @source = N'unit-test', @author = N'copilot', @link = N'http://test',
         @label = N'test-label', @location = N'test-location', @lat = 0.0, @lon = 0.0,
         @tag = N'test-tag', @stamp = N'2026-01-01';
     SELECT @CountAfter = COUNT(*) FROM dbo.fish_image;
@@ -153,13 +153,13 @@ BEGIN TRY
     DECLARE @ImgA int, @ImgB int, @GeneralImgId int;
     EXEC dbo.sp_add_fish_image
         @fish_id = @TestFishId, @image = 0xAA71, @tablename = N'fish_zoo', @colname = N'fish_zoo_image',
-        @gender = 1, @source = N'ut', @author = N'ut', @link = N'x', @label = N'A',
+        @gender = 1, @juvenile = 0, @source = N'ut', @author = N'ut', @link = N'x', @label = N'A',
         @location = N'x', @lat = 0, @lon = 0, @tag = N'x', @stamp = N'2026-05-01';   -- LATER date
     SELECT @ImgA = fish_image_id FROM dbo.fish_image WHERE fish_image_hash = HASHBYTES('SHA1', CAST(0xAA71 AS varbinary(max)));
 
     EXEC dbo.sp_add_fish_image
         @fish_id = @TestFishId, @image = 0xBB72, @tablename = N'fish_zoo', @colname = N'fish_zoo_image',
-        @gender = 1, @source = N'ut', @author = N'ut', @link = N'x', @label = N'B',
+        @gender = 1, @juvenile = 0, @source = N'ut', @author = N'ut', @link = N'x', @label = N'B',
         @location = N'x', @lat = 0, @lon = 0, @tag = N'x', @stamp = N'2026-01-01';   -- EARLIER date, uploaded LAST
     SELECT @ImgB = fish_image_id FROM dbo.fish_image WHERE fish_image_hash = HASHBYTES('SHA1', CAST(0xBB72 AS varbinary(max)));
 
@@ -185,6 +185,28 @@ BEGIN TRY
     ELSE
         PRINT 'TEST 8 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: fallback expected newest-by-identity id=' + ISNULL(CAST(@ImgB AS varchar), 'NULL')
             + ', got=' + ISNULL(CAST(@GeneralImgId AS varchar), 'NULL');
+
+    -- ----------------------------------------------------------------
+    -- TEST 9: fish_image_juvenile stored by sp_add_fish_image and returned by
+    --         fn_fish_image_info (the reader EditFishZoo.aspx's LoadFishImage uses to
+    --         populate CheckBoxJuvenile) — round-trips as 1, independent of gender.
+    -- ----------------------------------------------------------------
+    DECLARE @ImgJuv int, @JuvenileFlag bit, @GenderFlag bit;
+    EXEC dbo.sp_add_fish_image
+        @fish_id = @TestFishId, @image = 0xCC83, @tablename = N'fish_zoo', @colname = N'fish_zoo_image',
+        @gender = 0, @juvenile = 1, @source = N'ut', @author = N'ut', @link = N'x', @label = N'J',
+        @location = N'x', @lat = 0, @lon = 0, @tag = N'x', @stamp = N'2026-01-01';
+    SELECT @ImgJuv = fish_image_id FROM dbo.fish_image WHERE fish_image_hash = HASHBYTES('SHA1', CAST(0xCC83 AS varbinary(max)));
+
+    SET @tStart = SYSUTCDATETIME();
+    SELECT @GenderFlag = fish_image_gender, @JuvenileFlag = fish_image_juvenile
+    FROM dbo.fn_fish_image_info(@TestFishId, @ImgJuv);
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @JuvenileFlag = 1 AND @GenderFlag = 0
+        PRINT 'TEST 9 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_fish_image_info returned fish_image_juvenile=1 (gender=0) for id=' + CAST(@ImgJuv AS varchar);
+    ELSE
+        PRINT 'TEST 9 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected juvenile=1/gender=0, got juvenile=' + ISNULL(CAST(@JuvenileFlag AS varchar), 'NULL')
+            + ', gender=' + ISNULL(CAST(@GenderFlag AS varchar), 'NULL');
 
     ROLLBACK TRANSACTION;
 
