@@ -2092,14 +2092,14 @@ RETURNS  TABLE
   WITH SCHEMABINDING
 AS
   RETURN
-        (SELECT TOP 1 fish_image_gender, fish_image_source, fish_image_author, fish_image_link, fish_image_label, fish_image_location
-                    , fish_image_lat, fish_image_lon, fish_image_tag, fish_image_stamp FROM 
+        (SELECT TOP 1 fish_image_gender, fish_image_juvenile, fish_image_source, fish_image_author, fish_image_link, fish_image_label, fish_image_location
+                    , fish_image_lat, fish_image_lon, fish_image_tag, fish_image_stamp FROM
             (
-                SELECT fish_image_gender, fish_image_source, fish_image_author, fish_image_link, fish_image_label, fish_image_location
+                SELECT fish_image_gender, fish_image_juvenile, fish_image_source, fish_image_author, fish_image_link, fish_image_label, fish_image_location
                      , fish_image_lat, fish_image_lon, fish_image_tag, fish_image_stamp FROM dbo.fish_image WHERE fish_image_id = @image_id AND fish_id = @fish_id
                 UNION ALL
-                SELECT fish_image_gender, fish_image_source, fish_image_author, fish_image_link, fish_image_label, fish_image_location
-                     , fish_image_lat, fish_image_lon, fish_image_tag, fish_image_stamp FROM dbo.fish_image f WHERE EXISTS 
+                SELECT fish_image_gender, fish_image_juvenile, fish_image_source, fish_image_author, fish_image_link, fish_image_label, fish_image_location
+                     , fish_image_lat, fish_image_lon, fish_image_tag, fish_image_stamp FROM dbo.fish_image f WHERE EXISTS
                 ( SELECT fish_image_id FROM  (SELECT MAX(fish_image_id) AS fish_image_id FROM dbo.fish_image WHERE fish_id = @fish_id)x WHERE x.fish_image_id = f.fish_image_id)
             )y
         );
@@ -3628,9 +3628,35 @@ AS
 	)x
 	WHERE @col = num % 2
 GO
+-------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_fish_view_news' AND xtype = 'IF')
+    DROP function dbo.fn_fish_view_news;
+GO
+-- select * FROM dbo.fn_fish_view_news('4F20B429-6094-4061-888C-A03FB537121E',1)
+-- Used in Resources/wfFishViewer.aspx.cs (FishTracker.Resources.wfFishViewer.LoadNews)
+-- Mirrors dbo.fn_river_view_news for the fish viewer: latest published news mentioning
+-- the fish in any of its up-to-3 assigned slots (news.fish1_id / fish2_id / fish3_id,
+-- set on Editor/AddNews.aspx). Max 10 rows, split into two columns via @col (1 = left).
+
+CREATE function dbo.fn_fish_view_news( @fish_id uniqueidentifier, @col int )
+RETURNS  TABLE
+  WITH SCHEMABINDING
+AS
+  RETURN
+    SELECT news_id, news_title, news_stamp, news_source FROM
+	(
+		SELECT top 10 row_number() over (order by news_stamp desc) as num, news_id, news_title
+			   , CONVERT(varchar(10), news_stamp, 103) AS news_stamp, news_source
+		FROM dbo.news
+		WHERE news_publish = 1
+		  AND (fish1_id = @fish_id OR fish2_id = @fish_id OR fish3_id = @fish_id)
+	)x
+	WHERE @col = num % 2
+GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 /*
-    Calculates the current UTC-day page count from dbo.SessionHandler for the specified client IP address (IPv4 and/or IPv6) and host, 
+    Calculates the current UTC-day page count from dbo.SessionHandler for the specified client IP address (IPv4 and/or IPv6) and host,
     excluding rows marked as banned, and returns the aggregated counterPage value as an integer.
 */
 -----------------------------------------------------------------------------------------------------------------------------------------------

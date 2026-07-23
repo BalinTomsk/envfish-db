@@ -318,10 +318,11 @@ BEGIN
 END
 GO
 ------------------------------------------------------------------------------
-CREATE TABLE fish_image 
+CREATE TABLE fish_image
 (
     fish_id             uniqueidentifier NOT NULL,
     fish_image_gender   bit,
+    fish_image_juvenile bit,
     fish_image_pic      varbinary(max) NOT NULL,
     fish_image_id       int NOT NULL identity(1,1),
     fish_image_source   nvarchar(255) NOT NULL,

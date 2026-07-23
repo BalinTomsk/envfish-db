@@ -738,9 +738,9 @@ GO
 CREATE VIEW [dbo].vw_fish_image
 WITH SCHEMABINDING
 AS
-  SELECT  f.fish_id, fish_image_gender, fish_image_pic, fish_image_id, fish_image_source, fish_image_author, fish_image_link, fish_image_label
+  SELECT  f.fish_id, fish_image_gender, fish_image_juvenile, fish_image_pic, fish_image_id, fish_image_source, fish_image_author, fish_image_link, fish_image_label
         , fish_image_tag, fish_image_stamp, fish_image_location, fish_image_lat, fish_image_lon
-  FROM dbo.fish f 
+  FROM dbo.fish f
     LEFT JOIN dbo.fish_image z ON z.fish_Id = f.fish_id
 GO
 ------------------------------------------------------------------------------
