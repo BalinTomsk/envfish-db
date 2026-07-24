@@ -2105,6 +2105,23 @@ AS
         );
 GO
 ------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_fish_image_gallery' AND xtype = 'IF')
+    DROP function dbo.fn_fish_image_gallery
+GO
+-- Lists every image of a fish (id + gender/juvenile state) for the editor gallery.
+-- Used by FishTracker.Editor.FishGeneral.BuildFishGallery (~/Editor/FishGeneral.aspx.cs)
+-- to render the picture stack; the caller orders by fish_image_id DESC (newest first).
+-- SELECT * FROM dbo.fn_fish_image_gallery( 'C2E8C307-F470-458B-8CEE-000999277126' )
+CREATE FUNCTION dbo.fn_fish_image_gallery( @fish_id uniqueidentifier )
+RETURNS  TABLE
+  WITH SCHEMABINDING
+AS
+  RETURN
+        (SELECT fish_image_id, fish_image_gender, fish_image_juvenile
+         FROM dbo.fish_image
+         WHERE fish_id = @fish_id);
+GO
+------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_map_handler' AND xtype = 'FN')
     DROP function dbo.fn_lake_map_handler
 GO
