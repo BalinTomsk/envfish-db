@@ -2324,14 +2324,22 @@ RETURNS TABLE
 WITH SCHEMABINDING
 AS
   RETURN
-    SELECT TOP 1 fish_latin, fish_name, alt_name AS fish_alt_name, descrip AS fish_description, uses AS fish_uses
-        , ISNULL(locked, CONVERT(bit, 0)) AS locked, stamp, (select userName from dbo.users where id=editor) AS editor
-        , fish_distribution_area
-        , COALESCE(
+    SELECT TOP 1 f.fish_latin, f.fish_name, f.alt_name AS fish_alt_name, f.descrip AS fish_description, f.uses AS fish_uses
+        , ISNULL(f.locked, CONVERT(bit, 0)) AS locked, f.stamp, (select userName from dbo.users where id=f.editor) AS editor
+        , f.fish_distribution_area
+        , img_id.fish_image_id, img.fish_image_gender, img.fish_image_juvenile
+      FROM dbo.fish f
+      CROSS APPLY (
+          SELECT COALESCE(
               (SELECT TOP 1 fish_zoo_image FROM dbo.fish_zoo  WHERE fish_id = @fish_id AND fish_zoo_image IS NOT NULL),
               (SELECT TOP 1 fish_image_id  FROM dbo.fish_image WHERE fish_id = @fish_id ORDER BY fish_image_id DESC)
           ) AS fish_image_id
-      FROM dbo.fish f WHERE f.fish_id = @fish_id
+      ) img_id
+      OUTER APPLY (
+          SELECT TOP 1 fi.fish_image_gender, fi.fish_image_juvenile
+          FROM dbo.fish_image fi WHERE fi.fish_image_id = img_id.fish_image_id
+      ) img
+      WHERE f.fish_id = @fish_id
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_cvt_date2bigint' AND xtype = 'FN')
@@ -4421,6 +4429,38 @@ RETURN
     SELECT sid, mli, lat, lon, locName
     FROM dbo.vWaterStation
     WHERE lakeId = @lake_id
+);
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_default_news_ids' AND xtype = 'IF')
+    DROP function dbo.fn_default_news_ids
+GO
+-- fn_default_news_ids : the news_ids shown on the home page (Default.aspx), each tagged with
+-- whether it is one of the two big lead articles (rendered WITH a photo) or one of the three
+-- right-column small-news items.
+--     with_photo = 1  -> lead article slot (big, photo)
+--     with_photo = 0  -> right-column small-news slot
+-- Reuses dbo.vDefaultNews (the same TOP-5 CA/US/other + photo-priority ladder the page reads)
+-- so it never drifts from the page. Default.aspx.cs (FishTracker._Default.LoadFrontalNews) reads
+-- "SELECT * FROM vDefaultNews ORDER BY ORD ASC" and consumes it POSITIONALLY: the first 2 rows
+-- become the lead articles, the next 3 become the right column. So the flag is derived from row
+-- position (rn <= 2), not from the raw ORD value or the presence of a photo -- mirroring the page
+-- even when fewer than 2 photo articles exist. news_stamp DESC breaks ties within the same ORD.
+--     SELECT * FROM dbo.fn_default_news_ids() ORDER BY with_photo DESC;
+CREATE FUNCTION dbo.fn_default_news_ids ()
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT news_id,
+           CASE WHEN rn <= 2 THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS with_photo
+    FROM (
+        SELECT news_id,
+               ROW_NUMBER() OVER (ORDER BY ORD ASC, news_stamp DESC) AS rn
+        FROM dbo.vDefaultNews
+    ) t
 );
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
