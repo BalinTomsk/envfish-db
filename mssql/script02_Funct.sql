@@ -4645,3 +4645,75 @@ RETURN
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_news_doc' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_news_doc
+GO
+
+--
+-- Returns ONE news article as a JSON document, addressed by its news_id.
+--
+-- Called by: docapi -- com.fishfind.docapi.repo.NewsDocumentRepository.getDocument, reached from
+--   NewsController GET /api/v1/news/{guid}. The repository runs "SELECT dbo.fn_news_doc(?)" and
+--   maps a NULL scalar to HTTP 404 and a JSON string to HTTP 200. docapi caches the result
+--   (NewsQueryCache keeps the last 25 documents), so this must stay a pure read.
+--
+-- Visibility: only PUBLISHED news is returned. An unpublished draft yields NULL (-> 404), the same
+--   guest rule fn_news_list and fn_default_news_ids apply -- a public endpoint must never leak a
+--   draft. An unknown id also yields NULL.
+--
+-- Shape: the full article -- title, author (+link), source (+link), country/flag, ISO date, all
+--   three paragraphs, photo credit/alt, video link, the mentioned lake (id + name) and the up-to-3
+--   mentioned fishes as [{ id, name }]. The lead photo is embedded (base64, via FOR JSON) only when
+--   the blob is a real image (> 100 bytes) -- the same guard fn_default_news_json uses -- otherwise
+--   it is null, so a 1-byte placeholder is reported as "no photo".
+--
+--   Usage:
+--       SELECT dbo.fn_news_doc('<news_guid>');
+--
+CREATE FUNCTION dbo.fn_news_doc (@news_id uniqueidentifier)
+RETURNS nvarchar(max)
+AS
+BEGIN
+    DECLARE @json nvarchar(max);
+
+    SET @json =
+    (
+        SELECT
+            n.news_id                                                                             AS news_id,
+            CONVERT(varchar(10), n.news_stamp, 23)                                                AS [date],
+            n.country                                                                             AS country,
+            CASE WHEN ISNULL(n.country, N'') = N'' THEN N'empty.gif' ELSE n.country + N'.png' END  AS flag,
+            n.news_title                                                                          AS title,
+            n.news_author                                                                         AS author,
+            n.news_author_link                                                                    AS author_link,
+            n.news_source                                                                         AS [source],
+            n.news_source_link                                                                    AS source_link,
+            n.news_video_link                                                                     AS video_link,
+            n.news_photo_author0                                                                  AS credit,
+            n.news_photo_alt0                                                                     AS photo_alt,
+            n.news_paragraph0                                                                     AS paragraph0,
+            n.news_paragraph1                                                                     AS paragraph1,
+            n.news_paragraph2                                                                     AS paragraph2,
+            n.lake_id                                                                             AS lake_id,
+            l.lake_name                                                                           AS lake_name,
+            CASE WHEN DATALENGTH(n.news_photo0) > 100 THEN n.news_photo0 ELSE NULL END             AS photo,
+            JSON_QUERY(ISNULL((
+                SELECT f.fish_id AS id, f.fish_name AS name
+                FROM (VALUES (n.fish1_id), (n.fish2_id), (n.fish3_id)) AS v(fid)
+                JOIN dbo.fish f ON f.fish_id = v.fid
+                ORDER BY (SELECT NULL)
+                FOR JSON PATH
+            ), N'[]'))                                                                            AS fishes
+        FROM dbo.news n
+        LEFT JOIN dbo.lake l ON l.lake_id = n.lake_id
+        WHERE n.news_id = @news_id
+          AND n.news_publish = 1
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+
+    RETURN @json;
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
