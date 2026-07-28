@@ -2324,14 +2324,22 @@ RETURNS TABLE
 WITH SCHEMABINDING
 AS
   RETURN
-    SELECT TOP 1 fish_latin, fish_name, alt_name AS fish_alt_name, descrip AS fish_description, uses AS fish_uses
-        , ISNULL(locked, CONVERT(bit, 0)) AS locked, stamp, (select userName from dbo.users where id=editor) AS editor
-        , fish_distribution_area
-        , COALESCE(
+    SELECT TOP 1 f.fish_latin, f.fish_name, f.alt_name AS fish_alt_name, f.descrip AS fish_description, f.uses AS fish_uses
+        , ISNULL(f.locked, CONVERT(bit, 0)) AS locked, f.stamp, (select userName from dbo.users where id=f.editor) AS editor
+        , f.fish_distribution_area
+        , img_id.fish_image_id, img.fish_image_gender, img.fish_image_juvenile
+      FROM dbo.fish f
+      CROSS APPLY (
+          SELECT COALESCE(
               (SELECT TOP 1 fish_zoo_image FROM dbo.fish_zoo  WHERE fish_id = @fish_id AND fish_zoo_image IS NOT NULL),
               (SELECT TOP 1 fish_image_id  FROM dbo.fish_image WHERE fish_id = @fish_id ORDER BY fish_image_id DESC)
           ) AS fish_image_id
-      FROM dbo.fish f WHERE f.fish_id = @fish_id
+      ) img_id
+      OUTER APPLY (
+          SELECT TOP 1 fi.fish_image_gender, fi.fish_image_juvenile
+          FROM dbo.fish_image fi WHERE fi.fish_image_id = img_id.fish_image_id
+      ) img
+      WHERE f.fish_id = @fish_id
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_cvt_date2bigint' AND xtype = 'FN')
@@ -4421,6 +4429,218 @@ RETURN
     SELECT sid, mli, lat, lon, locName
     FROM dbo.vWaterStation
     WHERE lakeId = @lake_id
+);
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_default_news_ids' AND xtype = 'IF')
+    DROP function dbo.fn_default_news_ids
+GO
+-- fn_default_news_ids : the news_ids shown on the home page (Default.aspx), each tagged with
+-- whether it is one of the two big lead articles (rendered WITH a photo) or one of the three
+-- right-column small-news items.
+--     with_photo = 1  -> lead article slot (big, photo)
+--     with_photo = 0  -> right-column small-news slot
+-- Reuses dbo.vDefaultNews (the same TOP-5 CA/US/other + photo-priority ladder the page reads)
+-- so it never drifts from the page. Default.aspx.cs (FishTracker._Default.LoadFrontalNews) reads
+-- "SELECT * FROM vDefaultNews ORDER BY ORD ASC" and consumes it POSITIONALLY: the first 2 rows
+-- become the lead articles, the next 3 become the right column. So the flag is derived from row
+-- position (rn <= 2), not from the raw ORD value or the presence of a photo -- mirroring the page
+-- even when fewer than 2 photo articles exist. news_stamp DESC breaks ties within the same ORD.
+-- 'ord' is the 1-based home-page position; ORDER BY it to render the page in order (leads first).
+--     SELECT * FROM dbo.fn_default_news_ids() ORDER BY ord;
+CREATE FUNCTION dbo.fn_default_news_ids ()
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT news_id,
+           CASE WHEN rn <= 2 THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS with_photo,
+           rn AS ord
+    FROM (
+        SELECT news_id,
+               ROW_NUMBER() OVER (ORDER BY ORD ASC, news_stamp DESC) AS rn
+        FROM dbo.vDefaultNews
+    ) t
+);
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_default_news_json' AND xtype = 'FN')
+    DROP function dbo.fn_default_news_json
+GO
+-- fn_default_news_json : a single home-page (Default.aspx) news item rendered as a JSON document
+-- sufficient to display it, in the shape matching its slot. @with_photo selects the shape (the
+-- caller already has it from dbo.fn_default_news_ids):
+--
+--   @with_photo = 1  -> LEAD ARTICLE (mirrors DbLayer.LoadTopNews): full document incl. the photo
+--       bytes as base64 (photo), country flag image name, author (+link), source (+link),
+--       credit (news_photo_author0), photo_alt, both paragraphs, the mentioned lake (id + name),
+--       and the up-to-3 mentioned fishes as [{ id, name }]. The photo is only included when the
+--       blob is a real image (> 100 bytes) -- the same guard LoadTopNews uses before rendering it.
+--
+--   @with_photo = 0  -> RIGHT-COLUMN item (mirrors _Default.LoadSmallNews): compact document --
+--       title, date, source (falls back to news_author when news_source is blank), link
+--       (news_source_link), and snippet (first line of news_paragraph0, falling back to
+--       news_paragraph1). No photo.
+--
+-- Reads the base news/lake/fish rows directly by news_id, so the photo is always available for a
+-- lead even when it happens to sit in a vDefaultNews ORD<>1 slot (the view NULLs photos there).
+-- date is ISO yyyy-mm-dd (style 23); with_photo echoes the slot. Returns NULL for an unknown id.
+-- Called by: FishTracker home-page / any JSON consumer needing one default-news item.
+--     SELECT dbo.fn_default_news_json('<news_guid>', 1);
+CREATE FUNCTION dbo.fn_default_news_json (@news_id uniqueidentifier, @with_photo bit)
+RETURNS nvarchar(max)
+AS
+BEGIN
+    DECLARE @json nvarchar(max);
+
+    IF @with_photo = 1
+        SET @json =
+        (
+            SELECT
+                n.news_id                                                                         AS news_id,
+                CONVERT(varchar(10), n.news_stamp, 23)                                            AS [date],
+                n.country                                                                         AS country,
+                CASE WHEN ISNULL(n.country, N'') = N'' THEN N'empty.gif' ELSE n.country + N'.png' END AS flag,
+                n.news_title                                                                      AS title,
+                n.news_author                                                                     AS author,
+                n.news_author_link                                                                AS author_link,
+                n.news_source                                                                     AS [source],
+                n.news_source_link                                                                AS source_link,
+                n.news_photo_author0                                                              AS credit,
+                n.news_photo_alt0                                                                 AS photo_alt,
+                n.news_paragraph0                                                                 AS paragraph0,
+                n.news_paragraph1                                                                 AS paragraph1,
+                n.lake_id                                                                         AS lake_id,
+                l.lake_name                                                                       AS lake_name,
+                CASE WHEN DATALENGTH(n.news_photo0) > 100 THEN n.news_photo0 ELSE NULL END         AS photo,
+                JSON_QUERY(ISNULL((
+                    SELECT f.fish_id AS id, f.fish_name AS name
+                    FROM (VALUES (n.fish1_id), (n.fish2_id), (n.fish3_id)) AS v(fid)
+                    JOIN dbo.fish f ON f.fish_id = v.fid
+                    ORDER BY (SELECT NULL)
+                    FOR JSON PATH
+                ), N'[]'))                                                                        AS fishes,
+                CAST(1 AS bit)                                                                     AS with_photo
+            FROM dbo.news n
+            LEFT JOIN dbo.lake l ON l.lake_id = n.lake_id
+            WHERE n.news_id = @news_id
+            FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+        );
+    ELSE
+        SET @json =
+        (
+            SELECT
+                n.news_id                                                                         AS news_id,
+                CONVERT(varchar(10), n.news_stamp, 23)                                            AS [date],
+                n.news_title                                                                      AS title,
+                COALESCE(NULLIF(n.news_source, N''), n.news_author)                               AS [source],
+                n.news_source_link                                                                AS link,
+                LTRIM(RTRIM(
+                    CASE WHEN CHARINDEX(CHAR(10), body.txt) > 0
+                         THEN LEFT(body.txt, CHARINDEX(CHAR(10), body.txt) - 1)
+                         ELSE body.txt END))                                                      AS snippet,
+                CAST(0 AS bit)                                                                     AS with_photo
+            FROM dbo.news n
+            CROSS APPLY (SELECT txt = REPLACE(COALESCE(NULLIF(n.news_paragraph0, N''), n.news_paragraph1, N''), CHAR(13), N'')) body
+            WHERE n.news_id = @news_id
+            FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+        );
+
+    RETURN @json;
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_news_list' AND xtype = 'IF')
+    DROP function dbo.fn_news_list
+GO
+-- fn_news_list : the paged "latest news" list behind News.aspx (FishTracker.TNews.BindGridView).
+-- One call returns a single page plus the grand total, so the numbered pager needs no second query.
+--
+--   @country : NULL or ''  -> latest news across ALL countries (newest first).
+--              ISO-2 code   -> only that country's news, newest first. When a NON-CA country has
+--                              fewer than 100 published items of its own, the latest Canadian (CA)
+--                              news is appended AFTER them to top the list up to 100 (the CA block
+--                              is block_ord = 1; the country's own rows are block_ord = 0).
+--                              CA itself and the all-countries case are never padded.
+--   @offset  : rows to skip = pageIndex * pageSize   (clamped to >= 0).
+--   @fetch   : page size (News.aspx nPage = 25; clamped to 1..200).
+--
+-- Pagination uses the modern SQL Server OFFSET/FETCH with a windowed COUNT(*) OVER() 'total', so
+-- the caller gets the page rows AND the full row count for the pager in one round trip. Ordering is
+-- deterministic: block_ord ASC, then news_stamp DESC, then id DESC (a stable tiebreak). Every row
+-- also carries its 1-based global position 'rn' so a numbered pager (First/Last/N) can index it.
+--     SELECT * FROM dbo.fn_news_list('US', 0, 25);   -- first page of US news, padded with CA to 100
+--     SELECT * FROM dbo.fn_news_list(NULL, 50, 25);  -- page 3 of all-countries latest news
+CREATE FUNCTION dbo.fn_news_list
+(
+    @country char(2) = NULL,
+    @offset  int     = 0,
+    @fetch   int     = 25
+)
+RETURNS TABLE
+AS
+RETURN
+(
+    WITH own_cnt AS
+    (
+        -- published count for the requested country (0 unless a specific non-CA country is asked)
+        SELECT own_count =
+        (
+            SELECT COUNT(*)
+            FROM dbo.news
+            WHERE news_publish = 1
+              AND @country IS NOT NULL AND @country <> '' AND @country <> 'CA'
+              AND country = @country
+        )
+    ),
+    combined AS
+    (
+        -- PRIMARY block: the requested country, or every country when @country is blank
+        SELECT n.id, n.news_id, n.news_title, n.news_source, n.news_stamp, n.country, n.news_photo0,
+               block_ord = 0
+        FROM dbo.news n
+        WHERE n.news_publish = 1
+          AND (@country IS NULL OR @country = '' OR n.country = @country)
+
+        UNION ALL
+
+        -- PADDING block: latest CA news topping the list up to 100, only when a specific non-CA
+        -- country has fewer than 100 published items of its own.
+        SELECT n.id, n.news_id, n.news_title, n.news_source, n.news_stamp, n.country, n.news_photo0,
+               block_ord = 1
+        FROM dbo.news n
+        WHERE @country IS NOT NULL AND @country <> '' AND @country <> 'CA'
+          AND n.news_publish = 1
+          AND n.country = 'CA'
+          AND n.news_id IN
+          (
+              SELECT TOP (CASE WHEN (SELECT own_count FROM own_cnt) < 100
+                               THEN 100 - (SELECT own_count FROM own_cnt) ELSE 0 END) p.news_id
+              FROM dbo.news p
+              WHERE p.news_publish = 1 AND p.country = 'CA'
+              ORDER BY p.news_stamp DESC, p.id DESC
+          )
+    )
+    SELECT
+        rn        = ROW_NUMBER() OVER (ORDER BY block_ord ASC, news_stamp DESC, id DESC),
+        news_id,
+        title     = news_title,
+        [source]  = news_source,
+        stamp     = CAST(CAST(news_stamp AS date) AS char(10)),
+        flag      = country,
+        has_photo = CASE WHEN DATALENGTH(news_photo0) > 100 THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END,
+        block_ord,
+        total     = COUNT(*) OVER ()
+    FROM combined
+    ORDER BY block_ord ASC, news_stamp DESC, id DESC
+    OFFSET (CASE WHEN @offset < 0 THEN 0 ELSE @offset END) ROWS
+    FETCH NEXT (CASE WHEN @fetch < 1 THEN 25 WHEN @fetch > 200 THEN 200 ELSE @fetch END) ROWS ONLY
 );
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------

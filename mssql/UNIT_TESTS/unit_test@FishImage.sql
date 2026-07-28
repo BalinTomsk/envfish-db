@@ -208,6 +208,61 @@ BEGIN TRY
         PRINT 'TEST 9 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected juvenile=1/gender=0, got juvenile=' + ISNULL(CAST(@JuvenileFlag AS varchar), 'NULL')
             + ', gender=' + ISNULL(CAST(@GenderFlag AS varchar), 'NULL');
 
+    -- ----------------------------------------------------------------
+    -- TEST 10: fn_edit_fish_general's fish_image_gender/fish_image_juvenile must describe the
+    --          SAME image as its own fish_image_id (fish_zoo.fish_zoo_image), not just whichever
+    --          fish_image row happens to be newest by identity. Repro: upload Image_C (male,
+    --          adult), then Image_D (female, juvenile, uploaded LAST so it's newest-by-identity),
+    --          then explicitly re-point fish_zoo_image back to Image_C (simulating an admin
+    --          picking an older upload as the default via FishGeneral's "Default image" checkbox).
+    --          A naive "ORDER BY fish_image_id DESC" lookup for the bits would wrongly report
+    --          Image_D's female/juvenile instead of Image_C's male/adult.
+    -- ----------------------------------------------------------------
+    DECLARE @ImgC int, @ImgD int, @GenImgId int, @GenGender bit, @GenJuvenile bit;
+    EXEC dbo.sp_add_fish_image
+        @fish_id = @TestFishId, @image = 0xC3D4, @tablename = N'fish_zoo', @colname = N'fish_zoo_image',
+        @gender = 1, @juvenile = 0, @source = N'ut', @author = N'ut', @link = N'x', @label = N'C',
+        @location = N'x', @lat = 0, @lon = 0, @tag = N'x', @stamp = N'2026-01-01';
+    SELECT @ImgC = fish_image_id FROM dbo.fish_image WHERE fish_image_hash = HASHBYTES('SHA1', CAST(0xC3D4 AS varbinary(max)));
+
+    EXEC dbo.sp_add_fish_image
+        @fish_id = @TestFishId, @image = 0xD4E5, @tablename = N'fish_zoo', @colname = N'fish_zoo_image',
+        @gender = 0, @juvenile = 1, @source = N'ut', @author = N'ut', @link = N'x', @label = N'D',
+        @location = N'x', @lat = 0, @lon = 0, @tag = N'x', @stamp = N'2026-01-01';
+    SELECT @ImgD = fish_image_id FROM dbo.fish_image WHERE fish_image_hash = HASHBYTES('SHA1', CAST(0xD4E5 AS varbinary(max)));
+
+    UPDATE dbo.fish_zoo SET fish_zoo_image = @ImgC WHERE fish_id = @TestFishId;
+
+    SET @tStart = SYSUTCDATETIME();
+    SELECT @GenImgId = fish_image_id, @GenGender = fish_image_gender, @GenJuvenile = fish_image_juvenile
+    FROM dbo.fn_edit_fish_general(CAST(@TestFishId AS varchar(36)));
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @GenImgId = @ImgC AND @GenGender = 1 AND @GenJuvenile = 0
+        PRINT 'TEST 10 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_edit_fish_general returned gender/juvenile for the DEFAULT image (id=' + CAST(@ImgC AS varchar) + '), not the newest (id=' + CAST(@ImgD AS varchar) + ')';
+    ELSE
+        PRINT 'TEST 10 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected id=' + CAST(@ImgC AS varchar) + '/gender=1/juvenile=0, got id='
+            + ISNULL(CAST(@GenImgId AS varchar), 'NULL') + '/gender=' + ISNULL(CAST(@GenGender AS varchar), 'NULL')
+            + '/juvenile=' + ISNULL(CAST(@GenJuvenile AS varchar), 'NULL');
+
+    -- ----------------------------------------------------------------
+    -- TEST 11: fn_edit_fish_general still returns a row (with NULL image columns) for a fish that
+    --          has NO fish_image row at all -- a regression guard against turning the gender/
+    --          juvenile lookup into an inner join that drops the fish entirely.
+    -- ----------------------------------------------------------------
+    DECLARE @NoImgFishId uniqueidentifier = NEWID();
+    INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, family_Id, created, stamp)
+    VALUES (@NoImgFishId, N'__TEST_FISH_NOIMG__', N'Testus noimagus', @TestFamilyId, GETUTCDATE(), GETUTCDATE());
+
+    DECLARE @NoImgRowFound bit = 0, @NoImgImageId int = -1;
+    SET @tStart = SYSUTCDATETIME();
+    SELECT @NoImgRowFound = 1, @NoImgImageId = fish_image_id
+    FROM dbo.fn_edit_fish_general(CAST(@NoImgFishId AS varchar(36)));
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @NoImgRowFound = 1 AND @NoImgImageId IS NULL
+        PRINT 'TEST 11 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_edit_fish_general still returns the fish row (fish_image_id NULL) when it has no image';
+    ELSE
+        PRINT 'TEST 11 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: fish row missing or fish_image_id not NULL for an imageless fish (found=' + CAST(@NoImgRowFound AS varchar) + ')';
+
     ROLLBACK TRANSACTION;
 
 END TRY
