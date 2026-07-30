@@ -236,7 +236,7 @@ CREATE TABLE fish
     family_Id       uniqueidentifier NOT NULL,
     img             varbinary(max),
     fish_Type       int             ,         -- 1 - sport, 2 - commercial, 4 - invading, 8 - aquarium
-    water_type      int,                      -- 1 - Freshwater, 2 - Saltwater, 4 - Clear water, 8 - Low velocity, 16 - Moderate velocity, 32 - High velocity, 64 - Turbid waters, 128 - Moderately Turbid waters
+    water_type      int,                      -- 1 - Freshwater, 2 - Saltwater, 4 - Clear water, 8 - Low velocity, 16 - Moderate velocity, 32 - High velocity, 64 - Turbid waters, 128 - Moderately Turbid waters, 256 - Coldstream
     food_Type       int,                      -- 1 - Aquatic Insects, 2 - Terrestrial Insects, 4- Fish eggs, 8 - Crustaceans, 16 - Small Fish, Terrestrial Animals - 32, 64 - Cannibals
     react_color     int,
     food_habitat    int,
