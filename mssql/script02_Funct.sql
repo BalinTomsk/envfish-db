@@ -3201,7 +3201,11 @@ BEGIN
     (
         SELECT l.lake_id, l.lake_name, l.alt_name, l.[native], l.french_name
         , l.stamp, l.locType, l.link, l.depth, l.width, l.length, l.volume
-        , l.isFish, l.noFish, l.isolated, l.is_fishing_prohibited, l.sid, l.drainage, l.discharge, l.watershield, l.basin
+        -- is_fish is read live from lake_fish, NOT from the cached l.isFish flag: the editor uses it to
+        -- enable/disable the No Fish checkbox, so it must match what the Fish tab actually holds even if
+        -- the cached flag has drifted on a legacy row
+        , CASE WHEN EXISTS (SELECT 1 FROM dbo.lake_fish lf WHERE lf.lake_id = l.lake_id) THEN 1 ELSE 0 END AS isFish
+        , l.noFish, l.isolated, l.is_fishing_prohibited, l.sid, l.drainage, l.discharge, l.watershield, l.basin
         , l.surface, l.shoreline, l.lake_road_access, l.CGNDB, l.descript, l.fishing
         , w.source_name, w.mouth_name, w.source_state, w.source_country, l.source, l.mouth, l.reviewed
       FROM dbo.lake l JOIN dbo.vw_lake w ON l.lake_id=w.lake_id WHERE w.lake_id = @lake_id

@@ -1482,7 +1482,27 @@ BEGIN    -- single row
         WHERE NOT EXISTS (SELECT * FROM fish_location f WHERE f.station_Id = t.station_Id AND f.fish_Id=t.fish_ID)
   END
 
-  UPDATE l SET [IsFish] = 1 FROM lake l JOIN INSERTED i ON l.lake_id=i.lake_id
+  -- a water body that has an assigned species can never be flagged "no fish" (noFish drives the
+  -- No Fish checkbox on Editor/LakeEditor.aspx), so clear it in the same pass that raises IsFish
+  UPDATE l SET [IsFish] = 1, [noFish] = 0 FROM lake l JOIN INSERTED i ON l.lake_id=i.lake_id
+END
+GO
+
+-- Counterpart to TR_insLakes_Fish: IsFish is a cached "this water body has species" flag read by the
+-- map/browse filters (fn_map_*, RscRiverList) and by Editor/LakeEditor.aspx. Without this trigger the
+-- flag was raised on the first assignment and never lowered, so unassigning every species left the
+-- lake claiming fish forever (and the No Fish checkbox permanently disabled). noFish is deliberately
+-- NOT touched here - removing the species does not by itself prove the water body is fishless.
+CREATE TRIGGER TR_delLakes_Fish ON lake_fish
+ FOR DELETE
+NOT FOR REPLICATION
+AS
+SET NOCOUNT ON
+BEGIN
+  UPDATE l SET [IsFish] = 0
+    FROM lake l JOIN (SELECT DISTINCT lake_id FROM DELETED) d ON l.lake_id = d.lake_id
+   WHERE ISNULL(l.[IsFish], 0) <> 0
+     AND NOT EXISTS (SELECT 1 FROM lake_fish f WHERE f.lake_id = l.lake_id)
 END
 GO
 

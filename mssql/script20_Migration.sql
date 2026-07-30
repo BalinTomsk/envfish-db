@@ -127,3 +127,29 @@ GO
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- ONE-OFF BACKFILL (transient - delete once applied to every node).
+--
+-- dbo.lake.isFish is a cached "this water body has assigned species" flag read by the map/browse
+-- filters (fn_map_*, RscRiverList) and by Editor/LakeEditor.aspx. Until TR_delLakes_Fish was added it
+-- was only ever raised by the INSERT trigger and never lowered, so rows drifted out of step with
+-- lake_fish; noFish likewise was never cleared when a species got assigned. Realign both with the
+-- actual lake_fish contents. Idempotent - re-running changes nothing once the flags agree.
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+UPDATE l SET isFish = 0
+  FROM dbo.lake l
+ WHERE ISNULL(l.isFish, 0) <> 0
+   AND NOT EXISTS (SELECT 1 FROM dbo.lake_fish f WHERE f.lake_id = l.lake_id);
+GO
+UPDATE l SET isFish = 1
+  FROM dbo.lake l
+ WHERE ISNULL(l.isFish, 0) = 0
+   AND EXISTS (SELECT 1 FROM dbo.lake_fish f WHERE f.lake_id = l.lake_id);
+GO
+UPDATE l SET noFish = 0
+  FROM dbo.lake l
+ WHERE ISNULL(l.noFish, 0) <> 0
+   AND EXISTS (SELECT 1 FROM dbo.lake_fish f WHERE f.lake_id = l.lake_id);
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------

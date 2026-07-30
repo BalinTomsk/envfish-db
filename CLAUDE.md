@@ -107,6 +107,31 @@ per `(provider, providerUserId)` and FKs to `Users.id`; `Users.authType` is `'Lo
   name. (Until 2026-06-13 Google was special-cased to keep the email as `userName`.)
 - Cover any new provider in `mssql/UNIT_TESTS/unit_test@OAuthLogin.sql`.
 
+## Cached flags on `dbo.lake` (`isFish` / `noFish`)
+
+`dbo.lake.isFish` is a **derived cache** of "this water body has ≥ 1 `lake_fish` row", not a fact anyone
+edits. It exists because the map/browse filters (`fn_map_*`, `SearchLakeList` → `RscRiverList`) filter
+~196k rows on it and cannot afford an `EXISTS` per row. Two rules keep it honest:
+
+- **Only triggers on `lake_fish` may write it** — `TR_insLakes_Fish` (INSERT → `isFish = 1`) and
+  `TR_delLakes_Fish` (DELETE → `isFish = 0` when no rows remain). Never set it from a proc or from app
+  code. **If you add a path that bulk-loads or bulk-deletes `lake_fish`, make sure the triggers still
+  fire** (`INSERT … SELECT` does; `BULK INSERT`/`bcp` does **not** unless `FIRE_TRIGGERS` is specified,
+  and `TRUNCATE TABLE` never does) — otherwise the flag silently drifts again.
+- **Anything correctness-critical must read fish presence live**, not from the flag. `fn_lake_edit`
+  returns `is_fish` as `EXISTS(SELECT 1 FROM lake_fish …)` because `Editor/LakeEditor.aspx` uses it to
+  enable/disable a control, and a stale flag there locks an editor out of the page. Use the flag for
+  *filtering*, use `EXISTS` for *deciding*.
+
+`noFish` is a **different** thing despite the similar name: it is a human claim ("an editor verified
+there are no fish here"), set from the No Fish checkbox. Invariant: **a water body with any assigned
+species must have `noFish = 0`** — `TR_insLakes_Fish` clears it in the same pass that raises `isFish`.
+Deleting the last species deliberately does **not** set `noFish` back to 1; removing a species is not
+evidence the water is fishless. Both flags are covered by `unit_test@lake.sql` TEST 24–26.
+
+Because `isFish` had no DELETE trigger until 2026-07-29, expect legacy nodes to hold drifted rows — the
+realigning backfill is in `script20_Migration.sql` (transient; delete it once every node has run it).
+
 ## Running the database unit tests
 
 1. `cd mssql\UNIT_TESTS`
