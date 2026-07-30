@@ -129,8 +129,31 @@ species must have `noFish = 0`** — `TR_insLakes_Fish` clears it in the same pa
 Deleting the last species deliberately does **not** set `noFish` back to 1; removing a species is not
 evidence the water is fishless. Both flags are covered by `unit_test@lake.sql` TEST 24–26.
 
-Because `isFish` had no DELETE trigger until 2026-07-29, expect legacy nodes to hold drifted rows — the
-realigning backfill is in `script20_Migration.sql` (transient; delete it once every node has run it).
+Because `isFish` had no DELETE trigger until 2026-07-29, legacy nodes may hold drifted rows. The
+realigning backfill has been applied and **removed again** from `script20_Migration.sql` (it was
+transient, per the rule above that one-off backfills do not stay in the repo). A fresh build needs
+nothing: the triggers keep both flags correct from the first row. If a node is ever found drifted, this
+re-derives both flags from `lake_fish` and is idempotent:
+
+```sql
+UPDATE l SET isFish = 0 FROM dbo.lake l
+ WHERE ISNULL(l.isFish,0) <> 0 AND NOT EXISTS (SELECT 1 FROM dbo.lake_fish f WHERE f.lake_id = l.lake_id);
+UPDATE l SET isFish = 1 FROM dbo.lake l
+ WHERE ISNULL(l.isFish,0)  = 0 AND     EXISTS (SELECT 1 FROM dbo.lake_fish f WHERE f.lake_id = l.lake_id);
+UPDATE l SET noFish = 0 FROM dbo.lake l
+ WHERE ISNULL(l.noFish,0) <> 0 AND     EXISTS (SELECT 1 FROM dbo.lake_fish f WHERE f.lake_id = l.lake_id);
+```
+
+Drift check (all three counts must be 0):
+
+```sql
+WITH q AS (SELECT ISNULL(l.isFish,0) AS isFish, ISNULL(l.noFish,0) AS noFish,
+  CASE WHEN EXISTS(SELECT 1 FROM dbo.lake_fish f WHERE f.lake_id=l.lake_id) THEN 1 ELSE 0 END AS hasRows
+  FROM dbo.lake l)
+SELECT SUM(CASE WHEN isFish=1 AND hasRows=0 THEN 1 ELSE 0 END) AS isFish1_noRows,
+       SUM(CASE WHEN isFish=0 AND hasRows=1 THEN 1 ELSE 0 END) AS isFish0_hasRows,
+       SUM(CASE WHEN noFish=1 AND hasRows=1 THEN 1 ELSE 0 END) AS noFish1_hasRows FROM q;
+```
 
 ## Running the database unit tests
 
