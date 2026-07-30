@@ -32,6 +32,9 @@ GO
   TEST 21 - isolated round-trips
   TEST 22 - is_fishing_prohibited round-trips
   TEST 23 - fn_xml_tributary returns no tributary node for a lake with none
+  TEST 24 - fn_lake_edit is_fish reflects the ACTUAL lake_fish rows, not the cached lake.isFish flag
+  TEST 25 - assigning a fish clears lake.noFish (a water body with fish cannot be "no fish")
+  TEST 26 - deleting the last assigned fish resets lake.isFish back to 0
 */
 SET NOCOUNT ON;
 
@@ -250,6 +253,43 @@ BEGIN TRY
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @Rst IS NULL PRINT 'TEST 23 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_xml_tributary returns no tributary node';
     ELSE PRINT 'TEST 23 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected NULL, got ' + @Rst;
+
+    -- Fish presence drives the "No Fish" checkbox on Editor/LakeEditor.aspx (LoadEditedLake reads the
+    -- is_fish / no_fish attributes). The cached lake.isFish flag was only ever set to 1 by the INSERT
+    -- trigger and never cleared, so a water body whose species were all removed kept reporting fish.
+    DECLARE @FishId uniqueidentifier = (SELECT TOP 1 fish_id FROM fish ORDER BY fish_id);
+    DECLARE @RstIsFish int, @RstNoFish int;
+
+    SET @tStart = SYSUTCDATETIME();
+    INSERT INTO lake (locType, lake_name) VALUES (1, N'TestLakeIsFishStale');
+    SET @LakeId = (SELECT lake_id FROM lake WHERE lake_name = N'TestLakeIsFishStale');
+    INSERT INTO lake_fish (lake_Id, fish_Id, probability) VALUES (@LakeId, @FishId, 0);
+    DELETE FROM lake_fish WHERE lake_Id = @LakeId;
+    SET @Doc = dbo.fn_lake_edit(@LakeId);
+    SET @RstIsFish = (SELECT T.C.value('@is_fish', 'int') FROM @Doc.nodes('/root/lake') T(C));
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @RstIsFish = 0 PRINT 'TEST 24 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: is_fish reflects actual lake_fish rows';
+    ELSE PRINT 'TEST 24 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 0 after removing every fish, got ' + ISNULL(CAST(@RstIsFish AS varchar), 'NULL');
+
+    SET @tStart = SYSUTCDATETIME();
+    INSERT INTO lake (locType, lake_name, noFish) VALUES (1, N'TestLakeNoFishCleared', 1);
+    SET @LakeId = (SELECT lake_id FROM lake WHERE lake_name = N'TestLakeNoFishCleared');
+    INSERT INTO lake_fish (lake_Id, fish_Id, probability) VALUES (@LakeId, @FishId, 0);
+    SET @Doc = dbo.fn_lake_edit(@LakeId);
+    SET @RstNoFish = (SELECT T.C.value('@no_fish', 'int') FROM @Doc.nodes('/root/lake') T(C));
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @RstNoFish = 0 PRINT 'TEST 25 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: assigning a fish clears noFish';
+    ELSE PRINT 'TEST 25 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 0, got ' + ISNULL(CAST(@RstNoFish AS varchar), 'NULL');
+
+    SET @tStart = SYSUTCDATETIME();
+    INSERT INTO lake (locType, lake_name) VALUES (1, N'TestLakeIsFishReset');
+    SET @LakeId = (SELECT lake_id FROM lake WHERE lake_name = N'TestLakeIsFishReset');
+    INSERT INTO lake_fish (lake_Id, fish_Id, probability) VALUES (@LakeId, @FishId, 0);
+    DELETE FROM lake_fish WHERE lake_Id = @LakeId;
+    SET @RstIsFish = (SELECT ISNULL(isFish, 0) FROM lake WHERE lake_id = @LakeId);
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @RstIsFish = 0 PRINT 'TEST 26 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: deleting the last fish resets isFish';
+    ELSE PRINT 'TEST 26 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 0, got ' + ISNULL(CAST(@RstIsFish AS varchar), 'NULL');
 
     ROLLBACK TRANSACTION;
 
