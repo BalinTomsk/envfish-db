@@ -4226,3 +4226,110 @@ END
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_news_import' AND type = 'P')
+    DROP PROCEDURE dbo.sp_news_import
+GO
+--
+-- Creates ONE news article from an interchange JSON document -- the exact shape dbo.fn_news_json
+-- emits and the News.aspx "Save JSON" / AddNews "Import from JSON" round-trip uses -- and returns
+-- the new news_id as a single scalar result set.
+--
+-- Called by: docapi -- com.fishfind.docapi.repo.JdbcNewsQueryRepository.importJson, reached from
+--   NewsController POST /api/v1/news/import.
+--
+-- The 3 paragraph photos arrive base64-encoded (as fn_news_json emits them) and are decoded back to
+-- varbinary via xs:base64Binary. lake_id / fish1..3 accept a GUID string or null (bad text -> null
+-- via TRY_CONVERT, so a malformed id can't fail the whole insert). The article is inserted PUBLISHED
+-- (news_publish = 1); an absent/blank date defaults to now. news_title carries a UNIQUE index, so
+-- importing a title that already exists raises the duplicate-key error, surfaced to the caller.
+--
+--   Usage: EXEC dbo.sp_news_import N'{ "title": "...", "author": "...", "photo0": "<base64>", ... }';
+--
+CREATE PROCEDURE dbo.sp_news_import @json nvarchar(max)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE
+        @title nvarchar(max), @author nvarchar(500), @authorLink nvarchar(1024),
+        @source nvarchar(255), @sourceLink nvarchar(1024), @videoLink nvarchar(255),
+        @paragraph0 nvarchar(max), @paragraph1 nvarchar(max), @paragraph2 nvarchar(max),
+        @country char(2), @date varchar(10),
+        @lakeId varchar(36), @fish1Id varchar(36), @fish2Id varchar(36), @fish3Id varchar(36),
+        @photo0 varchar(max), @photoAuthor0 nvarchar(64), @photoAlt0 nvarchar(128),
+        @photo1 varchar(max), @photoAuthor1 nvarchar(64), @photoAlt1 nvarchar(128),
+        @photo2 varchar(max), @photoAuthor2 nvarchar(64), @photoAlt2 nvarchar(128);
+
+    SELECT
+        @title = title, @author = author, @authorLink = authorLink,
+        @source = source, @sourceLink = sourceLink, @videoLink = videoLink,
+        @paragraph0 = paragraph0, @paragraph1 = paragraph1, @paragraph2 = paragraph2,
+        @country = country, @date = [date],
+        @lakeId = lakeId, @fish1Id = fish1Id, @fish2Id = fish2Id, @fish3Id = fish3Id,
+        @photo0 = photo0, @photoAuthor0 = photoAuthor0, @photoAlt0 = photoAlt0,
+        @photo1 = photo1, @photoAuthor1 = photoAuthor1, @photoAlt1 = photoAlt1,
+        @photo2 = photo2, @photoAuthor2 = photoAuthor2, @photoAlt2 = photoAlt2
+    FROM OPENJSON(@json) WITH (
+        title        nvarchar(max)  '$.title',
+        author       nvarchar(500)  '$.author',
+        authorLink   nvarchar(1024) '$.authorLink',
+        source       nvarchar(255)  '$.source',
+        sourceLink   nvarchar(1024) '$.sourceLink',
+        videoLink    nvarchar(255)  '$.videoLink',
+        paragraph0   nvarchar(max)  '$.paragraph0',
+        paragraph1   nvarchar(max)  '$.paragraph1',
+        paragraph2   nvarchar(max)  '$.paragraph2',
+        country      char(2)        '$.country',
+        [date]       varchar(10)    '$.date',
+        lakeId       varchar(36)    '$.lakeId',
+        fish1Id      varchar(36)    '$.fish1Id',
+        fish2Id      varchar(36)    '$.fish2Id',
+        fish3Id      varchar(36)    '$.fish3Id',
+        photo0       varchar(max)   '$.photo0',
+        photoAuthor0 nvarchar(64)   '$.photoAuthor0',
+        photoAlt0    nvarchar(128)  '$.photoAlt0',
+        photo1       varchar(max)   '$.photo1',
+        photoAuthor1 nvarchar(64)   '$.photoAuthor1',
+        photoAlt1    nvarchar(128)  '$.photoAlt1',
+        photo2       varchar(max)   '$.photo2',
+        photoAuthor2 nvarchar(64)   '$.photoAuthor2',
+        photoAlt2    nvarchar(128)  '$.photoAlt2'
+    );
+
+    IF @title IS NULL OR LTRIM(RTRIM(@title)) = N''
+    BEGIN
+        RAISERROR('sp_news_import: a non-empty "title" is required', 16, 1);
+        RETURN;
+    END
+
+    DECLARE @new_id uniqueidentifier = NEWID();
+
+    INSERT INTO dbo.news (
+        news_id, news_title, news_author, news_author_link, news_source, news_source_link,
+        news_video_link, news_paragraph0, news_paragraph1, news_paragraph2, country,
+        news_stamp, news_publish, lake_id, fish1_id, fish2_id, fish3_id,
+        news_photo0, news_photo_author0, news_photo_alt0,
+        news_photo1, news_photo_author1, news_photo_alt1,
+        news_photo2, news_photo_author2, news_photo_alt2
+    )
+    VALUES (
+        @new_id, @title, @author, @authorLink, @source, @sourceLink,
+        @videoLink, @paragraph0, @paragraph1, @paragraph2, @country,
+        COALESCE(TRY_CONVERT(datetime2, @date), SYSUTCDATETIME()), 1,
+        TRY_CONVERT(uniqueidentifier, @lakeId),
+        TRY_CONVERT(uniqueidentifier, @fish1Id),
+        TRY_CONVERT(uniqueidentifier, @fish2Id),
+        TRY_CONVERT(uniqueidentifier, @fish3Id),
+        CASE WHEN @photo0 IS NOT NULL THEN CAST('' AS xml).value('xs:base64Binary(sql:variable("@photo0"))', 'varbinary(max)') END,
+        @photoAuthor0, @photoAlt0,
+        CASE WHEN @photo1 IS NOT NULL THEN CAST('' AS xml).value('xs:base64Binary(sql:variable("@photo1"))', 'varbinary(max)') END,
+        @photoAuthor1, @photoAlt1,
+        CASE WHEN @photo2 IS NOT NULL THEN CAST('' AS xml).value('xs:base64Binary(sql:variable("@photo2"))', 'varbinary(max)') END,
+        @photoAuthor2, @photoAlt2
+    );
+
+    SELECT @new_id AS news_id;
+END
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------

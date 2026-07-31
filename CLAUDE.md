@@ -272,6 +272,18 @@ GO
 
 ## Changelog
 
+- 2026-07-31: **`dbo.sp_news_import(@json)` — create a news article from an `fn_news_json` interchange
+  document** (`script02_Proc.sql`; idempotent `IF EXISTS(... type='P') DROP … GO CREATE`). Shreds the
+  exact JSON shape `dbo.fn_news_json` emits (title, author, author/source links, source, video link,
+  the 3 paragraphs, country, date, `lakeId`, `fish1/2/3Id`, and 3 base64 photos + author/alt) with
+  `OPENJSON`, decodes the base64 photos back to `varbinary` via `xs:base64Binary`, resolves
+  `lake_id`/`fish1..3` with `TRY_CONVERT` (bad text → null, never fails the insert), inserts the article
+  **published** (`news_publish = 1`; absent date → now), and returns the new `news_id`. `news_title` is
+  UNIQUE, so importing an existing title raises the duplicate-key error. Called by docapi
+  (`JdbcNewsQueryRepository.importNews`, `POST /api/v1/news/import`); the matching export reuses the
+  existing `dbo.fn_news_json`. `unit_test@NewsImport.sql` — 4 tests, each its own transaction (full doc
+  mapped/published; base64 photo → original bytes; **fn_news_json export → sp_news_import round-trip**;
+  minimal doc + defaults). All pass via `autorun.bat`. **Not yet applied to prod.**
 - 2026-07-30: **`dbo.fn_news_json(@news_id)` — export a news article as one self-contained JSON
   object** (`script02_Funct.sql`; scalar, idempotent `IF EXISTS(...xtype='FN') DROP…GO CREATE`).
   Returns, via `FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES`, every field needed to
