@@ -4329,6 +4329,57 @@ END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+-- Returns one news article as a single JSON object carrying every field needed to re-create it on
+-- ~/Editor/AddNews.aspx: title, author, author/source links, source, video link, the 3 paragraphs,
+-- country, publish date (yyyy-mm-dd), the lake_id + fish1/2/3 GUIDs, and the 3 paragraph photos
+-- EMBEDDED as base64 (FOR JSON auto-encodes the varbinary column) with each photo's author/alt text,
+-- so the export is fully self-contained -- no second round trip through HandlerImage.ashx. NULLs are
+-- kept so the shape is stable. Returns NULL when @news_id matches no row.
+-- Called by: FishTracker News.aspx.cs (admin-only "Save JSON" download link on the featured article).
+--     SELECT dbo.fn_news_json('00000000-0000-0000-0000-000000000000');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_news_json' AND xtype = 'FN')
+    DROP function dbo.fn_news_json
+GO
+CREATE FUNCTION dbo.fn_news_json( @news_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            news_title                              AS title,
+            news_author                             AS author,
+            news_author_link                        AS authorLink,
+            news_source                             AS source,
+            news_source_link                        AS sourceLink,
+            news_video_link                         AS videoLink,
+            news_paragraph0                         AS paragraph0,
+            news_paragraph1                         AS paragraph1,
+            news_paragraph2                         AS paragraph2,
+            country                                 AS country,
+            CONVERT(varchar(10), news_stamp, 23)    AS date,
+            CONVERT(varchar(36), lake_id)           AS lakeId,
+            CONVERT(varchar(36), fish1_id)          AS fish1Id,
+            CONVERT(varchar(36), fish2_id)          AS fish2Id,
+            CONVERT(varchar(36), fish3_id)          AS fish3Id,
+            -- paragraph photos embedded as base64 (FOR JSON encodes varbinary automatically)
+            news_photo0                             AS photo0,
+            news_photo_author0                      AS photoAuthor0,
+            news_photo_alt0                         AS photoAlt0,
+            news_photo1                             AS photo1,
+            news_photo_author1                      AS photoAuthor1,
+            news_photo_alt1                         AS photoAlt1,
+            news_photo2                             AS photo2,
+            news_photo_author2                      AS photoAuthor2,
+            news_photo_alt2                         AS photoAlt2
+        FROM dbo.news
+        WHERE news_id = @news_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_message_inbox' AND xtype = 'IF')
     DROP function dbo.fn_user_message_inbox
 GO
