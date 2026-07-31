@@ -1900,35 +1900,28 @@ SET NOCOUNT ON
 	END ELSE
 	IF  @loctype IN (1, 8, 8192)
 	BEGIN
-		DECLARE @srcid int = (SELECT TOP 1 id FROM  Tributaries WHERE side = 16 AND main_lake_id = @lake_id AND main_lake_id=lake_id)
-		DECLARE @mthid int = (SELECT TOP 1 id FROM  Tributaries WHERE side = 32 AND main_lake_id = @lake_id AND main_lake_id=lake_id)
-	   IF @type = 2 
-	   BEGIN
-           IF @srcid Is NOT NULL
-                INSERT INTO Tributaries (main_lake_id, lake_id, side, lat, lon) VALUES (@lake_id, @main_lake_id, 4, @lat, @lon);
-           ELSE
-		        UPDATE Tributaries SET lake_id = @main_lake_id, lat = @lat, lon = @lon, side = 4 WHERE id = @srcid AND @srcid IS NOT NULL
+        -- The reciprocal row is always INSERTed (@type = 2 "through" = inflow AND outflow).
+        -- It must never re-point the water body's own self-referencing source (side 16) / mouth
+        -- (side 32) rows: TR_Lake_INS creates those for every new lake, UK_Tributaries_Source /
+        -- UK_Tributaries_Mouth keep them unique (one each), and dbo.fn_EditLakeLink returns them
+        -- (its "code 2" branch, Main_Lake_id = Lake_id) for the Source/Mouth tabs of
+        -- Editor/EditLakeLink.aspx -- they carry that point's zone/district/county/city/elevation.
+        -- Sides 4 and 8 are under no unique index, so a water body may hold several inflows/outflows
+        -- and an unconditional INSERT here cannot collide.
+        --
+        -- Until 2026-07-30 each branch read
+        --     IF @srcid IS NOT NULL INSERT ... ELSE UPDATE ... WHERE id = @srcid AND @srcid IS NOT NULL
+        -- whose ELSE could never match (@srcid is NULL exactly when that branch runs). Two bugs:
+        -- a legacy lake with no source placeholder silently got NO reciprocal row at all, and the
+        -- @type = 8 branch tested @srcid but updated @mthid -- re-pointing the mouth row into a
+        -- side-8 row and destroying the Mouth tab's data. Covered by unit_test@Tributary.sql
+        -- TEST 5-8 (5 and 8 confirmed FAILing first).
+        IF @type IN (2, 4)   -- inflow
+            INSERT INTO Tributaries (main_lake_id, lake_id, side, lat, lon) VALUES (@lake_id, @main_lake_id, 4, @lat, @lon);
 
-           IF @srcid Is NOT NULL
-               INSERT INTO Tributaries (main_lake_id, lake_id, side, lat, lon) VALUES (@lake_id, @main_lake_id, 8, @lat, @lon);
-           ELSE
-    		   UPDATE Tributaries SET lake_id = @main_lake_id, lat = @lat, lon = @lon, side = 8 WHERE id = @mthid AND @mthid IS NOT NULL
-	   END ELSE
-	   IF @type = 4
-	   BEGIN
-           IF @srcid Is NOT NULL
-                INSERT INTO Tributaries (main_lake_id, lake_id, side, lat, lon) VALUES (@lake_id, @main_lake_id, 4, @lat, @lon);
-           ELSE
-		        UPDATE Tributaries SET lake_id = @main_lake_id, lat = @lat, lon = @lon, side = 4 WHERE id = @srcid AND @srcid IS NOT NULL
-	   END ELSE
-	   IF @type = 8
-	   BEGIN
-           IF @srcid Is NOT NULL
-               INSERT INTO Tributaries (main_lake_id, lake_id, side, lat, lon) VALUES (@lake_id, @main_lake_id, 8, @lat, @lon);
-           ELSE
-    		   UPDATE Tributaries SET lake_id = @main_lake_id, lat = @lat, lon = @lon, side = 8 WHERE id = @mthid AND @mthid IS NOT NULL
-	   END
-	END 
+        IF @type IN (2, 8)   -- outflow
+            INSERT INTO Tributaries (main_lake_id, lake_id, side, lat, lon) VALUES (@lake_id, @main_lake_id, 8, @lat, @lon);
+	END
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState

@@ -2224,14 +2224,14 @@ RETURN
 SELECT v.fish_id, v.fish_name FROM dbo.fish v
     LEFT JOIN dbo.fish_zoo z ON z.fish_id = v.fish_id
     WHERE ( v.fish_Type & 1 ) = 1 -- 1 - sport fish
---	AND v.habitat = 1             -- 1 - freshwater
+  	AND v.water_type = 1             -- 1 - freshwater
     AND EXISTS
     ( 
 		SELECT TOP 1 1 FROM dbo.fish_location f 
 			JOIN dbo.WaterStation w ON (f.station_Id = w.id)
-			WHERE f.fish_id = v.fish_id AND w.country = @country
---			AND ( w.lat between (@lat-0.5) AND (@lat+0.5) )
---			AND ( w.lon between (@lon-0.5) AND (@lon+0.5) )
+			WHERE f.fish_id = v.fish_id -- AND w.country = @country
+ 			AND ( w.lat between (@lat-5) AND (@lat+5) )
+ 			AND ( w.lon between (@lon-5) AND (@lon+5) )
     ) AND z.fish_max_length < 65
 GO
 ---------------------------------------------------------------------------------------------------------------------------------------------
