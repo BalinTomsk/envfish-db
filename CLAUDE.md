@@ -269,3 +269,33 @@ GO
 3. Run `mssql\UNIT_TESTS\autorun.bat`.
 4. Open `mssql\UNIT_TESTS\cleaned.txt` and confirm no error lines (only headers/banners/PASS).
 5. If output legitimately changed, update `[mail].crcstate` in `config.ini`.
+
+## Changelog
+
+- 2026-07-30: **`dbo.fn_news_json(@news_id)` — export a news article as one self-contained JSON
+  object** (`script02_Funct.sql`; scalar, idempotent `IF EXISTS(...xtype='FN') DROP…GO CREATE`).
+  Returns, via `FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES`, every field needed to
+  re-create the article on `~/Editor/AddNews.aspx`: title, author, author/source links, source, video
+  link, the 3 paragraphs, country, date (yyyy-mm-dd, `CONVERT(...,23)`), `lake_id` + `fish1/2/3` GUIDs,
+  and the **3 paragraph photos EMBEDDED as base64** — `FOR JSON` auto-encodes the `news_photo0/1/2`
+  `varbinary` columns — with each photo's author/alt. NULLs are kept so the shape is stable; returns
+  NULL for an unknown id. Same embed-as-base64 technique as `fn_default_latest_catch_json`, so the
+  export is self-contained (no `HandlerImage.ashx` round trip). Called by `News.aspx.cs` (admin-only
+  "Save JSON" link) and consumed by `AddNews.aspx` "Import from JSON". `unit_test@NewsJson.sql` — 4
+  tests, each its own transaction (core fields; lake/fish GUIDs + null shape; base64 photo decodes back
+  to the original bytes; unknown id → NULL). **Applied to prod 2026-07-30** (SqlClient txn +
+  smoke-tested on the live Tyee article, 465 KB JSON with the base64 photo). Frontend side documented in
+  `fishfind-frontend` `aspnet/Editor/CLAUDE.md` (2026-07-31 entry).
+- 2026-07-30: **`dbo.fn_fish_image_gallery(@fish_id)` — list a fish's images for the editor gallery**
+  (`script02_Funct.sql`; inline TVF, idempotent `IF EXISTS(...xtype='IF') DROP…GO CREATE`). Returns
+  `(fish_image_id, fish_image_gender, fish_image_juvenile)` for every image of the fish; the caller
+  orders by `fish_image_id DESC`. Created to replace a direct `SELECT … FROM dbo.fish_image` query in
+  `FishTracker.Editor.FishGeneral.BuildFishGallery` (`~/Editor/FishGeneral.aspx.cs`) so app code goes
+  through a function, not a raw table (per the "no direct table access" rule above).
+  `unit_test@FishImageGallery.sql` — 3 tests, each its own transaction (all images with correct
+  gender/juvenile flags; fish with no images → empty; only the requested fish's images, no cross-fish
+  leak). **Applied to prod 2026-07-30** (SqlClient txn + verified against a real fish, 6 rows).
+- 2026-07-30: **`unit_test@FishViewNews.sql` — coverage for the existing `dbo.fn_fish_view_news`**
+  (no schema change). 4 tests, each isolated in its own `BEGIN TRAN…ROLLBACK TRAN…GO` block with its
+  own fixture (slot-1 news returned with title/source; slots 2 & 3 also matched; unpublished excluded
+  and unrelated fish empty; capped at 10 rows, newest by `news_stamp` kept). All pass via `autorun.bat`.
