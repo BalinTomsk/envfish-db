@@ -4772,3 +4772,53 @@ END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_station_weather_today' AND xtype = 'IF')
+    DROP function dbo.fn_station_weather_today
+GO
+-- fn_station_weather_today : the weather forecast row for ONE monitoring station for TODAY,
+-- so a page can show current conditions at that station's own point.
+-- Called by: FishTracker Resources/wfRiverViewWeather.aspx.cs (BuildWeatherTable, from
+-- BuildStationCard) -- the weather table under each station card's metrics grid.
+--
+-- Returns AT MOST ONE row, and ZERO rows when this station has no forecast for today. That
+-- distinction is the whole point of this function: dbo.weather_Forecast is only collected for
+-- stations whose water data is recent (see dbo.vwWeatherForecastToDay), so many stations have
+-- no weather at all, and the caller must be able to tell "no data" from "calm/zero weather".
+-- Do NOT reuse dbo.fn_plot_weather here -- it pads missing days with ZERO-FILLED placeholder
+-- rows (0 degrees, 0 humidity, '' text) for the Highcharts series, which would render on a
+-- page as if they were real readings.
+--
+-- Joined on the FK (weather_Forecast.link = WaterStation.id) rather than on mli. Both are
+-- unique per station, but link is the declared relationship. The unique index is
+-- (link, dt, tm), so one day MAY carry more than one collection time; TOP 1 + ORDER BY tm DESC
+-- takes the latest one for that day.
+--     SELECT * FROM dbo.fn_station_weather_today(267240);
+CREATE FUNCTION dbo.fn_station_weather_today (@sid INT)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT TOP 1
+        wf.dt                AS dt,
+        wf.shortText         AS conditions,
+        wf.longText          AS conditions_long,
+        wf.icon              AS icon,
+        wf.air_temperature   AS air_temp,       -- degC
+        wf.tmHigh            AS temp_high,      -- degC
+        wf.tmLow             AS temp_low,       -- degC
+        wf.humidity          AS humidity,       -- %
+        wf.wind_max_speed    AS wind_speed,     -- daily max wind
+        wf.wind_direction    AS wind_direction, -- compass text, e.g. 'NNW'
+        wf.wind_degree       AS wind_degree,
+        wf.pop               AS precip_chance,  -- probability of precipitation, %
+        wf.rain_today        AS precip_amount   -- mm
+    FROM dbo.WaterStation ws
+    JOIN dbo.weather_Forecast wf ON wf.link = ws.id
+    WHERE ws.sid = @sid
+      AND wf.dt  = CAST(GETDATE() AS DATE)
+    ORDER BY wf.tm DESC
+);
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
