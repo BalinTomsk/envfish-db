@@ -272,6 +272,29 @@ GO
 
 ## Changelog
 
+- 2026-08-01: **`dbo.fn_station_weather_today(@sid)` — today's weather at ONE monitoring station**
+  (`script02_Funct.sql`; inline TVF, idempotent `IF EXISTS(...xtype='IF') DROP…GO CREATE`). Returns at
+  most one row — `dt`, `conditions`/`conditions_long`/`icon`, `air_temp`, `temp_high`/`temp_low`,
+  `humidity`, `wind_speed`/`wind_direction`/`wind_degree`, `precip_chance` (pop %), `precip_amount`
+  (mm) — and **zero rows when that station has no forecast for today**. The zero-row case is the
+  contract: `dbo.weather_Forecast` is only collected for stations whose water data is recent (see
+  `dbo.vwWeatherForecastToDay`), so **~3.7k of 11.7k stations have weather at all**, and the caller
+  must be able to tell "no data" from a real calm reading. **Deliberately NOT built on
+  `dbo.fn_plot_weather`**, which pads every missing day with a ZERO-FILLED placeholder row (0°, 0 %,
+  `''` text) for the Highcharts series — correct for a chart, but on a page it renders as a real
+  reading. Joined on the FK (`weather_Forecast.link = WaterStation.id`) rather than `mli`; both are
+  unique per station, but `link` is the declared relationship. The unique index is `(link, dt, tm)`,
+  so a day may hold several collection times — `TOP 1 … ORDER BY tm DESC` takes the latest.
+  Called by `FishTracker Resources/wfRiverViewWeather.aspx.cs` (`BuildWeatherTable`, from
+  `BuildStationCard`) — the weather table under each station card on the Weather tab.
+  `unit_test@StationWeatherToday.sql` — 4 tests, each its own transaction (today's row with every
+  field mapped; **past/future-only station → 0 rows, asserted alongside `fn_plot_weather` returning
+  exactly 1 zero-filled row for the same day, so the reason this function exists is itself under
+  test**; per-station isolation + unknown sid; latest `tm` of the day wins). All pass via
+  `autorun.bat` (371 PASS / 0 FAIL suite-wide; `crcstate` updated). **Applied to prod 2026-08-01**
+  (DDL taken straight from `script02_Funct.sql`, GO-split into 2 batches, one committed SqlClient
+  txn; smoke-tested live: **3,690** stations return a row for today, station 07KF015 returns
+  `Clear / 16 / 24.6 / 11.2 / 82 % / 10.9 S`, and the reported station 267240 correctly returns 0).
 - 2026-07-31: **`dbo.sp_news_import(@json)` — create a news article from an `fn_news_json` interchange
   document** (`script02_Proc.sql`; idempotent `IF EXISTS(... type='P') DROP … GO CREATE`). Shreds the
   exact JSON shape `dbo.fn_news_json` emits (title, author, author/source links, source, video link,
