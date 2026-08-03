@@ -272,6 +272,36 @@ GO
 
 ## Changelog
 
+- 2026-08-02: **`dbo.fn_news_search(@q)` — search published news across text + mentioned fish names**
+  (`script02_Funct.sql`; inline TVF, idempotent `IF EXISTS(...xtype='IF') DROP…GO CREATE`). Returns up
+  to **100** published articles, newest first, matching `@q` over one concatenation of the headline,
+  source, the 3 paragraphs (`news_paragraph0/1/2`), the 3 photo alts, and the common/latin/alt names of
+  the up-to-3 fishes the article mentions (news `LEFT JOIN fish ×3`) — so "walleye" finds an article
+  tagged with walleye even when the headline doesn't say it. Columns: `news_id`, `a1/fish1/l1 …
+  a3/fish3/l3`, `news_title`, `news_source`, `news_paragraph0/1/2`, `news_photo_alt0/1/2`, `stamp`
+  (yyyy-mm-dd), `country`. **Published-only** (never leak a draft, same rule as `fn_news_doc`);
+  `@q` matched as `LIKE N'%'+@q+N'%' ESCAPE '\'` — the **caller escapes** `% _ [`; NULL/empty `@q` →
+  latest 100. Called by docapi (`JdbcNewsQueryRepository.search`, `GET /api/v1/news/search?q=`).
+  `unit_test@NewsSearch.sql` — 4 tests (match by headline; **match by a mentioned fish name**;
+  unpublished draft hidden; NULL term → latest published, ≤100). All pass via `autorun.bat`
+  (`crcstate` updated). **Applied to prod 2026-08-02** (SqlClient txn; smoke-tested live —
+  `fn_news_search(NULL)`→100, `fn_news_search('fish')`→100, and via docapi 1.3.0 `/api/v1/news/search`).
+- 2026-08-02: **`dbo.sp_news_doc_add(@json)` / `dbo.sp_news_doc_update(@news_id, @json)` — generic news
+  document write path** (`script02_Proc.sql`; idempotent `IF EXISTS(... type='P') DROP … GO CREATE`).
+  These complete the news CRUD for **docapi**: the read side (`fn_news_doc`, `fn_news_list`,
+  `fn_default_news_ids`/`fn_default_news_json`, `fn_news_json`) and the interchange `sp_news_import`
+  already existed; these two are the plain `POST /api/v1/news` (`NewsDocumentRepository.addDocument`)
+  and `PUT /api/v1/news/{id}` (`.updateDocument`). Both shred the **`fn_news_doc` document shape** with
+  `OPENJSON` (title, author, author/source links, video link, credit, photo_alt, paragraph0..2, country,
+  date, lake_id, a base64 lead photo, and `fishes:[{id}]` — up to 3), so a client can GET → edit → POST/PUT.
+  `add` inserts **published** (`news_publish = 1`, absent date → now) and returns the new `news_id`;
+  `news_title` is UNIQUE so a dup title raises. `update` is PUT-replace, but **preserves** the publish
+  date and the (potentially large) lead photo when the body omits them — every other field is written
+  as NULL if absent. Base64 photo decode via `xs:base64Binary`, ids via `TRY_CONVERT` (bad text → null),
+  mirroring `sp_news_import`. `unit_test@NewsDoc.sql` extended with TEST 5–8 (add round-trips via
+  `fn_news_doc`; base64 photo + 2 fishes stored; titleless doc rejected; update replaces fields and keeps
+  the photo). Full suite green via `autorun.bat` (`crcstate` updated). **Applied to prod 2026-08-02**
+  (SqlClient txn, alongside `fn_news_search`; `sp_news_import` / `fn_news_doc` were already live).
 - 2026-08-01: **`dbo.fn_station_weather_today(@sid)` — today's weather at ONE monitoring station**
   (`script02_Funct.sql`; inline TVF, idempotent `IF EXISTS(...xtype='IF') DROP…GO CREATE`). Returns at
   most one row — `dt`, `conditions`/`conditions_long`/`icon`, `air_temp`, `temp_high`/`temp_low`,
