@@ -4333,3 +4333,200 @@ END
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_news_doc_add' AND type = 'P')
+    DROP PROCEDURE dbo.sp_news_doc_add
+GO
+--
+-- Creates ONE news article from a fn_news_doc-shaped JSON document and returns the new news_id as a
+-- single scalar result set.
+--
+-- Called by: docapi -- com.fishfind.docapi.repo.NewsDocumentRepository.addDocument, reached from
+--   NewsController POST /api/v1/news. The repository runs "EXEC dbo.sp_news_doc_add ?" and takes the
+--   first scalar of the result set as the new id. This is the generic CRUD add; the fuller interchange
+--   import (base64 photos 0..2, author/source of each) is dbo.sp_news_import.
+--
+-- Body shape mirrors dbo.fn_news_doc (the GET document): title, author, author_link, source,
+-- source_link, video_link, credit, photo_alt, paragraph0..2, country, date, lake_id, a base64 lead
+-- photo, and fishes:[{ id }] (up to 3 are kept). The article is inserted PUBLISHED (news_publish = 1);
+-- an absent/blank date defaults to now. lake_id / fish ids accept a GUID string or null (bad text ->
+-- null via TRY_CONVERT). news_title is UNIQUE, so a duplicate title raises the duplicate-key error,
+-- surfaced to the caller. Read-only fields fn_news_doc derives (flag, lake_name, fish names) are ignored.
+--
+--   Usage: EXEC dbo.sp_news_doc_add N'{ "title": "...", "paragraph0": "...", "fishes": [{ "id": "..." }] }';
+--
+CREATE PROCEDURE dbo.sp_news_doc_add @json nvarchar(max)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE
+        @title nvarchar(max), @author nvarchar(500), @authorLink nvarchar(1024),
+        @source nvarchar(255), @sourceLink nvarchar(1024), @videoLink nvarchar(255),
+        @credit nvarchar(64), @photoAlt nvarchar(128),
+        @paragraph0 nvarchar(max), @paragraph1 nvarchar(max), @paragraph2 nvarchar(max),
+        @country char(2), @date varchar(10), @lakeId varchar(36), @photo0 varchar(max);
+
+    SELECT
+        @title = title, @author = author, @authorLink = author_link,
+        @source = source, @sourceLink = source_link, @videoLink = video_link,
+        @credit = credit, @photoAlt = photo_alt,
+        @paragraph0 = paragraph0, @paragraph1 = paragraph1, @paragraph2 = paragraph2,
+        @country = country, @date = [date], @lakeId = lake_id, @photo0 = photo
+    FROM OPENJSON(@json) WITH (
+        title       nvarchar(max)  '$.title',
+        author      nvarchar(500)  '$.author',
+        author_link nvarchar(1024) '$.author_link',
+        source      nvarchar(255)  '$.source',
+        source_link nvarchar(1024) '$.source_link',
+        video_link  nvarchar(255)  '$.video_link',
+        credit      nvarchar(64)   '$.credit',
+        photo_alt   nvarchar(128)  '$.photo_alt',
+        paragraph0  nvarchar(max)  '$.paragraph0',
+        paragraph1  nvarchar(max)  '$.paragraph1',
+        paragraph2  nvarchar(max)  '$.paragraph2',
+        country     char(2)        '$.country',
+        [date]      varchar(10)    '$.date',
+        lake_id     varchar(36)    '$.lake_id',
+        photo       varchar(max)   '$.photo'
+    );
+
+    -- Up to 3 mentioned fishes, from the fn_news_doc "fishes":[{ id, name }] array (id only is used).
+    DECLARE @fish1 varchar(36), @fish2 varchar(36), @fish3 varchar(36);
+    SELECT @fish1 = MAX(CASE WHEN rn = 1 THEN id END),
+           @fish2 = MAX(CASE WHEN rn = 2 THEN id END),
+           @fish3 = MAX(CASE WHEN rn = 3 THEN id END)
+    FROM (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS rn
+        FROM OPENJSON(@json, '$.fishes') WITH (id varchar(36) '$.id')
+    ) q;
+
+    IF @title IS NULL OR LTRIM(RTRIM(@title)) = N''
+    BEGIN
+        RAISERROR('sp_news_doc_add: a non-empty "title" is required', 16, 1);
+        RETURN;
+    END
+
+    DECLARE @new_id uniqueidentifier = NEWID();
+
+    INSERT INTO dbo.news (
+        news_id, news_title, news_author, news_author_link, news_source, news_source_link,
+        news_video_link, news_paragraph0, news_paragraph1, news_paragraph2, country,
+        news_stamp, news_publish, lake_id, fish1_id, fish2_id, fish3_id,
+        news_photo0, news_photo_author0, news_photo_alt0
+    )
+    VALUES (
+        @new_id, @title, @author, @authorLink, @source, @sourceLink,
+        @videoLink, @paragraph0, @paragraph1, @paragraph2, @country,
+        COALESCE(TRY_CONVERT(datetime2, @date), SYSUTCDATETIME()), 1,
+        TRY_CONVERT(uniqueidentifier, @lakeId),
+        TRY_CONVERT(uniqueidentifier, @fish1),
+        TRY_CONVERT(uniqueidentifier, @fish2),
+        TRY_CONVERT(uniqueidentifier, @fish3),
+        CASE WHEN @photo0 IS NOT NULL THEN CAST('' AS xml).value('xs:base64Binary(sql:variable("@photo0"))', 'varbinary(max)') END,
+        @credit, @photoAlt
+    );
+
+    SELECT @new_id AS news_id;
+END
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_news_doc_update' AND type = 'P')
+    DROP PROCEDURE dbo.sp_news_doc_update
+GO
+--
+-- Updates ONE news article (addressed by news_id) from a fn_news_doc-shaped JSON document and returns
+-- the news_id as a single scalar result set.
+--
+-- Called by: docapi -- com.fishfind.docapi.repo.NewsDocumentRepository.updateDocument, reached from
+--   NewsController PUT /api/v1/news/{id}. The repository runs "EXEC dbo.sp_news_doc_update ?, ?"
+--   (id, json) and takes the first scalar as the affected id.
+--
+-- Body shape is the same as dbo.sp_news_doc_add / dbo.fn_news_doc. PUT semantics: the scalar text
+-- fields, country, lake_id and the up-to-3 fishes are REPLACED from the body (a field absent from the
+-- body is written as NULL). TWO fields are PRESERVED when the body omits them, so a metadata-only edit
+-- need not resend them: the publish date (absent/blank "date" keeps the stored news_stamp) and the
+-- lead photo (a null/absent "photo" keeps the stored news_photo0; a present base64 "photo" replaces it).
+-- Fetch the current document with fn_news_doc, edit, and PUT it back for a faithful round-trip.
+--
+CREATE PROCEDURE dbo.sp_news_doc_update @news_id uniqueidentifier, @json nvarchar(max)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE
+        @title nvarchar(max), @author nvarchar(500), @authorLink nvarchar(1024),
+        @source nvarchar(255), @sourceLink nvarchar(1024), @videoLink nvarchar(255),
+        @credit nvarchar(64), @photoAlt nvarchar(128),
+        @paragraph0 nvarchar(max), @paragraph1 nvarchar(max), @paragraph2 nvarchar(max),
+        @country char(2), @date varchar(10), @lakeId varchar(36), @photo0 varchar(max);
+
+    SELECT
+        @title = title, @author = author, @authorLink = author_link,
+        @source = source, @sourceLink = source_link, @videoLink = video_link,
+        @credit = credit, @photoAlt = photo_alt,
+        @paragraph0 = paragraph0, @paragraph1 = paragraph1, @paragraph2 = paragraph2,
+        @country = country, @date = [date], @lakeId = lake_id, @photo0 = photo
+    FROM OPENJSON(@json) WITH (
+        title       nvarchar(max)  '$.title',
+        author      nvarchar(500)  '$.author',
+        author_link nvarchar(1024) '$.author_link',
+        source      nvarchar(255)  '$.source',
+        source_link nvarchar(1024) '$.source_link',
+        video_link  nvarchar(255)  '$.video_link',
+        credit      nvarchar(64)   '$.credit',
+        photo_alt   nvarchar(128)  '$.photo_alt',
+        paragraph0  nvarchar(max)  '$.paragraph0',
+        paragraph1  nvarchar(max)  '$.paragraph1',
+        paragraph2  nvarchar(max)  '$.paragraph2',
+        country     char(2)        '$.country',
+        [date]      varchar(10)    '$.date',
+        lake_id     varchar(36)    '$.lake_id',
+        photo       varchar(max)   '$.photo'
+    );
+
+    DECLARE @fish1 varchar(36), @fish2 varchar(36), @fish3 varchar(36);
+    SELECT @fish1 = MAX(CASE WHEN rn = 1 THEN id END),
+           @fish2 = MAX(CASE WHEN rn = 2 THEN id END),
+           @fish3 = MAX(CASE WHEN rn = 3 THEN id END)
+    FROM (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS rn
+        FROM OPENJSON(@json, '$.fishes') WITH (id varchar(36) '$.id')
+    ) q;
+
+    IF @title IS NULL OR LTRIM(RTRIM(@title)) = N''
+    BEGIN
+        RAISERROR('sp_news_doc_update: a non-empty "title" is required', 16, 1);
+        RETURN;
+    END
+
+    UPDATE dbo.news
+    SET news_title        = @title,
+        news_author       = @author,
+        news_author_link  = @authorLink,
+        news_source       = @source,
+        news_source_link  = @sourceLink,
+        news_video_link   = @videoLink,
+        news_paragraph0   = @paragraph0,
+        news_paragraph1   = @paragraph1,
+        news_paragraph2   = @paragraph2,
+        country           = @country,
+        news_stamp        = COALESCE(TRY_CONVERT(datetime2, @date), news_stamp),
+        lake_id           = TRY_CONVERT(uniqueidentifier, @lakeId),
+        fish1_id          = TRY_CONVERT(uniqueidentifier, @fish1),
+        fish2_id          = TRY_CONVERT(uniqueidentifier, @fish2),
+        fish3_id          = TRY_CONVERT(uniqueidentifier, @fish3),
+        news_photo0       = CASE WHEN @photo0 IS NOT NULL
+                                 THEN CAST('' AS xml).value('xs:base64Binary(sql:variable("@photo0"))', 'varbinary(max)')
+                                 ELSE news_photo0 END,
+        news_photo_author0 = @credit,
+        news_photo_alt0    = @photoAlt
+    WHERE news_id = @news_id;
+
+    SELECT @news_id AS news_id;
+END
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------

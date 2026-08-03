@@ -4773,6 +4773,59 @@ GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
 
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_news_search' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_news_search
+GO
+-- fn_news_search : up to 100 PUBLISHED news articles matching a search term, newest first. Matches the
+-- term across the headline, source, the three paragraphs, the three photo alts, AND the common/latin/alt
+-- names of the up-to-3 fishes the article mentions (so "walleye" finds an article tagged with walleye
+-- even when the headline doesn't say it). Built on the news + 3x fish LEFT JOIN.
+--
+-- Called by: docapi -- com.fishfind.docapi.repo.JdbcNewsQueryRepository.search, reached from
+--   NewsController GET /api/v1/news/search?q=...
+--
+-- Only news_publish = 1 rows are returned (a public endpoint must never leak a draft -- same rule as
+-- fn_news_doc / fn_news_list). @q is matched as LIKE N'%'+@q+N'%' ESCAPE '\' over a single concatenation
+-- of all searchable columns; the CALLER escapes % _ [ in the term so it matches literally. A NULL/empty
+-- @q returns the latest 100 published articles.
+--
+--   Usage:
+--       SELECT * FROM dbo.fn_news_search(N'walleye');
+--       SELECT * FROM dbo.fn_news_search(NULL);        -- latest 100 published
+CREATE FUNCTION dbo.fn_news_search (@q nvarchar(200))
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT TOP 100
+          n.news_id
+        , f1.alt_name AS a1, f1.fish_name AS fish1, f1.fish_latin AS l1
+        , f2.alt_name AS a2, f2.fish_name AS fish2, f2.fish_latin AS l2
+        , f3.alt_name AS a3, f3.fish_name AS fish3, f3.fish_latin AS l3
+        , n.news_title, n.news_source
+        , n.news_paragraph0, n.news_paragraph1, n.news_paragraph2
+        , n.news_photo_alt0, n.news_photo_alt1, n.news_photo_alt2
+        , CAST(CAST(n.news_stamp AS DATE) AS char(10)) AS stamp
+        , n.country
+    FROM dbo.news n
+        LEFT JOIN dbo.fish f1 ON n.fish1_id = f1.fish_id
+        LEFT JOIN dbo.fish f2 ON n.fish2_id = f2.fish_id
+        LEFT JOIN dbo.fish f3 ON n.fish3_id = f3.fish_id
+    WHERE n.news_publish = 1
+      AND ( @q IS NULL OR @q = N''
+            OR CONCAT( f1.alt_name, N' ', f1.fish_name, N' ', f1.fish_latin, N' '
+                     , f2.alt_name, N' ', f2.fish_name, N' ', f2.fish_latin, N' '
+                     , f3.alt_name, N' ', f3.fish_name, N' ', f3.fish_latin, N' '
+                     , n.news_title, N' ', n.news_source, N' '
+                     , n.news_paragraph0, N' ', n.news_paragraph1, N' ', n.news_paragraph2, N' '
+                     , n.news_photo_alt0, N' ', n.news_photo_alt1, N' ', n.news_photo_alt2 )
+               LIKE N'%' + @q + N'%' ESCAPE '\' )
+    ORDER BY n.news_stamp DESC, n.news_id DESC
+)
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_station_weather_today' AND xtype = 'IF')
     DROP function dbo.fn_station_weather_today
 GO
