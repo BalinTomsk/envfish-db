@@ -3718,7 +3718,21 @@ GO
 /*
     SELECT TOP 1 id FROM SessionHandler WHERE baned = 1 AND (ip4 = '99.250.66.125')
 
-    Used in Global.aspx.cs
+    Called by dbo.IsIpBlocked, which FishTracker Global.asax.cs calls per request
+    (Global.IsRequestIpBlocked, from Global.EnforceBannedIpRequestBlock) to refuse a banned caller
+    with an opaque 404.
+
+    A ban EXPIRES. Until 2026-08-04 this matched any baned = 1 row for the IP regardless of age, so
+    one bad day blocked an address for ever: ~10.5k addresses were still blocked, some for tripping
+    a daily page quota months earlier, and the developer loopback address was permanently locked out
+    of the local site. Only rows whose activity day falls inside the retention window count now, so
+    an IP that stops misbehaving is released automatically while a persistent abuser — which keeps
+    earning fresh daily rows — stays blocked continuously.
+
+    Window is tunable without a redeploy via global_configuration('ip_ban_window_days');
+    defaults to 30 days when the row is missing or unparsable, and 0 means "today's bans only".
+    activityDate is PERSISTED and covered by IX_SessionHandler_Baned_Ip4, so the predicate stays a
+    single index seek. Dates are UTC to match DF_SessionHandler_startSess and spRegisterPageHit.
 */
 CREATE FUNCTION dbo.IsIpBanned( @ip4 VARCHAR(45) )
 RETURNS BIT
@@ -3729,8 +3743,18 @@ BEGIN
     IF (@ip4 IS NULL OR @ip4 = '')
         RETURN 0;
 
+    DECLARE @windowDays INT =
+        ISNULL(TRY_CONVERT(INT, (SELECT config_value FROM dbo.global_configuration
+                                  WHERE config_attribute = 'ip_ban_window_days')), 30);
+
+    IF (@windowDays < 0)
+        SET @windowDays = 0;
+
     IF EXISTS (
-        SELECT 1 FROM dbo.SessionHandler WHERE baned = 1 AND ip4 = @ip4
+        SELECT 1 FROM dbo.SessionHandler
+         WHERE baned = 1
+           AND ip4 = @ip4
+           AND activityDate >= DATEADD(day, -@windowDays, CAST(GETUTCDATE() AS date))
     )
         SET @result = 1;
 

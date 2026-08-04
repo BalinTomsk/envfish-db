@@ -272,6 +272,34 @@ GO
 
 ## Changelog
 
+- 2026-08-04: **Fix: `dbo.IsIpBanned` banned an IP FOREVER — bans now expire (date-scoped).**
+  (`script02_Funct.sql`.) The function matched **any** `baned = 1` row for the IP with no date
+  predicate, so one bad day blocked an address permanently. Live impact: **10,503 addresses** were
+  holding ban rows, some from tripping the *daily* 100-page quota months earlier, and the developer
+  **loopback address was permanently locked out of the local site** (the dev site runs against the
+  prod DB, so it banned itself; symptom is an opaque 404 from `Global.asax.cs`, easily mistaken for
+  a broken web server). A second amplifier: the site's own malformed self-links (e.g.
+  `/http:/localhost:32543/Resources/wfFishViewer.aspx`, `/Resources/&quot;/Resources/…`) generate
+  missing-`.aspx` hits, and 3 of those trip `MissingPageBanThreshold` — so the site could
+  permanently ban real visitors via its own broken markup. Now only rows whose `activityDate` falls
+  inside a retention window count; a persistent abuser keeps earning fresh daily rows and stays
+  blocked continuously, while an IP that stops is released automatically. Window is tunable without
+  a redeploy via **`global_configuration('ip_ban_window_days')`** (seeded `30` in `script08_Data.sql`,
+  guarded by `IF NOT EXISTS` so it never overwrites an operator-tuned value; missing/unparsable → 30,
+  `0` → today's bans only). UTC throughout, matching `DF_SessionHandler_startSess` and
+  `spRegisterPageHit`; `activityDate` is PERSISTED and already INCLUDEd in
+  `IX_SessionHandler_Baned_Ip4`, so the extra predicate stays a single index seek — **no index
+  change**. `unit_test@SessionHandler.sql` TEST 22–25 (stale ban released; in-window ban still
+  blocks; window boundary — oldest in-window day blocks, one day older does not; window read from
+  `global_configuration`). **Confirmed FAILING first** (22/24/25 failed, 23 passed as the
+  no-regression baseline), then all green: **383 PASS / 0 FAIL** suite-wide via `autorun.bat`
+  (`crcstate` updated). **Applied to prod 2026-08-04** (SqlClient txn, DDL taken from
+  `script02_Funct.sql` GO-split into 2 batches, + the config seed): **3,693 IPs released by expiry,
+  665 still blocked** inside the window; spot-checked a stale row (last ban 2026-07-04 → now
+  `IsIpBanned = 0`) and a recent one (still `1`); live site smoke-tested 200 on Default/News/Login/
+  RscRiverList — the function is on the per-request path, so a bad deploy here breaks every page.
+  **Frontend counterpart** (separate repo, `Global.asax.cs`): loopback/private IPs are now exempt
+  from the whole rate-limit/ban stack, so local development can no longer ban itself.
 - 2026-08-02: **`dbo.fn_news_search(@q)` — search published news across text + mentioned fish names**
   (`script02_Funct.sql`; inline TVF, idempotent `IF EXISTS(...xtype='IF') DROP…GO CREATE`). Returns up
   to **100** published articles, newest first, matching `@q` over one concatenation of the headline,

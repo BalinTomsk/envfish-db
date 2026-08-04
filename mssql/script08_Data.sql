@@ -915,3 +915,13 @@ INSERT INTO States (state, country, shift) VALUES
 ,('YT','CA',-8)
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Retention window for IP bans, in days, read by dbo.IsIpBanned. A baned = 1 row in
+-- dbo.SessionHandler only blocks while its activityDate is inside this window, so a ban expires
+-- instead of lasting for ever. Raise it to keep abusers out longer, set 0 for "today's bans only".
+-- Guarded so re-running the script never overwrites an operator-tuned value.
+IF NOT EXISTS (SELECT * FROM global_configuration WHERE config_attribute = 'ip_ban_window_days')
+   INSERT INTO global_configuration (config_attribute, config_value, global_config_default_value, global_config_type, global_configuration_sysflag)
+   VALUES ('ip_ban_window_days', '30', '30', 'int', 1)
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------

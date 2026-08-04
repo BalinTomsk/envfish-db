@@ -28,6 +28,10 @@ GO
   TEST 19 - IsIpBanned returns 0 when matching ip4 exists but baned = 0
   TEST 20 - IsIpBanned returns 1 when matching ip4 exists and baned = 1
   TEST 21 - IsIpBanned returns 0 for a different banned ip4
+  TEST 22 - IsIpBanned returns 0 for a ban older than the retention window (bans expire)
+  TEST 23 - IsIpBanned still returns 1 for a ban inside the retention window
+  TEST 24 - IsIpBanned window boundary: the oldest in-window day blocks, one day older does not
+  TEST 25 - IsIpBanned honours the ip_ban_window_days value in global_configuration
 */
 SET NOCOUNT ON;
 
@@ -250,6 +254,55 @@ BEGIN TRY
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @T21 = 0 PRINT 'TEST 21 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: returns 0 for a different banned ip4';
     ELSE PRINT 'TEST 21 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 0, got ' + CAST(@T21 AS varchar);
+
+    -- Ban rows must expire. Without a date scope a single old row blocks an IP for ever, which is
+    -- how loopback and thousands of real visitor IPs ended up permanently blocked.
+    DECLARE @WindowDays int =
+        ISNULL(TRY_CONVERT(int, (SELECT config_value FROM dbo.global_configuration
+                                  WHERE config_attribute = 'ip_ban_window_days')), 30);
+
+    SET @tStart = SYSUTCDATETIME();
+    DELETE FROM dbo.SessionHandler WHERE ip4 = '192.168.31.1';
+    INSERT INTO dbo.SessionHandler (id, startSess, userAgent, host, startPage, baned, ip4, counterPage)
+    VALUES (NEWID(), DATEADD(day, -(@WindowDays + 370), GETUTCDATE()), 'UT_AGENT_IIB_22', 'UT_HOST_IIB_22', '/stale-ban', 1, '192.168.31.1', 1);
+    DECLARE @T22 bit = dbo.IsIpBanned('192.168.31.1');
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @T22 = 0 PRINT 'TEST 22 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: a ban older than the retention window no longer blocks';
+    ELSE PRINT 'TEST 22 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 0 (expired ban), got ' + CAST(@T22 AS varchar);
+
+    SET @tStart = SYSUTCDATETIME();
+    DELETE FROM dbo.SessionHandler WHERE ip4 = '192.168.31.2';
+    INSERT INTO dbo.SessionHandler (id, startSess, userAgent, host, startPage, baned, ip4, counterPage)
+    VALUES (NEWID(), GETUTCDATE(), 'UT_AGENT_IIB_23', 'UT_HOST_IIB_23', '/fresh-ban', 1, '192.168.31.2', 1);
+    DECLARE @T23 bit = dbo.IsIpBanned('192.168.31.2');
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @T23 = 1 PRINT 'TEST 23 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: a ban inside the retention window still blocks';
+    ELSE PRINT 'TEST 23 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 1, got ' + CAST(@T23 AS varchar);
+
+    SET @tStart = SYSUTCDATETIME();
+    DELETE FROM dbo.SessionHandler WHERE ip4 IN ('192.168.31.3', '192.168.31.4');
+    -- Oldest day still inside the window, and the first day outside it.
+    INSERT INTO dbo.SessionHandler (id, startSess, userAgent, host, startPage, baned, ip4, counterPage)
+    VALUES (NEWID(), DATEADD(day, -@WindowDays,      CAST(GETUTCDATE() AS datetime)), 'UT_AGENT_IIB_24A', 'UT_HOST_IIB_24', '/edge-in',  1, '192.168.31.3', 1),
+           (NEWID(), DATEADD(day, -(@WindowDays + 1), CAST(GETUTCDATE() AS datetime)), 'UT_AGENT_IIB_24B', 'UT_HOST_IIB_24', '/edge-out', 1, '192.168.31.4', 1);
+    DECLARE @T24in bit = dbo.IsIpBanned('192.168.31.3');
+    DECLARE @T24out bit = dbo.IsIpBanned('192.168.31.4');
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @T24in = 1 AND @T24out = 0 PRINT 'TEST 24 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: window boundary blocks the oldest in-window day only';
+    ELSE PRINT 'TEST 24 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected in=1/out=0, got in=' + CAST(@T24in AS varchar) + '/out=' + CAST(@T24out AS varchar);
+
+    SET @tStart = SYSUTCDATETIME();
+    DELETE FROM dbo.SessionHandler WHERE ip4 = '192.168.31.5';
+    DELETE FROM dbo.global_configuration WHERE config_attribute = 'ip_ban_window_days';
+    INSERT INTO dbo.global_configuration (config_attribute, config_value, global_config_type)
+    VALUES ('ip_ban_window_days', '2', 'int');
+    -- 5 days old: inside the 30-day default, outside the 2-day window configured above.
+    INSERT INTO dbo.SessionHandler (id, startSess, userAgent, host, startPage, baned, ip4, counterPage)
+    VALUES (NEWID(), DATEADD(day, -5, GETUTCDATE()), 'UT_AGENT_IIB_25', 'UT_HOST_IIB_25', '/configured-window', 1, '192.168.31.5', 1);
+    DECLARE @T25 bit = dbo.IsIpBanned('192.168.31.5');
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @T25 = 0 PRINT 'TEST 25 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: retention window is taken from global_configuration';
+    ELSE PRINT 'TEST 25 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 0 with a 2-day window, got ' + CAST(@T25 AS varchar);
 
     ROLLBACK TRANSACTION;
 
