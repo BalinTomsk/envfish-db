@@ -272,6 +272,29 @@ GO
 
 ## Changelog
 
+- 2026-08-05: **`dbo.fn_forecast_plot_json` gained a `lakename` member — plus two long-missing
+  functions restored to the schema scripts.** (`script02_Funct.sql`.) The plot document already
+  carried `lakeid` but not the water body's name, so `Forecast/Plot.aspx` could only name the
+  *station*. `lakename` is `lake.lake_name` for the station's `lakeid`, `"` replaced by `''` exactly
+  as `place` already does, and `COALESCE`d to `''` — **an empty name is the contract for "no lake
+  row"**, which is real: prod has **514 of 11,720** stations whose `lakeId` matches no `lake` row
+  (the live database carries **no foreign keys at all on `dbo.WaterStation`**, unlike a fresh build,
+  which has `FK_WaterStation_Lake`). The caller keys the link off a non-empty name, so a name always
+  implies a resolvable `LakeId`.
+  **`dbo.GetDatePeriod` and `dbo.fn_get_float_as_string` were missing from the schema scripts
+  entirely** while existing on prod — both are called by `fn_forecast_plot_json`, so it failed at
+  runtime in any freshly built database and had **never been coverable by a unit test**. Their prod
+  definitions were copied in verbatim (so they were *not* re-applied to prod — no drift introduced).
+  Watch the recursive CTE in `GetDatePeriod`: default `MAXRECURSION` caps it at 100 days.
+  New `unit_test@ForecastPlotJson.sql` — 3 tests, each its own transaction (name returned next to
+  `lakeid` and `place`; **orphan `lakeid` → empty name in a still-valid document**, which disables
+  `FK_WaterStation_Lake` inside the transaction to reproduce production; a `"` in the lake name
+  escaped so the concatenated document still parses). Confirmed failing first against the live
+  pre-change function (`JSON_VALUE(…,'$.lakename')` → NULL), then **386 PASS / 0 FAIL** suite-wide
+  via `autorun.bat` (`crcstate` updated). **Applied to prod 2026-08-05** (SqlClient txn, DDL from
+  `script02_Funct.sql` GO-split into 2 batches; smoke-tested live and end-to-end through
+  `Forecast/Plot.aspx` inside the `Planning.aspx` iframe). Frontend side in `fishfind-frontend`
+  `aspnet/Forecast/CLAUDE.md`.
 - 2026-08-04: **Fix: `dbo.IsIpBanned` banned an IP FOREVER — bans now expire (date-scoped).**
   (`script02_Funct.sql`.) The function matched **any** `baned = 1` row for the IP with no date
   predicate, so one bad day blocked an address permanently. Live impact: **10,503 addresses** were
