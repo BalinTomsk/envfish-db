@@ -3468,6 +3468,54 @@ GO
 
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_float_as_string' AND xtype = 'FN')
+    DROP function dbo.fn_get_float_as_string ;
+GO
+
+-- One value of a Highcharts data series: a float rendered for direct concatenation into a JSON
+-- array, with NULL becoming the literal null (a gap in the line) rather than collapsing the
+-- whole concatenated document to NULL.
+-- Used by dbo.fn_forecast_plot_json and dbo.spForecastPlot.
+-- NOTE: like GetDatePeriod below, this has always existed on the live database but was missing
+-- from the schema scripts.
+CREATE FUNCTION fn_get_float_as_string( @val float )
+RETURNS varchar(16)
+AS
+BEGIN
+  RETURN  ISNULL(CAST(@val AS varchar(255)), 'null')
+END
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetDatePeriod' AND xtype = 'IF')
+    DROP function dbo.GetDatePeriod ;
+GO
+
+-- One row per calendar day from @start to @end inclusive.
+-- Used by dbo.fn_forecast_plot_json and dbo.spForecastPlot to lay out the plot's date axis.
+-- Recursive CTE, so the period must stay under the default MAXRECURSION of 100 days
+-- (both callers ask for 22).
+-- NOTE: this function has always existed on the live database but was missing from the schema
+-- scripts, which is why fn_forecast_plot_json could not be exercised by a unit test until now.
+CREATE FUNCTION GetDatePeriod( @start date, @end date )
+RETURNS TABLE
+AS
+  RETURN
+	with months (date)
+	AS
+	(
+		SELECT @start
+		UNION ALL
+		SELECT DATEADD(day,1,date)
+		from months
+		where DATEADD(day,1,date)<=@end
+	)
+	select * from months;
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
  IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_forecast_plot_json' AND xtype = 'FN')
     DROP function dbo.fn_forecast_plot_json ;
 GO
@@ -3533,12 +3581,18 @@ BEGIN
   DECLARE @placeDesc varchar(max) = (SELECT TOP 1 REPLACE(locDesc, '"', '''') FROM WaterStation WITH (NOLOCK) WHERE id = @waterStation);
   IF @placeDesc IS NULL SET @placeDesc = 'unknown'
 
+  -- Name of the water body the station belongs to (Plot.aspx renders it as a link to the river viewer).
+  -- Empty string when the station's lakeid has no matching lake row (514 such stations on prod) --
+  -- the caller then shows nothing rather than an empty link.
+  DECLARE @lakeName nvarchar(255) = (SELECT TOP 1 REPLACE(lake_name, '"', '''') FROM lake WITH (NOLOCK) WHERE lake_id = @lakeid);
+
   DECLARE @result nvarchar(MAX) = N'"place":"' + @placeDesc  + '"'
 	+ ', "fish":"' + COALESCE(@fishName, '') + '"'
 	+ ', "country":"' + @country + '"'
 	+ ', "state":"' + @state + '"'
 	+ ', "stamp":"' + @WaterStateDate + '"'
 	+ ', "lakeid":"' + CAST(@lakeid as varchar(36)) + '"'
+	+ ', "lakename":"' + COALESCE(@lakeName, N'') + '"'
 	+ ', "date":['          + @DatesList        + ']'
 	+ ', "discharge":['     + @DischargeList   + ']'
 	+ ', "precipitation":[' + @Precipitation   + ']'
