@@ -4530,3 +4530,31 @@ END
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+-- Stores the NWS station resolved for a water gauge (see dbo.weather_gov_station).
+-- Upsert keyed on mli: one row per gauge, always holding the newest answer. Pass @station_id = NULL
+-- to record "asked, nothing nearby" so the resolver stops re-asking that point.
+-- Called by: WeatherService (C#) Data/WeatherGovStationRepository.SaveAsync
+------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_save_weather_gov_station' AND type = 'P')
+    DROP PROCEDURE dbo.sp_save_weather_gov_station
+GO
+CREATE PROCEDURE dbo.sp_save_weather_gov_station
+      @mli        varchar(64)
+    , @lat        float
+    , @lon        float
+    , @station_id varchar(16) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.weather_gov_station
+       SET station_id = @station_id, lat = @lat, lon = @lon, stamp = GETUTCDATE()
+     WHERE mli = @mli;
+
+    IF @@ROWCOUNT = 0
+        INSERT dbo.weather_gov_station (mli, station_id, lat, lon)
+        VALUES (@mli, @station_id, @lat, @lon);
+END
+GO
