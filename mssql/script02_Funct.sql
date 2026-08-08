@@ -4972,3 +4972,39 @@ RETURN
     FROM dbo.weather_gov_station
     WHERE mli = @mli
 GO
+
+------------------------------------------------------------------------------
+-- What is known about one provider's coverage of one gauge (see dbo.weather_station_coverage).
+-- 0 rows = never checked; 1 row = checked, and `covered` says the answer.
+-- Called by: WeatherService (C#) Data/WeatherStationCoverageRepository.FindAsync
+------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_weather_station_coverage' AND type = 'IF')
+    DROP FUNCTION dbo.fn_weather_station_coverage
+GO
+CREATE FUNCTION dbo.fn_weather_station_coverage(@mli varchar(64), @provider varchar(32))
+RETURNS TABLE
+AS
+RETURN
+    SELECT mli, provider, covered, stamp
+    FROM dbo.weather_station_coverage
+    WHERE mli = @mli AND provider = @provider
+GO
+------------------------------------------------------------------------------
+-- The gauges a provider is known NOT to cover, with everything a fallback worker needs to fetch
+-- them from somewhere else (coordinate, state, country).
+--
+-- Only recorded misses are listed: a gauge nobody has checked is not a known gap.
+-- Called by: the fallback weather worker (a gridded provider such as Open-Meteo)
+------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_weather_uncovered_stations' AND type = 'IF')
+    DROP FUNCTION dbo.fn_weather_uncovered_stations
+GO
+CREATE FUNCTION dbo.fn_weather_uncovered_stations(@provider varchar(32))
+RETURNS TABLE
+AS
+RETURN
+    SELECT c.mli, w.lat, w.lon, w.state, w.country, c.stamp AS checked_utc
+    FROM dbo.weather_station_coverage c
+    JOIN dbo.WaterStation w ON w.MLI = c.mli
+    WHERE c.provider = @provider AND c.covered = 0
+GO

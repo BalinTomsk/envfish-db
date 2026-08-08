@@ -2352,6 +2352,44 @@ GO
 ALTER TABLE dbo.weather_gov_station ADD CONSTRAINT UK_weather_gov_station_mli UNIQUE (mli)
 GO
 
+------------------------------------------------------------------------------
+------------------------------------------------------------------------------
+-- Records, per (gauge, provider), whether that provider has any data for that point.
+--
+-- Not every provider can answer every coordinate. Weather Canada's SWOB is an OBSERVATION
+-- network with real geographic gaps: measured 2026-08-08, even a 0.5 degree (~55 km) search box
+-- found no station for ~16% of Canadian gauges. Gridded providers (Open-Meteo, Visual Crossing,
+-- Google) can answer any coordinate. Without this flag those gauges just skip silently every
+-- cycle forever -- and a fully-skipped cycle still reports healthy, so nothing surfaces it.
+--
+-- covered = 0 marks a gauge a fallback worker should pick up instead. It is a CURRENT FACT, not
+-- an append-only log: one row per (mli, provider), updated in place, so a gap that later resolves
+-- (a new SWOB site, a widened search box) simply clears.
+--
+-- A gauge with NO row is "not yet checked", which is deliberately different from "checked and
+-- missing" -- fn_weather_uncovered_stations lists only recorded misses.
+--
+-- Called by: WeatherService (C#) Data/WeatherStationCoverageRepository, via
+--            dbo.sp_save_weather_station_coverage (write) and
+--            dbo.fn_weather_uncovered_stations / dbo.fn_weather_station_coverage (read).
+CREATE TABLE dbo.weather_station_coverage
+(
+    weather_station_coverage_id int NOT NULL identity(1,1),
+    mli                         varchar(64) NOT NULL,   -- WaterStation.MLI
+    provider                    varchar(32) NOT NULL,   -- 'weather-canada', 'weather-gov', 'open', ...
+    covered                     bit NOT NULL,           -- 0 = provider has no data for this point
+    stamp                       datetime2 NOT NULL      -- when it was last checked (UTC)
+)
+GO
+ALTER TABLE dbo.weather_station_coverage ADD CONSTRAINT DEF_weather_station_coverage_stamp DEFAULT (GETUTCDATE()) FOR stamp
+GO
+ALTER TABLE dbo.weather_station_coverage ADD CONSTRAINT PK_weather_station_coverage PRIMARY KEY CLUSTERED (weather_station_coverage_id ASC) ON [PRIMARY]
+GO
+ALTER TABLE dbo.weather_station_coverage ADD CONSTRAINT UK_weather_station_coverage UNIQUE (mli, provider)
+GO
+CREATE NONCLUSTERED INDEX IX_weather_station_coverage_gaps ON dbo.weather_station_coverage (provider, covered) INCLUDE (mli)
+GO
+
 ALTER TABLE [dbo].[ows_meteo]  WITH CHECK ADD  CONSTRAINT [FK_ows_meteo_id] FOREIGN KEY([WaterStation_id])
     REFERENCES [dbo].[WaterStation] ([id])
 GO
