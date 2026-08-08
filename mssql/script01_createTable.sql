@@ -2318,6 +2318,40 @@ GO
 ALTER TABLE [dbo].[ows_meteo] ADD constraint DF_ows_meteo_type DEFAULT (1) FOR type
 GO
 
+------------------------------------------------------------------------------
+------------------------------------------------------------------------------
+-- Caches "which NWS station serves this water gauge", for the Weather.gov worker.
+--
+-- WaterStation.MLI is a WATER gauge identifier (a USGS site number for US rows), never an NWS
+-- call sign, so api.weather.gov/stations/{MLI}/observations 404s for every US station. The weather
+-- service instead resolves the station's COORDINATE to a nearby NWS station via
+-- api.weather.gov/points/{lat},{lon}/stations, and stores the answer here: the mapping is
+-- geographic and effectively permanent, so re-asking every cycle would double the request count
+-- against a rate-limited public API for no benefit.
+--
+-- station_id NULL is a NEGATIVE cache: it means "the API was asked and reported no nearby
+-- station". The row's existence is what distinguishes that from "never asked" (no row at all),
+-- which is why the reader is a TVF returning 0 or 1 rows rather than a scalar function.
+--
+-- Called by: WeatherService (C#) Data/WeatherGovStationRepository, via
+--            dbo.fn_weather_gov_station (read) and dbo.sp_save_weather_gov_station (write).
+CREATE TABLE dbo.weather_gov_station
+(
+    weather_gov_station_id int NOT NULL identity(1,1),
+    mli                    varchar(64) NOT NULL,   -- WaterStation.MLI
+    station_id             varchar(16) NULL,       -- resolved NWS call sign; NULL = none nearby
+    lat                    float NOT NULL,         -- coordinate the resolution was made from
+    lon                    float NOT NULL,
+    stamp                  datetime2 NOT NULL      -- when the answer was obtained (UTC)
+)
+GO
+ALTER TABLE dbo.weather_gov_station ADD CONSTRAINT DEF_weather_gov_station_stamp DEFAULT (GETUTCDATE()) FOR stamp
+GO
+ALTER TABLE dbo.weather_gov_station ADD CONSTRAINT PK_weather_gov_station PRIMARY KEY CLUSTERED (weather_gov_station_id ASC) ON [PRIMARY]
+GO
+ALTER TABLE dbo.weather_gov_station ADD CONSTRAINT UK_weather_gov_station_mli UNIQUE (mli)
+GO
+
 ALTER TABLE [dbo].[ows_meteo]  WITH CHECK ADD  CONSTRAINT [FK_ows_meteo_id] FOREIGN KEY([WaterStation_id])
     REFERENCES [dbo].[WaterStation] ([id])
 GO

@@ -4953,3 +4953,22 @@ RETURN
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+-- Reads the cached NWS station for a water gauge (see dbo.weather_gov_station).
+-- Returns 0 rows when the coordinate has never been resolved, and 1 row with a NULL station_id
+-- when it was resolved and no nearby station exists. The caller needs to tell those apart, which
+-- a scalar function cannot express.
+-- Called by: WeatherService (C#) Data/WeatherGovStationRepository.FindAsync
+------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_weather_gov_station' AND type = 'IF')
+    DROP FUNCTION dbo.fn_weather_gov_station
+GO
+CREATE FUNCTION dbo.fn_weather_gov_station(@mli varchar(64))
+RETURNS TABLE
+AS
+RETURN
+    SELECT mli, station_id, lat, lon, stamp
+    FROM dbo.weather_gov_station
+    WHERE mli = @mli
+GO
