@@ -4558,3 +4558,31 @@ BEGIN
         VALUES (@mli, @station_id, @lat, @lon);
 END
 GO
+
+------------------------------------------------------------------------------
+-- Records whether a provider could serve a gauge (see dbo.weather_station_coverage).
+-- Upsert on (mli, provider): the flag is the current fact, so a gap that later resolves clears
+-- rather than accumulating history.
+-- Called by: WeatherService (C#) Data/WeatherStationCoverageRepository.SaveAsync, from the
+--            station processors as each station is attempted.
+------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_save_weather_station_coverage' AND type = 'P')
+    DROP PROCEDURE dbo.sp_save_weather_station_coverage
+GO
+CREATE PROCEDURE dbo.sp_save_weather_station_coverage
+      @mli      varchar(64)
+    , @provider varchar(32)
+    , @covered  bit
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.weather_station_coverage
+       SET covered = @covered, stamp = GETUTCDATE()
+     WHERE mli = @mli AND provider = @provider;
+
+    IF @@ROWCOUNT = 0
+        INSERT dbo.weather_station_coverage (mli, provider, covered)
+        VALUES (@mli, @provider, @covered);
+END
+GO
