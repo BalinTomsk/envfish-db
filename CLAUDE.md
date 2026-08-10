@@ -272,6 +272,36 @@ GO
 
 ## Changelog
 
+- 2026-08-10: **Fix: `dbo.TR_insWaterData` broke ingestion for every BRAND-NEW water station.**
+  (`script01_createTable.sql`.) The trigger MERGEs each new `dbo.WaterData` reading into
+  `dbo.CurrentWaterState` (the "latest reading per station" cache). `CurrentWaterState.sid` is
+  `bigint NOT NULL`, and the `WHEN MATCHED` branch set it — but the `WHEN NOT MATCHED` insert column
+  list **omitted `sid`**, so the very first reading for a station that had no cache row yet died with
+  `Cannot insert the value NULL into column 'sid' … column does not allow nulls`. Invisible in normal
+  operation precisely because every long-standing station already has a `CurrentWaterState` row and
+  therefore takes the MATCHED path; it only bites when a station is onboarded, which is exactly when
+  a silent ingestion failure is hardest to notice. The `cte` already selected `w.sid` from
+  `dbo.WaterStation`, so the fix is to carry it into the insert. New
+  `unit_test@WaterDataTrigger.sql` — 3 tests, each its own transaction (new station gets a state row
+  carrying `WaterStation.sid`; the inserted row maps the measurements the MATCHED branch does, ph
+  stored `/10` and the source's `-999` "no reading" discharge nulled; existing state row still
+  updated in place with sid re-stamped, the no-regression baseline). **Confirmed FAILING first** —
+  TEST 1 and 2 raised the exact NULL-`sid` error while TEST 3 passed — then all green: **398 PASS /
+  0 FAIL** suite-wide via `autorun.bat` (`crcstate` updated). Side effect: the workaround seeds in
+  `unit_test@WeatherForecastToDay.sql` (which pre-inserted a `CurrentWaterState` row purely to reach
+  the MATCHED path) are no longer needed and were removed. **Applied to prod 2026-08-10** (one
+  committed SqlClient txn, DDL extracted verbatim from `script01_createTable.sql` and GO-split into
+  2 batches: conditional `DROP TRIGGER` + `CREATE TRIGGER`). The live definition was byte-identical
+  to the pre-fix source beforehand, so no prod drift was overwritten. Exposure at the time: **all
+  11,720 stations already had a `CurrentWaterState` row**, i.e. nothing was broken yet and the
+  MATCHED-only path meant the change could not disturb existing data — the defect was purely latent,
+  waiting for the next onboarded station. Smoke-tested live in **rolled-back** transactions (nothing
+  persisted, verified 0 leftovers): a brand-new station with no cache row got its first reading
+  (1 row, `sid` = the station's, ph 71 → 7.1, temp 17), and a real station (`01010000`) still updated
+  in place with its `sid` preserved. **Prod schema drift found while doing this** (fresh builds
+  differ, so scripted inserts against prod need care): `CurrentWaterState.sid` is `int` not `bigint`;
+  `WaterStation.sid` is an **IDENTITY** column; `WaterStation.id` has **no `NEWSEQUENTIALID()`
+  default**. None of these affect the fix — `WaterStation.sid` is `int`, so `src.sid` fits either way.
 - 2026-08-05: **`dbo.fn_forecast_plot_json` gained a `lakename` member — plus two long-missing
   functions restored to the schema scripts.** (`script02_Funct.sql`.) The plot document already
   carried `lakeid` but not the water body's name, so `Forecast/Plot.aspx` could only name the

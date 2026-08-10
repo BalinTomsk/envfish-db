@@ -2023,8 +2023,10 @@ WITH cte AS
         , trg.elevation   = ISNULL(src.elevation,   trg.elevation) 
         , trg.sid         = src.sid 
     When Not Matched Then
-    Insert (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation) 
-        Values (src.mli, src.stamp, src.temperature, src.discharge, src.turbidity, src.oxygen, CAST(src.ph AS float) / 10.0, src.elevation);
+    -- first ever reading for a station: sid is NOT NULL on CurrentWaterState, so it must be
+    -- carried over from WaterStation here too - omitting it breaks ingestion for a new station
+    Insert (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation, sid)
+        Values (src.mli, src.stamp, src.temperature, src.discharge, src.turbidity, src.oxygen, CAST(src.ph AS float) / 10.0, src.elevation, src.sid);
 END
 GO
 --------------------------------------------------------------------------------------------
