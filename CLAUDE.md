@@ -272,6 +272,28 @@ GO
 
 ## Changelog
 
+- 2026-08-10: **Fix: `dbo.vwWeatherForecastToDay` permanently stranded any station whose weather
+  collection had lapsed — and the schema script had drifted from prod.** (`script01_createView.sql`.)
+  The weather worker's work list required `dbo.ows_meteo.stamp` to fall inside a 15-day window,
+  commented "only if water data exists". **`ows_meteo.stamp` is not a water-data fact**: the row is
+  seeded by `trg_WaterStation_AI_ows_meteo` and thereafter `stamp` is written *only by the weather
+  worker itself* (`WeatherDataRepository`: `UPDATE dbo.ows_meteo SET …, stamp = GETDATE()`). So the
+  predicate meant "we collected weather here recently" — self-referential, and inverted for a work
+  list: once a station fell out of the window **nothing could ever move its stamp again**, so it was
+  excluded forever while its water data kept flowing. Measured on prod: **46 CA + 12 US** fish-bearing
+  stations frozen out, 57 of them stamped `2021-03-01` (one at `1975-01-01`) with `ows IS NULL`, and
+  **43 of the CA ones carrying perfectly current water data**. Fixed by dropping the predicate so
+  **fish presence alone decides**; the now-unused `LEFT JOIN dbo.ows_meteo` went with it (`mli` is
+  uniquely indexed there, so the join never affected cardinality). Deliberately **not** re-expressed
+  as `EXISTS (dbo.WaterData)` — that reading of the old comment would DROP 81 CA + 157 US stations
+  that are collected today but hold no `WaterData` rows. `unit_test@WeatherForecastToDay.sql` — 4
+  tests, each its own transaction (stale `ows_meteo` no longer excludes; actively collected station
+  still listed; fish but no water data → still listed; water data but no fish → excluded). Confirmed
+  **FAILING first** (TEST 1 → 0 rows), then **402 PASS / 0 FAIL** suite-wide via `autorun.bat`
+  (`crcstate` updated). **Prod already had this fix applied live; the schema script did not** — so a
+  fresh build still carried the bug and would have reintroduced it on the next deploy. The script now
+  matches `OBJECT_DEFINITION` on prod **verbatim** (verified line-by-line), and this entry is the
+  missing record of that change. **No prod DDL was run for this entry.**
 - 2026-08-10: **Fix: `dbo.TR_insWaterData` broke ingestion for every BRAND-NEW water station.**
   (`script01_createTable.sql`.) The trigger MERGEs each new `dbo.WaterData` reading into
   `dbo.CurrentWaterState` (the "latest reading per station" cache). `CurrentWaterState.sid` is

@@ -1114,17 +1114,34 @@ GO
 -- select * from [vwWeatherForecastToDay] where country='US'
 -- Used in OWMService to get list of waterstations not having current wheather data
 -- wheater collectd only for water  bodies with fish and water data
-CREATE VIEW [dbo].[vwWeatherForecastToDay] 
+--
+-- Callers: efcs-backend service/weather WeatherService.Data.WeatherStationRepository
+-- (FindSupportedStationsAsync / CountSupportedStationsAsync), and the Java weather service.
+--
+-- THE CRITERION IS FISH: a station is collected when its water body has >= 1 assigned species.
+-- There is deliberately no water-data condition.
+--
+-- It used to also require a 15-day window on dbo.ows_meteo.stamp, commented "only if water data
+-- exists". That column is NOT a water-data fact: ows_meteo rows are seeded by
+-- trg_WaterStation_AI_ows_meteo and thereafter stamp is only ever written by the WEATHER worker
+-- itself (WeatherDataRepository: "UPDATE dbo.ows_meteo SET ..., stamp = GETDATE()"). The predicate
+-- was therefore self-referential -- it really meant "we collected weather here recently" -- so a
+-- station that fell outside the window could never re-enter, because nothing else could ever move
+-- its stamp. On prod that had frozen out 46 CA + 12 US fish-bearing stations, still stamped
+-- 2021-03-01 with ows IS NULL, 43 of the CA ones with perfectly current water data.
+--
+-- Note this is intentionally NOT re-expressed as "EXISTS (dbo.WaterData)": that reading of the old
+-- comment would DROP 81 CA + 157 US stations that are being collected today but hold no WaterData
+-- rows. Fish presence is the rule; water data does not gate it.
+-- Covered by UNIT_TESTS/unit_test@WeatherForecastToDay.sql.
+CREATE VIEW [dbo].[vwWeatherForecastToDay]
 WITH SCHEMABINDING
 AS
     WITH cte AS
     (
-        SELECT w.mli, w.lat, w.lon, w.country, w.state, sid, w.stamp, w.backoffstate
-        FROM dbo.WaterStation w 
-        LEFT JOIN dbo.ows_meteo o ON o.mli=w.mli 
+        SELECT w.mli, w.lat, w.lon, w.country, w.state, w.sid, w.stamp, w.backoffstate
+        FROM dbo.WaterStation w
         WHERE EXISTS (select 1 from dbo.lake_fish f where f.lake_Id = w.lakeId)  -- if water body has fishes
-            AND CAST(o.stamp AS DATE) BETWEEN DATEADD( DAY, -15, CAST(GETDATE() AS DATE)) 
-                                      AND CAST( GETDATE() AS DATE) -- only if water data exists
     )
     SELECT mli, lat, lon, country, state, sid, stamp, 1 AS flag FROM 
     (
