@@ -2996,6 +2996,53 @@ BEGIN
 END
 GO
 
+-- PageCountDaily: tracks daily page visit counts for the top 20 most visited pages.
+-- One row per UTC day; each column represents cumulative visits for that page on that day.
+-- Column mapping: 1=home, 2=news, 3=species, 4=forecast, 5–20=other high-traffic pages.
+-- Used by: FishTracker analytics/reporting, Real-time dashboard.
+
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'PageCountDaily' AND xtype = 'U')
+    DROP TABLE dbo.PageCountDaily
+GO
+
+CREATE TABLE dbo.PageCountDaily
+(
+    page_count_date                DATETIME2        NOT NULL,  -- UTC date (midnight) of the visit counts; PK
+    home                           BIGINT           NOT NULL DEFAULT 0,  -- Default.aspx
+    news                           BIGINT           NOT NULL DEFAULT 0,  -- News.aspx
+    species                        BIGINT           NOT NULL DEFAULT 0,  -- Resources/wfFishViewer.aspx
+    forecast                       BIGINT           NOT NULL DEFAULT 0,  -- Forecast/Planning.aspx
+    rivers                         BIGINT           NOT NULL DEFAULT 0,  -- Resources/RscRiverList.aspx (rivers)
+    fishing_log                    BIGINT           NOT NULL DEFAULT 0,  -- Resources/wfRiverViewFishing.aspx
+    regulations                    BIGINT           NOT NULL DEFAULT 0,  -- Forecast/Regulations.aspx
+    weather                        BIGINT           NOT NULL DEFAULT 0,  -- Forecast/Science.aspx (weather)
+    map_pages                      BIGINT           NOT NULL DEFAULT 0,  -- Forecast map pages
+    login                          BIGINT           NOT NULL DEFAULT 0,  -- Account/Login.aspx
+    profile                        BIGINT           NOT NULL DEFAULT 0,  -- Account/Profile.aspx
+    register                       BIGINT           NOT NULL DEFAULT 0,  -- Account registration pages
+    watersheds                     BIGINT           NOT NULL DEFAULT 0,  -- Editor/WindshieldListCA.aspx
+    search                         BIGINT           NOT NULL DEFAULT 0,  -- Search results
+    lake_editor                    BIGINT           NOT NULL DEFAULT 0,  -- Editor/LakeEditor.aspx
+    fish_editor                    BIGINT           NOT NULL DEFAULT 0,  -- Editor/FishEditor.aspx
+    news_editor                    BIGINT           NOT NULL DEFAULT 0,  -- Editor/AddNews.aspx
+    water_stations                 BIGINT           NOT NULL DEFAULT 0,  -- Resources/wfRiverViewWeather.aspx
+    catch_memo                     BIGINT           NOT NULL DEFAULT 0,  -- Catch log pages
+    api_forecast                   BIGINT           NOT NULL DEFAULT 0,  -- WebService/Plot endpoints
+    CONSTRAINT PK_PageCountDaily PRIMARY KEY CLUSTERED (page_count_date)
+);
+GO
+
+-- Index on date for fast range queries (last N days)
+CREATE NONCLUSTERED INDEX IX_PageCountDaily_DateDesc
+    ON dbo.PageCountDaily (page_count_date DESC);
+GO
+
+-- Reference/mapping for page columns (stored in global_configuration for runtime lookup)
+IF NOT EXISTS (SELECT 1 FROM dbo.global_configuration WHERE config_attribute = 'page_counter_mapping')
+   INSERT INTO dbo.global_configuration (config_attribute, config_value, global_config_type, global_configuration_sysflag)
+   VALUES ('page_counter_mapping', '{"home":"Default.aspx","news":"News.aspx","species":"Resources/wfFishViewer.aspx","forecast":"Forecast/Planning.aspx","rivers":"Resources/RscRiverList.aspx","fishing_log":"Resources/wfRiverViewFishing.aspx","regulations":"Forecast/Regulations.aspx","weather":"Forecast/Science.aspx","map_pages":"Forecast/map","login":"Account/Login.aspx","profile":"Account/Profile.aspx","register":"Account/Register","watersheds":"Editor/WindshieldListCA.aspx","search":"Search","lake_editor":"Editor/LakeEditor.aspx","fish_editor":"Editor/FishEditor.aspx","news_editor":"Editor/AddNews.aspx","water_stations":"Resources/wfRiverViewWeather.aspx","catch_memo":"Catch_Log","api_forecast":"WebService/Plot"}', 'json', 1);
+GO
+
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
 

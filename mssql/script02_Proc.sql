@@ -4586,3 +4586,81 @@ BEGIN
         VALUES (@mli, @provider, @covered);
 END
 GO
+
+------------------------------------------------------------------------------
+-- sp_upsert_page_count_daily: upsert daily page visit counters for the top 20 pages.
+-- If the date already exists, add to existing counters; otherwise insert a new row.
+-- Called by: FishTracker Models/PageCounter.cs (PageCounter.FlushToDatabase).
+------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_upsert_page_count_daily' AND type = 'P')
+    DROP PROCEDURE dbo.sp_upsert_page_count_daily
+GO
+CREATE PROCEDURE dbo.sp_upsert_page_count_daily
+      @page_count_date DATETIME2
+    , @home            BIGINT = 0
+    , @news            BIGINT = 0
+    , @species         BIGINT = 0
+    , @forecast        BIGINT = 0
+    , @rivers          BIGINT = 0
+    , @fishing_log     BIGINT = 0
+    , @regulations     BIGINT = 0
+    , @weather         BIGINT = 0
+    , @map_pages       BIGINT = 0
+    , @login           BIGINT = 0
+    , @profile         BIGINT = 0
+    , @register        BIGINT = 0
+    , @watersheds      BIGINT = 0
+    , @search          BIGINT = 0
+    , @lake_editor     BIGINT = 0
+    , @fish_editor     BIGINT = 0
+    , @news_editor     BIGINT = 0
+    , @water_stations  BIGINT = 0
+    , @catch_memo      BIGINT = 0
+    , @api_forecast    BIGINT = 0
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Convert input datetime to UTC midnight (date only)
+    DECLARE @date DATE = CAST(@page_count_date AS DATE);
+
+    -- Upsert: update existing row or insert new one
+    UPDATE dbo.PageCountDaily
+    SET
+        home            = home + @home,
+        news            = news + @news,
+        species         = species + @species,
+        forecast        = forecast + @forecast,
+        rivers          = rivers + @rivers,
+        fishing_log     = fishing_log + @fishing_log,
+        regulations     = regulations + @regulations,
+        weather         = weather + @weather,
+        map_pages       = map_pages + @map_pages,
+        login           = login + @login,
+        profile         = profile + @profile,
+        register        = register + @register,
+        watersheds      = watersheds + @watersheds,
+        search          = search + @search,
+        lake_editor     = lake_editor + @lake_editor,
+        fish_editor     = fish_editor + @fish_editor,
+        news_editor     = news_editor + @news_editor,
+        water_stations  = water_stations + @water_stations,
+        catch_memo      = catch_memo + @catch_memo,
+        api_forecast    = api_forecast + @api_forecast
+    WHERE page_count_date = @date;
+
+    -- If no row was updated, insert a new one
+    IF @@ROWCOUNT = 0
+    BEGIN
+        INSERT INTO dbo.PageCountDaily (
+            page_count_date, home, news, species, forecast, rivers, fishing_log,
+            regulations, weather, map_pages, login, profile, register, watersheds,
+            search, lake_editor, fish_editor, news_editor, water_stations, catch_memo, api_forecast
+        ) VALUES (
+            @date, @home, @news, @species, @forecast, @rivers, @fishing_log,
+            @regulations, @weather, @map_pages, @login, @profile, @register, @watersheds,
+            @search, @lake_editor, @fish_editor, @news_editor, @water_stations, @catch_memo, @api_forecast
+        );
+    END
+END
+GO
