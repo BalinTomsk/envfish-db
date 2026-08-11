@@ -315,6 +315,13 @@ GO
   fresh build still carried the bug and would have reintroduced it on the next deploy. The script now
   matches `OBJECT_DEFINITION` on prod **verbatim** (verified line-by-line), and this entry is the
   missing record of that change. **No prod DDL was run for this entry.**
+  **Caveat for the collectors — recovering the stations pushed CA past its per-pass cap.**
+  `WeatherService.Data.WeatherStationRepository` caps one pass at `DefaultStationLimit = 1400` (CA)
+  and `UsWeatherGovStationLimit = 900` (US). The fix took CA eligible from **1464 → 1510** (US
+  2212 → 2224), so **1510 > 1400** and a single cycle can no longer cover every CA station. This is
+  not a stall: the view's `ORDER BY NEWID()` rotates the selection, so the recovered stations fill in
+  over a couple of cycles instead of instantly. Raise `DefaultStationLimit` if same-cycle coverage is
+  required.
 - 2026-08-10: **Fix: `dbo.TR_insWaterData` broke ingestion for every BRAND-NEW water station.**
   (`script01_createTable.sql`.) The trigger MERGEs each new `dbo.WaterData` reading into
   `dbo.CurrentWaterState` (the "latest reading per station" cache). `CurrentWaterState.sid` is
