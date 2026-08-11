@@ -272,6 +272,27 @@ GO
 
 ## Changelog
 
+- 2026-08-10: **Fix: all 6 tests in `unit_test@LakeState.sql` were INVISIBLE in the run report.**
+  (No schema change — test file only.) The file printed success as `PRINT 'PASSED ' + @test_name`, and
+  `averify.py` **strips every line containing the literal `PASSED`** when building `cleaned.txt` (that
+  filter exists to drop sqlcmd noise). So the `Lake_State` CHECK-constraint coverage ran and passed on
+  every single run while contributing **zero** lines to the report — it was the only file in the suite
+  contributing 0 PASS lines, and a regression in those constraints would have been silent. This is the
+  exact trap documented under [Structure unit tests](#structure-unit-tests); the file predated the rule.
+  Converted to `TEST n PASS [Nms]: …`, numbering matched to the existing `TestLS1`–`TestLS6` transaction
+  names / `@test_name` values, with the standard
+  `DATEDIFF(millisecond, @tStart, SYSUTCDATETIME())` timing (the file had **none**).
+  **The FAIL branches were a second instance of the same class of bug**: `RAISERROR ('FAILED: %s …')`
+  survives the filter, but carries no test number and doesn't match the documented form — now
+  `TEST n FAIL [%dms]: …`. Two latent defects fixed while there: (a) assertions were
+  `IF @result1 <> 1 RAISERROR ELSE PRINT`, but `@result1` is NULL whenever the `CATCH` fired, so the
+  comparison was NULL and **neither branch ran** — a genuinely broken test printed nothing rather than
+  failing; now `IF <success> PRINT ELSE RAISERROR` with `@result1 int = -1` / `@threw int = 0`
+  initialised at declaration. (b) `@threw` had to stop being `bit`: **`bit` is not a legal `RAISERROR`
+  substitution type**, and substitution args must be plain variables or literals — an inline
+  `ISNULL(@result1,-1)` fails to compile with `Incorrect syntax near 'ISNULL'`. Suite went
+  **402 → 408 PASS / 0 FAIL** via `autorun.bat`, the delta being exactly these 6 and no other output
+  change (`crcstate` updated). **No prod DDL — nothing here touches the database.**
 - 2026-08-10: **Fix: `dbo.vwWeatherForecastToDay` permanently stranded any station whose weather
   collection had lapsed — and the schema script had drifted from prod.** (`script01_createView.sql`.)
   The weather worker's work list required `dbo.ows_meteo.stamp` to fall inside a 15-day window,

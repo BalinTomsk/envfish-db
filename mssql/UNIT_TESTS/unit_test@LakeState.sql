@@ -14,8 +14,11 @@ PRINT '-------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------------
 BEGIN TRAN TestLS1
 DECLARE @test_name SYSNAME = 'TestLS1 [Lake_State] valid in-range row is accepted';
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @result1 int = -1;   -- initialised before TRY so it still has a value if CATCH fires
 
 BEGIN TRY  SET NOCOUNT ON;
+    SET @tStart = SYSUTCDATETIME();
     -- 1. prepare data for unit test
     INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES ('f1f1f1f1-0000-0000-0000-000000000001', 2, N'River', 'ABCDE');
 
@@ -25,26 +28,29 @@ BEGIN TRY  SET NOCOUNT ON;
         VALUES (6, 'f1f1f1f1-0000-0000-0000-000000000001', 7.2, 0.05, 596, 955, 449, 372, 90
         , 11, 482, 1.5, 9.1, 6, 1.2, 0.8, 18, -5);
 
-    DECLARE @result1 int = (SELECT COUNT(*) FROM Lake_State WHERE lake_id = 'f1f1f1f1-0000-0000-0000-000000000001' AND [month] = 6);
+    SET @result1 = (SELECT COUNT(*) FROM Lake_State WHERE lake_id = 'f1f1f1f1-0000-0000-0000-000000000001' AND [month] = 6);
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE() AS ErrorState,
                @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage;
 END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-    IF @result1 <> 1
-       RAISERROR ('FAILED: %s valid row must be accepted %d', 16, -1, @test_name, @result1)
+    IF @result1 = 1
+        PRINT 'TEST 1 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: row with every measurement in range is accepted'
     ELSE
-        PRINT 'PASSED ' + @test_name
+       RAISERROR ('TEST 1 FAIL [%dms]: valid in-range row must be accepted, got %d rows', 16, -1, @ElapsedMs, @result1)
 IF XACT_STATE() <> 0 ROLLBACK TRAN TestLS1
 GO
 
 ----------------------------------------------------------------------------------------------------------
 BEGIN TRAN TestLS2
 DECLARE @test_name SYSNAME = 'TestLS2 [Lake_State] water_degree > 100 is rejected';
-DECLARE @threw bit = 0;
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @threw int = 0;
 
 SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
 INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES ('f1f1f1f1-0000-0000-0000-000000000001', 2, N'River', 'ABCDE');
 BEGIN TRY
     INSERT INTO Lake_State ([month], lake_id, water_degree) VALUES (1, 'f1f1f1f1-0000-0000-0000-000000000001', 150);
@@ -52,20 +58,23 @@ END TRY
 BEGIN CATCH
     SET @threw = 1;   -- swallow the expected CHECK violation (do not SELECT it)
 END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-    IF @threw <> 1
-       RAISERROR ('FAILED: %s water_degree=150 must be rejected', 16, -1, @test_name)
+    IF @threw = 1
+        PRINT 'TEST 2 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: water_degree = 150 is rejected by the range CHECK'
     ELSE
-        PRINT 'PASSED ' + @test_name
+       RAISERROR ('TEST 2 FAIL [%dms]: water_degree = 150 must be rejected', 16, -1, @ElapsedMs)
 IF XACT_STATE() <> 0 ROLLBACK TRAN TestLS2
 GO
 
 ----------------------------------------------------------------------------------------------------------
 BEGIN TRAN TestLS3
 DECLARE @test_name SYSNAME = 'TestLS3 [Lake_State] PH outside 0..14 is rejected';
-DECLARE @threw bit = 0;
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @threw int = 0;
 
 SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
 INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES ('f1f1f1f1-0000-0000-0000-000000000001', 2, N'River', 'ABCDE');
 BEGIN TRY
     INSERT INTO Lake_State ([month], lake_id, PH) VALUES (1, 'f1f1f1f1-0000-0000-0000-000000000001', 20);
@@ -73,44 +82,51 @@ END TRY
 BEGIN CATCH
     SET @threw = 1;
 END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-    IF @threw <> 1
-       RAISERROR ('FAILED: %s PH=20 must be rejected', 16, -1, @test_name)
+    IF @threw = 1
+        PRINT 'TEST 3 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: PH = 20 is rejected by the 0..14 range CHECK'
     ELSE
-        PRINT 'PASSED ' + @test_name
+       RAISERROR ('TEST 3 FAIL [%dms]: PH = 20 must be rejected', 16, -1, @ElapsedMs)
 IF XACT_STATE() <> 0 ROLLBACK TRAN TestLS3
 GO
 
 ----------------------------------------------------------------------------------------------------------
 BEGIN TRAN TestLS4
 DECLARE @test_name SYSNAME = 'TestLS4 [Lake_State] NULL measurements are allowed';
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @result1 int = -1;
 
 BEGIN TRY  SET NOCOUNT ON;
+    SET @tStart = SYSUTCDATETIME();
     INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES ('f1f1f1f1-0000-0000-0000-000000000001', 2, N'River', 'ABCDE');
 
     -- only the required key columns; all measurements left NULL
     INSERT INTO Lake_State ([month], lake_id) VALUES (3, 'f1f1f1f1-0000-0000-0000-000000000001');
 
-    DECLARE @result1 int = (SELECT COUNT(*) FROM Lake_State WHERE lake_id = 'f1f1f1f1-0000-0000-0000-000000000001' AND [month] = 3);
+    SET @result1 = (SELECT COUNT(*) FROM Lake_State WHERE lake_id = 'f1f1f1f1-0000-0000-0000-000000000001' AND [month] = 3);
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE() AS ErrorState,
                @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage;
 END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-    IF @result1 <> 1
-       RAISERROR ('FAILED: %s NULL measurements must be accepted %d', 16, -1, @test_name, @result1)
+    IF @result1 = 1
+        PRINT 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: row with all measurements NULL is accepted'
     ELSE
-        PRINT 'PASSED ' + @test_name
+       RAISERROR ('TEST 4 FAIL [%dms]: NULL measurements must be accepted, got %d rows', 16, -1, @ElapsedMs, @result1)
 IF XACT_STATE() <> 0 ROLLBACK TRAN TestLS4
 GO
 
 ----------------------------------------------------------------------------------------------------------
 BEGIN TRAN TestLS5
 DECLARE @test_name SYSNAME = 'TestLS5 [Lake_State] negative concentration (Oxygen) is rejected';
-DECLARE @threw bit = 0;
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @threw int = 0;
 
 SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
 INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES ('f1f1f1f1-0000-0000-0000-000000000001', 2, N'River', 'ABCDE');
 BEGIN TRY
     INSERT INTO Lake_State ([month], lake_id, Oxygen) VALUES (1, 'f1f1f1f1-0000-0000-0000-000000000001', -5);
@@ -118,25 +134,29 @@ END TRY
 BEGIN CATCH
     SET @threw = 1;
 END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-    IF @threw <> 1
-       RAISERROR ('FAILED: %s Oxygen=-5 must be rejected', 16, -1, @test_name)
+    IF @threw = 1
+        PRINT 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: negative concentration Oxygen = -5 is rejected'
     ELSE
-        PRINT 'PASSED ' + @test_name
+       RAISERROR ('TEST 5 FAIL [%dms]: Oxygen = -5 must be rejected', 16, -1, @ElapsedMs)
 IF XACT_STATE() <> 0 ROLLBACK TRAN TestLS5
 GO
 
 ----------------------------------------------------------------------------------------------------------
 BEGIN TRAN TestLS6
 DECLARE @test_name SYSNAME = 'TestLS6 [Lake_State] sub-zero air_degree is allowed, extreme is rejected';
-DECLARE @threw bit = 0;
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @threw int = 0;
+DECLARE @result1 int = -1;
 
 BEGIN TRY  SET NOCOUNT ON;
+    SET @tStart = SYSUTCDATETIME();
     INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES ('f1f1f1f1-0000-0000-0000-000000000001', 2, N'River', 'ABCDE');
 
     -- valid sub-zero air temperature accepted
     INSERT INTO Lake_State ([month], lake_id, air_degree) VALUES (1, 'f1f1f1f1-0000-0000-0000-000000000001', -40);
-    DECLARE @result1 int = (SELECT COUNT(*) FROM Lake_State WHERE lake_id = 'f1f1f1f1-0000-0000-0000-000000000001' AND [month] = 1);
+    SET @result1 = (SELECT COUNT(*) FROM Lake_State WHERE lake_id = 'f1f1f1f1-0000-0000-0000-000000000001' AND [month] = 1);
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE() AS ErrorState,
@@ -150,10 +170,11 @@ END TRY
 BEGIN CATCH
     SET @threw = 1;
 END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-    IF @result1 <> 1 OR @threw <> 1
-       RAISERROR ('FAILED: %s air -40 accept=%d, air -300 reject expected', 16, -1, @test_name, @result1)
+    IF @result1 = 1 AND @threw = 1
+        PRINT 'TEST 6 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: air_degree = -40 is accepted while -300 is rejected'
     ELSE
-        PRINT 'PASSED ' + @test_name
+       RAISERROR ('TEST 6 FAIL [%dms]: air_degree -40 must be accepted (got %d rows) and -300 rejected (threw=%d)', 16, -1, @ElapsedMs, @result1, @threw)
 IF XACT_STATE() <> 0 ROLLBACK TRAN TestLS6
 GO
