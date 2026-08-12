@@ -1956,6 +1956,12 @@ CREATE TABLE dbo.UScode
     unit varchar(64) NULL
 )
 GO
+-- One row per (name, unit). SQL Server treats NULLs as equal in a UNIQUE constraint, which is what
+-- is wanted here: a measurement with no unit must register once, not once per push. Added 2026-08-11
+-- after sp_push_us_water_data's LIKE-based existence check let the table grow to 9,694 rows for 279
+-- distinct pairs; the constraint is what makes a recurrence impossible rather than merely unlikely.
+ALTER TABLE dbo.UScode ADD CONSTRAINT UK_UScode_name_unit UNIQUE (name, unit)
+GO
 
 -------------------------------------------------------------------------------------------------------
 ------------------------------keep last 7 days water state--------------------------------
