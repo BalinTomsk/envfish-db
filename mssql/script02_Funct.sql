@@ -3606,6 +3606,28 @@ AS
 GO
 
 -----------------------------------------------------------------------------------------------------------------------------------------------
+-- dbo.fn_web_service_plot_json / dbo.fn_web_service_plot_json2 RETIRED (2026-08-11).
+-- Both were 2015 objects that lived only on production - they were never in these scripts.
+-- fn_web_service_plot_json concatenated the `line` column of dbo.fn_web_service_plot, a function
+-- that exists in no database: calling it on production raised
+--     Invalid object name 'dbo.fn_web_service_plot'.
+-- That table-valued function was renamed dbo.fn_forecast_plot in 2020 and the wrapper was never
+-- updated. Repointing it would revive nothing: no caller in the database or in any repository, and
+-- the live JSON endpoint (Forecast/Plot.aspx.cs, WebService/Plot/Default.aspx.cs) calls
+-- dbo.fn_forecast_plot_json below, which is self-contained.
+-- fn_web_service_plot_json2 was scaffolding - it returned a hard-coded jQuery-callback test string.
+-- The DROPs are here so an existing database sheds them; a fresh build never had them.
+--
+-- NOTE dbo.fn_forecast_plot (the 2020 rename) is also production-only and now has no caller either,
+-- but unlike these two it resolves and is not broken, so it was deliberately left in place.
+ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_web_service_plot_json' AND xtype = 'FN')
+    DROP function dbo.fn_web_service_plot_json ;
+GO
+ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_web_service_plot_json2' AND xtype = 'FN')
+    DROP function dbo.fn_web_service_plot_json2 ;
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
  IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_forecast_plot_json' AND xtype = 'FN')
     DROP function dbo.fn_forecast_plot_json ;

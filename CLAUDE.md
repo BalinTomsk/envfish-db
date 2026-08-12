@@ -272,6 +272,26 @@ GO
 
 ## Changelog
 
+- 2026-08-11: **Retired `dbo.fn_web_service_plot_json` + `dbo.fn_web_service_plot_json2` — the last
+  broken reference on prod.** (`script02_Funct.sql`.) Both were 2015 objects living **only on
+  production**; neither was ever in these scripts, so a fresh build never had them and only prod was
+  affected. `fn_web_service_plot_json` concatenated the `line` column of `dbo.fn_web_service_plot`, a
+  function that exists in no database — calling it live raised **`Invalid object name
+  'dbo.fn_web_service_plot'`**, which is the proof it was dead rather than merely suspicious. That TVF
+  was **renamed `dbo.fn_forecast_plot` in 2020** and the wrapper never followed. Repointing it would
+  have revived nothing: no caller in the database and none in any repository, and the live JSON
+  endpoint (`Forecast/Plot.aspx.cs`, `WebService/Plot/Default.aspx.cs`) calls
+  **`dbo.fn_forecast_plot_json`**, which is self-contained and does **not** go through
+  `fn_forecast_plot`. `fn_web_service_plot_json2` was scaffolding — it returned a hard-coded
+  jQuery-callback test string. Both are now `IF EXISTS … DROP` guards in `script02_Funct.sql` (the
+  pattern used for the other retirements) and are added to `unit_test@SchemaReferences.sql` TEST 8.
+  **`dbo.fn_forecast_plot` (the 2020 rename) is also prod-only and now has no caller either, but it
+  resolves and is not broken, so it was deliberately left alone.**
+  **Applied to prod 2026-08-11** (one committed SqlClient transaction, both drops). **Prod's dangling
+  -reference list is now a single Microsoft-owned entry** (`sp_upgraddiagrams → dtproperties`, part of
+  database-diagram support) — every reference in our own code resolves. Verified after: the functions
+  are gone, `fn_forecast_plot_json` still returns a real document, and `WebService/Plot` +
+  `Forecast/Planning.aspx` + the homepage are all HTTP 200. **420 PASS / 0 FAIL** locally, unchanged.
 - 2026-08-11: **Fix: `dbo.sp_push_us_water_data` re-registered every measurement on every push —
   `dbo.UScode` held 9,694 rows for 279 distinct pairs.** (`script02_Proc.sql`.) The catalogue check was
   `IF NOT EXISTS (SELECT * FROM UScode WHERE name like @name AND unit LIKE @unit)`, and `LIKE` is the
