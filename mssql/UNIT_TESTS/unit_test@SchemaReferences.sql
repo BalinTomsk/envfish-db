@@ -381,7 +381,10 @@ GO
 --         dbo.sp_weather_forecast16 - could never insert (omitted 3 NOT NULL columns of
 --           weather_Forecast) and called a function that exists in no database.
 --         dbo.Parking_Spot - superseded by dbo.Spot; its only reader was the DELETE inside
---           sp_del_river, removed with it (still present on production, dropped separately).
+--           sp_del_river, removed with it.
+--         dbo.fn_web_service_plot_json - wrapped dbo.fn_web_service_plot, renamed away in 2020;
+--           calling it on production raised Invalid object name. fn_web_service_plot_json2 was
+--           scaffolding returning a hard-coded string. Both production-only, no callers.
 -- ---------------------------------------------------------------------------------------
 BEGIN TRAN Test08RetiredObjectsStayGone
     DECLARE @test_name sysname = N'Test08RetiredObjectsStayGone [schema] : retired objects are absent'
@@ -394,10 +397,12 @@ SET @tStart = SYSUTCDATETIME();
 
 SELECT @alive8 = COUNT(*), @list8 = STUFF((SELECT N', ' + name FROM sys.objects
                                             WHERE name IN (N'Parking_Spot', N'sp_weather_forecast16',
-                                                           N'sp_weather_station', N'Weather_station')
+                                                           N'sp_weather_station', N'Weather_station',
+                                                           N'fn_web_service_plot_json', N'fn_web_service_plot_json2')
                                             ORDER BY name FOR XML PATH(N''), TYPE).value(N'.', N'nvarchar(max)'), 1, 2, N'')
   FROM sys.objects
- WHERE name IN (N'Parking_Spot', N'sp_weather_forecast16', N'sp_weather_station', N'Weather_station');
+ WHERE name IN (N'Parking_Spot', N'sp_weather_forecast16', N'sp_weather_station', N'Weather_station',
+                N'fn_web_service_plot_json', N'fn_web_service_plot_json2');
 
 END TRY
 BEGIN CATCH
@@ -409,7 +414,7 @@ SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 -- 3. result verification
 
 IF @alive8 = 0
-    PRINT 'TEST 8 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: the retired weather-station / forecast16 / Parking_Spot objects are absent'
+    PRINT 'TEST 8 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: the retired weather-station / forecast16 / Parking_Spot / web_service_plot objects are absent'
 ELSE
 BEGIN
     SET @msg8 = N'TEST 8 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: retired object(s) present: '
