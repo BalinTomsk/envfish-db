@@ -272,6 +272,43 @@ GO
 
 ## Changelog
 
+- 2026-08-12: **Fix: `dbo.sp_ows_meteo_open` silently discarded every Visual Crossing document, so
+  collected stations showed no weather.** (`script02_Proc.sql`.) `dbo.TR_ows_meteo` routes
+  `ows_meteo.type = 2` here, but **the weather worker stores more than one provider's document under
+  that one type**: Open-Meteo (`$.hourly.time` + `$.daily.time`), Visual Crossing (`$.days[]`), and a
+  Weather Underground personal-station document (`$.observations[]`). The procedure only understood
+  Open-Meteo, so a Visual Crossing document made every CTE return nothing, the `MERGE` had an empty
+  source, and **nothing was written with no error at all** — an empty parse is indistinguishable from
+  success. Reported via **MLI 13068500** (`BLACKFOOT RIVER NR BLACKFOOT`): supported, `backoffstate 0`,
+  16 fish on its water body, water data current, **in `vwWeatherForecastToDay`**, `ows_meteo` holding a
+  12 KB payload — and zero `weather_Forecast` rows. Proved by running the live procedure against that
+  station's own stored payload in a **rolled-back** prod transaction: 0 rows before, 0 after, no error.
+  Fixed by adding a Visual Crossing branch (an early-exit **before** the Open-Meteo block, which is
+  left byte-identical). **Units are the trap**: Open-Meteo is metric and every consumer
+  (`fn_station_weather_today`, `fn_plot_weather`) expects metric, while Visual Crossing serves **US
+  units** — so °F → °C, mph → km/h, inches → mm; `pressure` is mb = hPa and is not converted. Also:
+  the horizon is clipped to **today..today+6** to match the Open-Meteo branch (the document runs 15
+  days and its first day is often *yesterday* in the station's time zone); daily rainfall is **split
+  evenly** across `gpfDay`/`gpfNight` because a daily document has no hourly resolution and the sum is
+  what consumers use; `tm` is set to `'00:00:00'` rather than NULL **deliberately** — `fnWeatherForecast`
+  selects `WHERE tm IS NULL`, so a NULL would make these rows visible to a caller no other forecast row
+  reaches; and the provider's `icon` is mapped onto the same weather codes the Open-Meteo branch emits
+  so the `om_*.png` namespace stays single (all 5 icon values occurring on prod are covered —
+  `partly-cloudy-day`, `clear-day`, `rain`, `cloudy`, `wind` — with an explicit `om_na.png` fallback).
+  **The Weather Underground shape is still a deliberate no-op**: it carries *current observations*, not
+  a forecast, so nothing in it could honestly become a `weather_Forecast` row. **Raising was rejected**
+  — this runs inside `TR_ows_meteo`, so an error would abort the worker's `UPDATE` and throw away the
+  payload it just fetched. Those stations need the *worker* fixed (stop stamping every provider
+  `type = 2`), which is `efcs-backend`, not this repo.
+  New `unit_test@OwsMeteoOpen.sql` — 3 tests driving the **real path** (they `UPDATE dbo.ows_meteo` and
+  let the trigger dispatch, so routing is covered): Visual Crossing shredded with the conversions
+  pinned down; Open-Meteo unchanged; unrecognised shape writes nothing and does not throw. **Confirmed
+  FAILING first** (TEST 1 → `expected 2 forecast rows from the days[] document, got 0`, with 2 and 3
+  passing as baselines), then **423 PASS / 0 FAIL** suite-wide (`crcstate` updated). Additionally
+  verified against the **real prod payload** for 13068500 in a rolled-back local transaction: 7 rows,
+  85 °F → 29.44 °C, 12.8 mph → 20.6 km/h, yesterday correctly dropped. **Not yet applied to prod** —
+  at the time of writing 380 US stations hold a Visual Crossing document and 1,350 hold the
+  Weather Underground one, against 1,297 on Open-Meteo.
 - 2026-08-11: **Retired `dbo.fn_forecast_plot` — the orphan left behind by the entry below.**
   (`script02_Funct.sql`.) The pre-JSON ancestor of `dbo.fn_forecast_plot_json`: it returned the plot's
   series as `(id, line, type)` **rows** for the caller to stitch together. Production-only, never in
