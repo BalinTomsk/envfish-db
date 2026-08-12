@@ -272,6 +272,39 @@ GO
 
 ## Changelog
 
+- 2026-08-11: **Fix: `dbo.sp_push_us_water_data` re-registered every measurement on every push —
+  `dbo.UScode` held 9,694 rows for 279 distinct pairs.** (`script02_Proc.sql`.) The catalogue check was
+  `IF NOT EXISTS (SELECT * FROM UScode WHERE name like @name AND unit LIKE @unit)`, and `LIKE` is the
+  wrong operator for a lookup in **three** ways. The dominant one: USGS measurement names routinely
+  contain brackets — `Total nitrogen [nitrate + nitrite + ammonia + organic-N]` — and under `LIKE`
+  that group is a **character class matching ONE character**, so the row could never match itself.
+  Measured on prod: `WHERE name LIKE @name` returned **0** rows for a name `=` matched **5,409**
+  times, and **8,808 of 9,694** rows carry a name containing `_`, `%` or `[`. Second, `unit LIKE NULL`
+  is UNKNOWN, never true, so unitless measurements re-inserted forever (**613** such rows). Third, and
+  the opposite failure — `_`/`%` in an *incoming* name match OTHER stored names, so a genuinely new
+  measurement is silently **skipped and never registered** (the test proves this direction too: the
+  near-miss name came back `1 and 0`). Now an exact match with a NULL-safe unit comparison
+  (`unit = @unit OR (unit IS NULL AND @unit IS NULL)`). New `unit_test@PushUsWaterData.sql` — 3 tests,
+  each its own transaction, one per failure mode; **confirmed FAILING first** (2 rows / 2 rows /
+  `1 and 0`).
+  **The predicate alone is only forward-looking**, so the table is now also constrained:
+  **`UK_UScode_name_unit UNIQUE (name, unit)`** in `script01_createTable.sql` — SQL Server treats
+  NULLs as equal in a UNIQUE constraint, which is exactly the wanted behaviour for the unitless case.
+  TEST 4 covers it (duplicate rejected for both a real unit and a NULL unit, a distinct unit still
+  accepted), also confirmed FAILING first. **420 PASS / 0 FAIL** suite-wide (was 416).
+  **The constraint creates a race the proc did not have**: two collectors pushing the same *new*
+  measurement at once, one loses on the insert — and that would abort the whole `BEGIN TRY`, silently
+  costing the **readings** below it. The `INSERT` therefore has its **own inner `TRY/CATCH`** that
+  swallows the violation (the row exists either way). Not directly unit-testable — it needs
+  concurrency — so it is written to be obviously inert on the normal path.
+  **Applied to prod 2026-08-11**, one committed SqlClient transaction: redeploy the proc → dedupe →
+  add the constraint (that order; constraining first would fail on the existing data). Dedupe was a
+  `ROW_NUMBER() OVER (PARTITION BY name, unit)` delete of `rn > 1`, since the heap has no key:
+  **9,694 → 279 rows, 9,415 deleted**, distinct pairs unchanged at 279. Full table backed up
+  immediately beforehand. The race guard was added right after and the proc redeployed a second time.
+  Verified live: constraint present, `name like @name` gone from the live definition, and a
+  **rolled-back** push of the same bracketed series three times plus an unitless series twice left
+  exactly 1 catalogue row each with the reading stored (0 leftovers); site 200, no new `LogException`.
 - 2026-08-11: **Fix: five objects that shipped procedures/functions REFERENCE were missing from the
   schema scripts — a fresh build could not run them.** Same class of gap as `GetDatePeriod` /
   `fn_get_float_as_string` (2026-08-05): SQL Server defers name resolution, so the module *compiles*

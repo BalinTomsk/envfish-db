@@ -2089,8 +2089,24 @@ SET NOCOUNT ON;
 	IF DATALENGTH(@xmldoc) = 0 OR LEN(@mli) = 0 OR LEN(@state) = 0
 		RETURN;
 
-	IF NOT EXISTS (SELECT * FROM UScode WHERE name like @name AND unit LIKE @unit)
-		INSERT INTO UScode (name, unit) VALUES (@name , @unit)
+	-- Exact match, not LIKE: this is a catalogue lookup, not a search. LIKE made it fail three ways -
+	-- USGS names contain [ ] ('Total nitrogen [nitrate + nitrite + ...]'), which LIKE reads as a
+	-- character class so the row never matched itself; `unit LIKE NULL` is UNKNOWN so unitless
+	-- measurements never matched either; and _ / % in an incoming name matched OTHER stored names,
+	-- silently skipping a genuinely new measurement. Covered by unit_test@PushUsWaterData.sql.
+	IF NOT EXISTS (SELECT * FROM UScode
+	                WHERE name = @name
+	                  AND (unit = @unit OR (unit IS NULL AND @unit IS NULL)))
+	BEGIN
+		-- Own TRY/CATCH: UK_UScode_name_unit means two collectors pushing the same NEW measurement
+		-- at once can have one of them lose the race here. The catalogue is incidental to the push -
+		-- it must never cost us the readings below - and the row exists either way, so swallow it.
+		BEGIN TRY
+			INSERT INTO UScode (name, unit) VALUES (@name , @unit)
+		END TRY
+		BEGIN CATCH
+		END CATCH
+	END
 
 	DECLARE @koef_elevation float = (CASE WHEN @unit IN ('ft', ' in ft', ' feet') THEN 0.3048000097536 ELSE 1 END);
 	DECLARE @koef_discharge float = (
