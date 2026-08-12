@@ -1010,11 +1010,15 @@ SET NOCOUNT ON
         delete from lake_state where lake_id = @toLake
             AND month in (SELECT month FROM lake_state WHERE lake_id = @fromLake)
         update lake_fish set lake_id = @toLake where lake_id = @fromLake 
-    END    update spot set lake_id = @toLake where lake_id = @fromLake 
-    update zone_regulations set lake_id = @toLake where lake_id = @fromLake 
+    END
+    update spot set lake_id = @toLake where lake_id = @fromLake
+    update zone_regulations set lake_id = @toLake where lake_id = @fromLake
     update lake SET source=@toLake where source=@fromLake
     update lake SET mouth=@toLake where mouth=@fromLake
     update news SET lake_id=@toLake where lake_id=@fromLake
+    -- fish_spot was re-pointed on production but the line had never reached this script (drift
+    -- found 2026-08-11 while retiring Parking_Spot, whose own line stood right below this one).
+    update fish_spot SET  lake_id=@toLake where lake_id=@fromLake
 
     update t set t.phosphorus=COALESCE(s.phosphorus, t.phosphorus )
 	           , t.PH=COALESCE(s.PH, t.PH )
@@ -1230,85 +1234,29 @@ BEGIN CATCH
 END CATCH
 GO
 ---------------------------------------------------------------------------------------------------------------------------------------------
+-- dbo.sp_weather_forecast16 RETIRED (2026-08-11).
+-- The OpenWeatherMap 16-day forecast writer. Two reasons it went:
+--   * its INSERT omitted three NOT NULL columns of dbo.weather_Forecast (link, gpfDay, gpfNight),
+--     so it could never insert a row - on production either;
+--   * it called dbo.fn_direction_by_win_degree, a function that exists in no database.
+-- No caller in any repository; forecasts are collected through dbo.ows_meteo / dbo.sp_ows_meteo
+-- and read through dbo.fn_plot_weather / dbo.fn_station_weather_today today.
+-- An older copy in scriptA100_fillForecast.sql (legacy column names maxWin/degree/direction) was
+-- removed at the same time. The DROP is kept so an existing database sheds the dead procedure.
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_weather_forecast16' AND xtype = 'P')
     DROP PROCEDURE dbo.sp_weather_forecast16
 GO
-
-create PROCEDURE sp_weather_forecast16 @city_id int, @mli varchar(64),  @event int
-       , @temp_day float, @temp_min float, @temp_max float, @temp_night float, @temp_eve float, @temp_morn float
-       , @pressure float, @humidity float, @main varchar(64), @description varchar(255), @icon varchar(32)
-       , @speed float, @win_degree int, @clouds int , @rain float
-WITH EXEC AS CALLER
-AS
-BEGIN TRY  
-  SET NOCOUNT ON;
-  DECLARE @return_value int = -1
-    SET @temp_day = @temp_day - 273
-    SET @temp_min = @temp_min - 273
-    SET @temp_max = @temp_max - 273
-    SET @temp_night = @temp_night - 273
-    SET @temp_eve   = @temp_eve - 273
-    SET @temp_morn  = @temp_morn - 273
-
-    DECLARE @stamp datetime2 = ( SELECT dbo.UNIX_TIMESTAMP_TO_DATETIME(@event) );
-    DECLARE @dt DATE = CAST( @stamp AS DATE )
-    DECLARE @tm TIME = CAST(DATEADD(HOUR, DATEPART( HOUR,  @stamp ), '00:00:00') AS TIME)
-     DECLARE @direction varchar(8) = ( SELECT dbo.fn_direction_by_win_degree( @win_degree ) )
-    DECLARE @air_temperature smallint = ROUND(@temp_day, 0)
-    
-    SELECT @air_temperature = ROUND( ( CASE WHEN DATEPART( HOUR, @tm ) BETWEEN 4 AND 11 THEN @temp_morn
-               WHEN DATEPART( HOUR, @tm ) BETWEEN 11 AND 16 THEN @temp_day
-               WHEN DATEPART( HOUR, @tm ) BETWEEN 16 AND 23 THEN @temp_eve
-               ELSE @temp_night END ), 0 );
-    
-    IF @dt = CAST(getdate() AS DATE)  
-    BEGIN
-        DELETE FROM weather_Forecast WHERE ( (dt = @dt) OR (dt < DATEADD(day, -10, getdate()) )) AND mli = @mli
-
-        INSERT dbo.weather_Forecast( city_id,  mli, tmHigh,     tmLow,     tmDay,        humidity,  pressure, wind_max_speed,  wind_degree, rain_today,    wind_direction,  dt,  tm, icon, shortText, longText, air_temperature )
-            VALUES ( @city_id, @mli, @temp_max, @temp_min, @temp_day, @humidity, @pressure, @speed, @win_degree, @rain, @direction, @dt, @tm, @icon, @main, @description, @air_temperature )
-    END
-        ELSE IF @dt > CAST(getdate() AS DATE)  
-    BEGIN
-        DELETE FROM weather_Forecast WHERE dt = @dt AND mli = @mli
-
-        INSERT dbo.weather_Forecast( city_id,  mli, tmHigh,     tmLow,     tmDay,        humidity,  pressure, wind_max_speed,  wind_degree, rain_today,    wind_direction,  dt,  tm, icon, shortText, longText, air_temperature )
-            VALUES ( @city_id, @mli, @temp_max, @temp_min, @temp_day, @humidity, @pressure, @speed, @win_degree, @rain, @direction, @dt, @tm, @icon, @main, @description, @air_temperature )
-    END
-    RETURN @@ROWCOUNT;
-END TRY
-BEGIN CATCH
-    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
-         , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
-END CATCH
-GO
 ---------------------------------------------------------------------------------------------------------------------------------------------
+-- dbo.sp_weather_station RETIRED (2026-08-11).
+-- It inserted into a table dbo.Weather_station that exists in NO database - not in a fresh build
+-- and not on production - so every call has always ended in its own CATCH block, and its only
+-- other statement (UPDATE WaterStation SET weather_station_id = ...) was already commented out.
+-- No caller in any repository, and unlike UScode / fn_Parser there was nothing on production to
+-- restore it from. Weather stations are handled by dbo.weather_gov_station +
+-- dbo.sp_save_weather_gov_station and dbo.weather_station_coverage today.
+-- The DROP is kept so an existing database sheds the dead procedure.
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_weather_station' AND xtype = 'P')
     DROP PROCEDURE dbo.sp_weather_station
-GO
-
--- EXEC dbo.sp_weather_station 'CYQK', 2, 30, 37662, 49.783300, -94.366700, 11.107000, '05PE012'
-create PROCEDURE sp_weather_station @name sysname, @type int, @status int, @weather_station_id uniqueidentifier, @lat float, @lon float, @wsid varchar(64)
-WITH EXEC AS CALLER
-AS
-BEGIN TRY  
-  SET NOCOUNT ON;
-  DECLARE @return_value int = -1
-    
-    IF NOT EXISTS ( SELECT * FROM Weather_station WHERE weather_station_id = @weather_station_id)
-    BEGIN
-      INSERT dbo.Weather_station ( weather_station_id,     weather_station_name, weather_station_type
-                                 , weather_station_status, weather_station_lat,  weather_station_lon )
-                          VALUES ( @weather_station_id,    @name, @type, @status, @lat, @lon )
-      SET @return_value = @@ROWCOUNT;
-    END
---    UPDATE WaterStation SET weather_station_id = @weather_station_id  WHERE @wsid = mli;                         
-    RETURN @return_value;
-END TRY
-BEGIN CATCH
-    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
-         , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
-END CATCH
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'spAddExtUser' AND xtype = 'P')
@@ -1871,7 +1819,7 @@ WITH EXEC AS CALLER
 AS 
 BEGIN TRY  
 SET NOCOUNT ON
-    DELETE FROM Parking_Spot WHERE @lake_id = lake_id
+    -- (the DELETE FROM Parking_Spot that stood here went with that retired table, 2026-08-11)
     DELETE FROM lake_fish WHERE @lake_id = lake_id
     DELETE FROM dbo.Tributaries  WHERE @lake_id = Main_Lake_id OR  @lake_id = Lake_id
 	DELETE FROM lake  WHERE @lake_id = lake_id

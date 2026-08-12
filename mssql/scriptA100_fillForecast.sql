@@ -141,56 +141,7 @@ GO
 --update SpeciesRules set tuL = NULL, tuH=NULL where fishid in (select ID from dbo.Species where name='Bull trout')
 
 
---------------------------------------  distance  -----------------------------------
-
--- home service get data from cmd
-CREATE PROCEDURE sp_weather_forecast16 @city_id int, @mli varchar(64),  @event int
-       , @temp_day float, @temp_min float, @temp_max float, @temp_night float, @temp_eve float, @temp_morn float
-	   , @pressure float, @humidity float, @main varchar(64), @description varchar(255), @icon varchar(32)
-       , @speed float, @degree int, @clouds int , @rain float
-WITH EXEC AS CALLER
-AS
-BEGIN TRY  
-  SET NOCOUNT ON;
-  DECLARE @return_value int = -1
-    SET @temp_day = @temp_day - 273
-    SET @temp_min = @temp_min - 273
-    SET @temp_max = @temp_max - 273
-    SET @temp_night = @temp_night - 273
-    SET @temp_eve   = @temp_eve - 273
-    SET @temp_morn  = @temp_morn - 273
-
-	DECLARE @stamp datetime2 = ( SELECT dbo.UNIX_TIMESTAMP_TO_DATETIME(@event) );
-	DECLARE @dt DATE = CAST( @stamp AS DATE )
-	DECLARE @tm TIME = CAST(DATEADD(HOUR, DATEPART( HOUR,  @stamp ), '00:00:00') AS TIME)
- 	DECLARE @direction varchar(8) = ( SELECT dbo.fn_direction_by_degree( @degree ) )
-	DECLARE @weather_temperature smallint = ROUND(@temp_day, 0)
-	
-	SELECT @weather_temperature = ROUND( ( CASE WHEN DATEPART( HOUR, @tm ) BETWEEN 4 AND 11 THEN @temp_morn
-	           WHEN DATEPART( HOUR, @tm ) BETWEEN 11 AND 16 THEN @temp_day
-			   WHEN DATEPART( HOUR, @tm ) BETWEEN 16 AND 23 THEN @temp_eve
-			   ELSE @temp_night END ), 0 );
-	
-	IF @dt = CAST(getdate() AS DATE)  
-	BEGIN
-		INSERT dbo.weather_Forecast( city_id,  mli, tmHigh,     tmLow,     tmDay,        humidity,  pressure, maxWin,  degree, rain_today,    direction,  dt,  tm, icon, shortText, longText, weather_temperature )
-			VALUES ( @city_id, @mli, @temp_max, @temp_min, @temp_day, @humidity, @pressure, @speed, @degree, @rain, @direction, @dt, @tm, @icon, @main, @description, @weather_temperature )
-    END
-		ELSE IF @dt > CAST(getdate() AS DATE)  
-	BEGIN
-		DELETE FROM weather_Forecast WHERE dt = @dt AND mli = @mli
-
-		INSERT dbo.weather_Forecast( city_id,  mli, tmHigh,     tmLow,     tmDay,        humidity,  pressure, maxWin,  degree, rain_today,    direction,  dt,  tm, icon, shortText, longText, weather_temperature )
-			VALUES ( @city_id, @mli, @temp_max, @temp_min, @temp_day, @humidity, @pressure, @speed, @degree, @rain, @direction, @dt, @tm, @icon, @main, @description, @weather_temperature )
-	END
-    RETURN @@ROWCOUNT;
-END TRY
-BEGIN CATCH
-    SELECT
-         ERROR_NUMBER()    AS ErrorNumber
-        ,ERROR_SEVERITY()  AS ErrorSeverity
-        ,ERROR_STATE()     AS ErrorState
-        ,ERROR_PROCEDURE() AS ErrorProcedure
-        ,ERROR_LINE()      AS ErrorLine
-        ,ERROR_MESSAGE()   AS ErrorMessage;
-END CATCH; 	     
+-------------------------------------  distance  -----------------------------------
+-- dbo.sp_weather_forecast16 was defined here (a copy older than the one that lived in
+-- script02_Proc.sql - it still wrote the long-gone maxWin / degree / direction / weather_temperature
+-- columns). Retired 2026-08-11 with the script02_Proc.sql copy; see that file for why.

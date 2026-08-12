@@ -1708,6 +1708,36 @@ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_only_river_list' AND xtype 
 GO
 
 --------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_Parser' AND xtype = 'IF')
+    DROP function dbo.fn_Parser
+GO
+
+-- Split a comma-separated list into (Id, Item) rows, each item trimmed.
+-- Used by dbo.fn_first_item (immediately below), which is why it must be created first.
+-- NOTE: like GetDatePeriod / fn_get_float_as_string, this has always existed on the live
+-- database but was missing from the schema scripts, so fn_first_item could never run in a
+-- freshly built database. Definition taken verbatim from production.
+CREATE FUNCTION [dbo].[fn_Parser]( @String NVARCHAR(4000))
+RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN
+(
+    WITH Split( stpos, endpos )
+    AS(
+        SELECT 0          AS stpos, CHARINDEX(',', @String)              AS endpos
+        UNION ALL
+        SELECT endpos + 1 AS stpos, CHARINDEX(',', @String, endpos + 1 ) AS endpos
+          FROM Split
+          WHERE endpos > 0
+    )
+    SELECT ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS Id,
+           LTRIM(RTRIM(SUBSTRING( @String, stpos, COALESCE(NULLIF(endpos, 0), LEN(@String) + 1) - stpos))) AS Item
+      FROM Split
+)
+GO
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_first_item' AND xtype = 'FN')
     DROP function dbo.fn_first_item
 GO
@@ -3463,6 +3493,67 @@ BEGIN
     INSERT INTO @rst 
         SELECT @blob, (SELECT TOP 1 lake_image_pic FROM dbo.lake_image WHERE lake_image_ownerid = @lake_id) AS lake_image_pic
     RETURN
+END
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'UNIX_TIMESTAMP_TO_DATETIME' AND xtype = 'FN')
+    DROP function dbo.UNIX_TIMESTAMP_TO_DATETIME ;
+GO
+
+-- Epoch seconds (as delivered by the OpenWeatherMap feed) -> datetime2.
+-- NOTE: like GetDatePeriod / fn_get_float_as_string, this has always existed on the live
+-- database but was missing from the schema scripts. Definition taken verbatim from production.
+-- Its only caller, dbo.sp_weather_forecast16, was retired on 2026-08-11; the function is KEPT so
+-- these scripts still reproduce production, and is covered by unit_test@SchemaReferences.sql.
+CREATE FUNCTION dbo.UNIX_TIMESTAMP_TO_DATETIME (@timestamp integer)
+RETURNS datetime2
+AS
+BEGIN
+  DECLARE @return datetime
+  SELECT @return = DATEADD(second, @timestamp,{d '1970-01-01'});
+  RETURN @return
+END
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_direction_by_degree' AND xtype = 'FN')
+    DROP function dbo.fn_direction_by_degree ;
+GO
+
+-- Wind bearing in degrees -> 16-point compass abbreviation ('N', 'NNE', ... 'NNW').
+-- The abbreviation is also the file name of the arrow glyph the site renders
+-- (/Images/air/<DIR>.png), so it must stay in that vocabulary.
+-- NOTE: like GetDatePeriod / fn_get_float_as_string, this has always existed on the live
+-- database but was missing from the schema scripts. Definition taken verbatim from production.
+-- Its only caller, dbo.sp_weather_forecast16, was retired on 2026-08-11; the function is KEPT so
+-- these scripts still reproduce production, and is covered by unit_test@SchemaReferences.sql.
+CREATE FUNCTION dbo.fn_direction_by_degree( @degree int)
+RETURNS varchar(3)
+AS
+BEGIN
+  DECLARE @direction varchar(3) = (
+     SELECT CASE
+		WHEN ( @degree  BETWEEN 348.75 AND 360 ) OR ( @degree BETWEEN 0 AND 11.25 ) THEN 'N'
+		WHEN ( @degree  BETWEEN 11.25 AND 33.75 ) THEN 'NNE'
+		WHEN ( @degree  BETWEEN 33.75 AND 56.25 ) THEN 'NE'
+		WHEN ( @degree  BETWEEN 56.25 AND 78.75 ) THEN 'ENE'
+		WHEN ( @degree  BETWEEN 78.75 AND 101.25 ) THEN 'E'
+		WHEN ( @degree  BETWEEN 101.25 AND 123.75 ) THEN 'ESE'
+		WHEN ( @degree  BETWEEN 123.75 AND 146.25 ) THEN 'SE'
+		WHEN ( @degree  BETWEEN 146.25 AND 168.75 ) THEN 'SSE'
+		WHEN ( @degree  BETWEEN 168.75 AND 191.25 ) THEN 'S'
+		WHEN ( @degree  BETWEEN 191.25 AND 213.75) THEN 'SSW'
+		WHEN ( @degree  BETWEEN 213.75 AND 236.25) THEN 'SW'
+		WHEN ( @degree  BETWEEN 236.25 AND 258.75) THEN 'WSW'
+		WHEN ( @degree  BETWEEN 258.75 AND 281.25) THEN 'W'
+		WHEN ( @degree  BETWEEN 281.25 AND 303.75) THEN 'WNW'
+		WHEN ( @degree  BETWEEN 303.75 AND 326.25) THEN 'NW'
+		WHEN ( @degree  BETWEEN 326.25 AND 348.75) THEN 'NNW'
+						 END )
+  RETURN @direction
 END
 GO
 
