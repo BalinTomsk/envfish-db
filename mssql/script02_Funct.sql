@@ -3606,6 +3606,90 @@ AS
 GO
 
 -----------------------------------------------------------------------------------------------------------------------------------------------
+-- dbo.fn_forecast_plot RETIRED (2026-08-11).
+-- The pre-JSON ancestor of dbo.fn_forecast_plot_json below: it returned the plot's series as
+-- (id, line, type) ROWS for the caller to stitch together. Production-only - it was never in these
+-- scripts - and orphaned: nothing in the database references it (checked against every module's
+-- text, so dynamic SQL is covered too), and nothing in any repository does either. Its own header
+-- named FishTracker.Forecast.Plot.GetJsonPlot as the caller; that method still exists
+-- (Forecast/Plot.aspx.cs) but has been calling fn_forecast_plot_json since 2026-08-04.
+-- Unlike fn_web_service_plot_json it was not broken - it resolved and ran - so this is a removal of
+-- dead code, not a fix.
+--
+-- Its body was the ONLY copy in existence, so it is preserved verbatim below rather than destroyed:
+-- restore by uncommenting if the row-wise form is ever wanted again.
+--
+-- -- provide values for FishTracker.Forecast.Plot.GetJsonPlot
+-- -- select * from  dbo.fn_forecast_plot (142266, '4db64c3d-95cc-4e19-85be-c2a46582f813' )
+-- CREATE FUNCTION dbo.fn_forecast_plot( @sid int, @fish_guid varchar(255) )
+-- RETURNS @result TABLE (id int not null identity primary key, line varchar(255), type int not null)
+-- AS
+-- BEGIN
+--   DECLARE @rst TABLE (dt date, tm float , lvl float , prc float , dis float , tu float);
+--   DECLARE @TemperatureList varchar(255) = '';
+--   DECLARE @WaterLevelList  varchar(255) = '';
+--   DECLARE @DischargeList  varchar(255) = '';
+--   DECLARE @Precipitation  varchar(255) = '';
+--   DECLARE @Turbidity  varchar(255) = '';
+--   DECLARE @DatesList  varchar(255) = '';
+--   DECLARE @country char(2) = 'US';
+--   DECLARE @start date = DATEADD( DAY, -10, GETDATE());
+--   DECLARE @end date = DATEADD( DAY,  12, GETDATE());
+--   DECLARE @mli varchar(64), @WaterStation uniqueidentifier
+--   SELECT TOP 1 @mli = MLI, @WaterStation = id, @country = country FROM WaterStation WITH (NOLOCK) WHERE sid = @sid;
+--   INSERT INTO @rst (dt) SELECT * from dbo.GetDatePeriod( @start, @end );
+--   DECLARE @fishName sysname = (SELECT fish_name FROM fish WHERE fish_id = @fish_guid);
+--   -- convert C to F if US
+--   UPDATE @rst SET tm = CASE WHEN 'US' = @country THEN ( tm * 2 ) + 30 ELSE tm END FROM @rst;
+--
+--   UPDATE t SET t.tm  = ( CASE WHEN f.dt = CAST(getutcdate() AS DATE) THEN f.air_temperature ELSE f.tmDay END )
+--     , t.prc = NULLIF(f.rain_today, 0.0)
+--     FROM @rst t JOIN weather_Forecast f WITH (NOLOCK) ON (CAST(f.dt AS DATE) = t.dt)
+--     WHERE f.mli = @mli;
+--   UPDATE t SET t.lvl = elevation, t.dis = discharge, t.tu = turbidity
+--     FROM @rst t JOIN WaterData f WITH (NOLOCK)
+-- 	ON CAST(CAST(f.stamp AS DATE) AS varchar(10)) = CAST(CAST(t.dt AS DATE) AS varchar(10))
+--     WHERE f.mli = @mli and ( elevation is not null OR discharge is not null);
+--
+--   SELECT @DatesList =  @DatesList + ''',''' + LEFT(DATENAME(dw, dt), 3) + ' ' + CAST(DATEPART(DAY, dt) AS varchar(255) ) + '' FROM @rst ORDER BY dt ASC
+--   SET @DatesList = RIGHT(@DatesList, LEN(@DatesList)-2) + ''''
+--
+--   SELECT @WaterLevelList =  @WaterLevelList + ',' + dbo.fn_get_float_as_string(lvl) + '' FROM @rst ORDER BY dt ASC
+--   SET @WaterLevelList = RIGHT(@WaterLevelList, LEN(@WaterLevelList)-1)
+--
+--   SELECT @DischargeList =  @DischargeList + ',' + dbo.fn_get_float_as_string(dis) + '' FROM @rst ORDER BY dt ASC
+--   SET @DischargeList = RIGHT(@DischargeList, LEN(@DischargeList)-1)
+--
+--   SELECT @Precipitation =  @Precipitation + ',' + dbo.fn_get_float_as_string(prc) + '' FROM @rst ORDER BY dt ASC
+--   SET @Precipitation = RIGHT(@Precipitation, LEN(@Precipitation)-1)
+--
+--   SELECT @TemperatureList =  @TemperatureList + ',' + dbo.fn_get_float_as_string(tm) + '' FROM @rst ORDER BY dt ASC
+--   SET @TemperatureList = RIGHT(@TemperatureList, LEN(@TemperatureList)-1)
+--
+--   SELECT @Turbidity =  @Turbidity + ',' + dbo.fn_get_float_as_string(tu) + '' FROM @rst ORDER BY dt ASC
+--   SET @Turbidity = RIGHT(@Turbidity, LEN(@Turbidity)-1)
+--
+--   DECLARE @placeDesc varchar(max) = (SELECT TOP 1 locDesc FROM WaterStation WITH (NOLOCK) WHERE id = @waterStation);
+--   IF @placeDesc IS NULL SET @placeDesc = 'unknown'
+--
+--   INSERT INTO  @result (line, type) VALUES ( @placeDesc, 1 );
+--   INSERT INTO  @result (line, type) VALUES ( COALESCE(@fishName, ''), 2 );
+--   INSERT INTO  @result (line, type) VALUES ( @country, 3 );
+--   INSERT INTO  @result (line, type) VALUES ( @DatesList, 10 );
+--   INSERT INTO  @result (line, type) VALUES ( @WaterLevelList, 11 );
+--   INSERT INTO  @result (line, type) VALUES ( @DischargeList, 12 );
+--   INSERT INTO  @result (line, type) VALUES ( @Precipitation, 13 );
+--   INSERT INTO  @result (line, type) VALUES ( @TemperatureList, 14 );
+--   INSERT INTO  @result (line, type) VALUES ( @Turbidity, 15 );
+--
+--   RETURN
+-- end;
+--
+ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_forecast_plot' AND xtype = 'TF')
+    DROP function dbo.fn_forecast_plot ;
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
 -- dbo.fn_web_service_plot_json / dbo.fn_web_service_plot_json2 RETIRED (2026-08-11).
 -- Both were 2015 objects that lived only on production - they were never in these scripts.
 -- fn_web_service_plot_json concatenated the `line` column of dbo.fn_web_service_plot, a function
