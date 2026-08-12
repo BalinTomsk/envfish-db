@@ -1669,6 +1669,13 @@ ALTER TABLE dbo.Spot ADD CONSTRAINT DF_Spot_lake_Id DEFAULT ('00000000-0000-0000
 GO
 
 -------------------------------------------------------------------------------------------------------
+-- dbo.Parking_Spot RETIRED (2026-08-11) - a legacy roadside-access listing imported from state
+-- fishing guides, superseded by dbo.Spot above. It was never in these scripts; its only reader was
+-- the DELETE in dbo.sp_del_river, which has been removed with it.
+-- It still exists on production (349 rows) - dropping it there is a separate, deliberate step.
+-------------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------
 --alter TABLE States add park_rules nvarchar(512)
 CREATE TABLE States
@@ -1931,6 +1938,23 @@ GO
 ALTER TABLE USPost add constraint df_USPost_lat default(0.0) for lat;
 GO
 ALTER TABLE USPost add constraint df_USPost_lon default(0.0) for lon;
+GO
+
+-------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------
+-- Catalogue of the USGS measurement names/units seen so far: dbo.sp_push_us_water_data registers
+-- each (name, unit) pair it is handed while shredding a USGS series, so an operator can see which
+-- measurements the feed actually delivers (the proc itself maps only the names it knows about).
+-- Written by dbo.sp_push_us_water_data (waterservice WaterDataRepository - USGS push).
+--
+-- NOTE: this table has always existed on the live database but was missing from the schema scripts,
+-- so sp_push_us_water_data could not run in a freshly built database. Shape taken verbatim from
+-- production, including the heap with no key.
+CREATE TABLE dbo.UScode
+(
+    name sysname NOT NULL,
+    unit varchar(64) NULL
+)
 GO
 
 -------------------------------------------------------------------------------------------------------

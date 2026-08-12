@@ -272,6 +272,69 @@ GO
 
 ## Changelog
 
+- 2026-08-11: **Fix: five objects that shipped procedures/functions REFERENCE were missing from the
+  schema scripts — a fresh build could not run them.** Same class of gap as `GetDatePeriod` /
+  `fn_get_float_as_string` (2026-08-05): SQL Server defers name resolution, so the module *compiles*
+  and the build reports no error; it fails only when called. Found by listing
+  `sys.sql_expression_dependencies` rows with `referenced_id IS NULL` after a from-scratch build.
+  **Restored verbatim from production** (`script01_createTable.sql` / `script02_Funct.sql`):
+  `dbo.UScode` (measurement catalogue written by **`sp_push_us_water_data`, called live by
+  waterservice `WaterDataRepository`**; created **empty** — the 9,684 rows on prod are content, not
+  seed data), `dbo.fn_Parser` (comma splitter — **placed BEFORE `fn_first_item` in the file**, which
+  is its only caller), `dbo.UNIX_TIMESTAMP_TO_DATETIME` and `dbo.fn_direction_by_degree`. The last
+  two now have **no caller** (see the retirements below) and are kept only so these scripts still
+  reproduce production; `unit_test@SchemaReferences.sql` is what justifies them.
+  **Three objects were RETIRED instead, because nothing could make them work:**
+  (1) `dbo.sp_weather_station` inserted into a table `dbo.Weather_station` that exists in no
+  database — not in a fresh build, not on prod — so every call has always ended in its own `CATCH`;
+  no caller in any repo. (2) `dbo.sp_weather_forecast16` (the OpenWeatherMap 16-day writer) called
+  `dbo.fn_direction_by_win_degree`, which likewise exists nowhere, **and** its `INSERT` omitted three
+  **NOT NULL** columns of `weather_Forecast` (`link`, `gpfDay`, `gpfNight`), so it could not have
+  inserted a row even with the name fixed — true on prod as well; no caller, and the live path is
+  `ows_meteo` / `sp_ows_meteo` → `fn_plot_weather` / `fn_station_weather_today`. An **older copy in
+  `scriptA100_fillForecast.sql`** (still writing the long-gone `maxWin`/`degree`/`direction`/
+  `weather_temperature` columns) went with it. (3) `dbo.Parking_Spot`, a legacy roadside-access
+  listing superseded by `dbo.Spot`, never present in these scripts; its only reader was the
+  `DELETE FROM Parking_Spot` inside **`sp_del_river`** (called live from
+  `Editor/LakeEditor.aspx.cs:542`), which was removed with it. Each retirement **keeps its
+  `IF EXISTS … DROP`** so an existing database sheds the object.
+  New `unit_test@SchemaReferences.sql` — 8 tests, each its own transaction. **TEST 1 is the guard for
+  the whole class** (no module may reference a missing object; triggers, caller-dependent `EXEC`s and
+  the CLR `ToString` excluded, with why) and **TEST 8 guards the retirements** (none of the four names
+  may reappear). **Confirmed FAILING first** at every stage — first all 7 original tests failed with
+  TEST 1 naming the exact 7 dangling references, then TEST 8 failed naming `Parking_Spot,
+  sp_weather_forecast16` before they were removed — then **416 PASS / 0 FAIL** suite-wide via
+  `autorun.bat` (was 408; `crcstate` updated by `averify.py` itself).
+  **Applied to prod 2026-08-11**, one committed SqlClient transaction, 7 batches in this order:
+  redeploy `sp_del_river`, redeploy `sp_MergeLakes`, drop `sp_weather_forecast16`, drop
+  `sp_weather_station`, `DROP TABLE dbo.Parking_Spot` (349 rows; `FK_Parking_Spot` went with it).
+  **The two procedures had to stop referencing the table before it could go**, hence the ordering.
+  **`sp_MergeLakes` was NOT overwritten blind — prod's copy turned out to be NEWER than the script's**
+  and carried a line the script had never captured: `update fish_spot SET lake_id = @toLake …`.
+  Redeploying the script version as it stood would have silently dropped that. The line was added to
+  `script02_Proc.sql` first (and the neighbouring `update spot` un-mangled from `END    update spot`),
+  so what shipped is prod's behaviour minus the `Parking_Spot` line only. **Always diff a live module
+  against the script before redeploying it** — this repo's copy is not automatically the newer one.
+  Row backup of `Parking_Spot` taken immediately before the drop and kept outside the repo (the table
+  can be recreated from the retirement note in `script01_createTable.sql`).
+  Verified after commit: all four objects absent, both procedures compile and resolve `Spot` +
+  `fish_Spot`, prod's dangling-reference list down to two **pre-existing** entries this change did not
+  touch (`fn_web_service_plot_json → fn_web_service_plot`, a prod-only function absent from these
+  scripts, and the Microsoft `sp_upgraddiagrams → dtproperties`); `sp_del_river` and `sp_MergeLakes`
+  smoke-tested live in a **rolled-back** transaction (0 leftovers); Default/News/RscRiverList/Login
+  all HTTP 200; no new `dbo.LogException` rows.
+- 2026-08-11: **Build scripts: `build.cmd` reported success after a completely failed build.**
+  `dbcreator.cmd` ran `sqlcmd` without **`-b`**, so every error was ignored and the exit code was
+  always 0 — `build.cmd` printed the date and returned 0 after 500+ errors, and `autorun.bat`'s
+  `if errorlevel 1 (echo ERROR: dbcreator.cmd failed)` could never fire. Added `-b` (stop on first
+  error, non-zero exit), gave `build.cmd` errorlevel checks on both steps with a message naming the
+  usual cause (the scripts build a **fresh** database — they cannot be re-applied over an existing
+  `ffi`, per [Idempotency](#idempotency-which-scripts-are-safe-to-re-run)), and it now **keeps
+  `ffi2.sql` on failure** so the failing statement can be found. Also fixed two long-standing typos in
+  `generate_db_script_ffi2.cmd`: a stray `%` in the output name (`"%ffi2.sql"`, which only worked
+  because cmd strips a lone `%`) and a trailing space inside `"script09_fish_data.sql "`.
+  Verified both paths (fresh → exit 0 / 0 errors; existing `ffi` → aborts at the first error, exit 1,
+  no rows touched) and re-ran the full suite through the shared `dbcreator.cmd`.
 - 2026-08-10: **Fix: all 6 tests in `unit_test@LakeState.sql` were INVISIBLE in the run report.**
   (No schema change — test file only.) The file printed success as `PRINT 'PASSED ' + @test_name`, and
   `averify.py` **strips every line containing the literal `PASSED`** when building `cleaned.txt` (that
