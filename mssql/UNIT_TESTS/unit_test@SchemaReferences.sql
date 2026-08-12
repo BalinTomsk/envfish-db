@@ -385,6 +385,8 @@ GO
 --         dbo.fn_web_service_plot_json - wrapped dbo.fn_web_service_plot, renamed away in 2020;
 --           calling it on production raised Invalid object name. fn_web_service_plot_json2 was
 --           scaffolding returning a hard-coded string. Both production-only, no callers.
+--         dbo.fn_forecast_plot - the pre-JSON ancestor of fn_forecast_plot_json; production-only
+--           and orphaned. Not broken, just dead - its body is preserved in script02_Funct.sql.
 -- ---------------------------------------------------------------------------------------
 BEGIN TRAN Test08RetiredObjectsStayGone
     DECLARE @test_name sysname = N'Test08RetiredObjectsStayGone [schema] : retired objects are absent'
@@ -398,11 +400,12 @@ SET @tStart = SYSUTCDATETIME();
 SELECT @alive8 = COUNT(*), @list8 = STUFF((SELECT N', ' + name FROM sys.objects
                                             WHERE name IN (N'Parking_Spot', N'sp_weather_forecast16',
                                                            N'sp_weather_station', N'Weather_station',
-                                                           N'fn_web_service_plot_json', N'fn_web_service_plot_json2')
+                                                           N'fn_web_service_plot_json', N'fn_web_service_plot_json2',
+                                                           N'fn_forecast_plot')
                                             ORDER BY name FOR XML PATH(N''), TYPE).value(N'.', N'nvarchar(max)'), 1, 2, N'')
   FROM sys.objects
  WHERE name IN (N'Parking_Spot', N'sp_weather_forecast16', N'sp_weather_station', N'Weather_station',
-                N'fn_web_service_plot_json', N'fn_web_service_plot_json2');
+                N'fn_web_service_plot_json', N'fn_web_service_plot_json2', N'fn_forecast_plot');
 
 END TRY
 BEGIN CATCH

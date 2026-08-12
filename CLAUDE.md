@@ -272,6 +272,21 @@ GO
 
 ## Changelog
 
+- 2026-08-11: **Retired `dbo.fn_forecast_plot` — the orphan left behind by the entry below.**
+  (`script02_Funct.sql`.) The pre-JSON ancestor of `dbo.fn_forecast_plot_json`: it returned the plot's
+  series as `(id, line, type)` **rows** for the caller to stitch together. Production-only, never in
+  these scripts, and **orphaned** — nothing in the database references it (verified against every
+  module's *text*, not just the dependency graph, so dynamic SQL is covered) and nothing in any
+  repository does either. Its own header named `FishTracker.Forecast.Plot.GetJsonPlot` as the caller;
+  that method still exists in `Forecast/Plot.aspx.cs` but has called `fn_forecast_plot_json` since
+  2026-08-04. **Unlike `fn_web_service_plot_json` it was NOT broken** — it resolved and ran — so this
+  is removal of dead code, not a fix, and the bar for it was higher: the checks above are what
+  justified it. **Its 65-line body was the only copy in existence, so it is preserved verbatim as a
+  commented block above the `DROP` rather than destroyed** — uncomment to restore if the row-wise form
+  is ever wanted. Added to `unit_test@SchemaReferences.sql` TEST 8. **Applied to prod 2026-08-11**
+  (one committed transaction). Verified after: only `fn_forecast_plot_json` remains of that family, it
+  still returns a real document, and `WebService/Plot` + `Forecast/Plot.aspx` (with real place/fish
+  ids) + `Forecast/Planning.aspx` are all HTTP 200, no new `LogException` rows. **420 PASS / 0 FAIL.**
 - 2026-08-11: **Retired `dbo.fn_web_service_plot_json` + `dbo.fn_web_service_plot_json2` — the last
   broken reference on prod.** (`script02_Funct.sql`.) Both were 2015 objects living **only on
   production**; neither was ever in these scripts, so a fresh build never had them and only prod was
