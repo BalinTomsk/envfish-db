@@ -4655,6 +4655,526 @@ END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+-- ============================================================================================
+-- Per-tab "Save JSON" export for the Editor/LakeEditor.aspx tab family. One dbo.fn_lake_<tab>_json
+-- scalar function per tab, each returning that tab's page as a single self-contained JSON object
+-- (binary — photos, maps, tributary pics — embedded base64 via FOR JSON), complete enough to refill
+-- the page. All are anchored on dbo.lake so an unknown lake id returns NULL (same contract as
+-- dbo.fn_news_json). Served by Editor/HandlerImage.ashx?lakejson=<guid>&tab=<name>, admin-gated there;
+-- the handler whitelists <name> and maps it to the matching function (no dynamic SQL).
+--   description -> LakeEditor.aspx   stats -> LakeState.aspx      maps -> LakeMap.aspx
+--   source/mouth -> EditLakeLink.aspx (Type 16/32)               tributary -> EditTributary.aspx
+--   fishing -> EditLakeFish.aspx     regulation -> LakeRegulation.aspx   view -> Resources/wfRiverViewer.aspx
+-- ============================================================================================
+--     SELECT dbo.fn_lake_description_json('a55caadf-2892-e811-9104-00155d007b12');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_description_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_description_json
+GO
+-- fn_lake_description_json : the Description tab (LakeEditor.aspx) — every editable field PLUS the
+-- photo gallery, each picture's bytes embedded as base64.
+-- Unlike dbo.fn_lake_edit (which INNER JOINs vw_lake and so only sees lakes that have their
+-- source/mouth Tributaries placeholders) this LEFT JOINs vw_lake: the core fields always come back
+-- from dbo.lake, and source_name/mouth_name are simply null when vw_lake has no row.
+CREATE FUNCTION dbo.fn_lake_description_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    DECLARE @mli nvarchar(max) =
+        (SELECT STRING_AGG(CONVERT(nvarchar(50), mli), ',') FROM dbo.WaterStation WHERE lakeid = @lake_id);
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id)          AS guid,
+            l.lake_name                              AS lakeName,
+            l.alt_name                               AS altName,
+            l.[native]                               AS nativeName,
+            l.french_name                            AS french,
+            w.source_name                            AS source,
+            CONVERT(varchar(36), l.source)           AS sourceId,
+            w.mouth_name                             AS mouth,
+            CONVERT(varchar(36), l.mouth)            AS mouthId,
+            l.link                                   AS link,
+            l.locType                                AS type,
+            l.length                                 AS length_km,
+            l.width                                  AS width_km,
+            l.shoreline                              AS shoreline_km,
+            l.depth                                  AS maxDepth_m,
+            l.volume                                 AS volume_km3,
+            l.surface                                AS surface_km2,
+            l.discharge                              AS discharge_m3s,
+            l.basin                                  AS basin_km2,
+            l.watershield                            AS watershield_km2,
+            l.drainage                               AS drainage,
+            l.CGNDB                                  AS cgndb,
+            l.lake_road_access                       AS roadAccess,
+            @mli                                     AS mli,
+            CAST(COALESCE(l.is_fishing_prohibited, 0) AS bit) AS fishingProhibited,
+            CAST(COALESCE(l.isolated, 0) AS bit)     AS isolated,
+            CAST(COALESCE(l.noFish, 0) AS bit)       AS noFish,
+            CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.lake_fish lf WHERE lf.lake_id = l.lake_id)
+                      THEN 1 ELSE 0 END AS bit)      AS isFish,
+            CAST(COALESCE(l.reviewed, 0) AS bit)     AS reviewed,
+            l.descript                               AS description,
+            CONVERT(varchar(19), l.stamp, 126)       AS stamp,
+            -- photo gallery: metadata + the picture bytes base64-embedded; always an array (never null)
+            JSON_QUERY(ISNULL((
+                SELECT
+                    i.lake_image_id                              AS id,
+                    i.lake_image_source                          AS source,
+                    i.lake_image_author                          AS author,
+                    i.lake_image_link                            AS link,
+                    i.lake_image_label                           AS label,
+                    i.lake_image_lat                             AS lat,
+                    i.lake_image_lon                             AS lon,
+                    i.lake_image_type                            AS type,
+                    CONVERT(varchar(10), i.lake_image_stamp, 23) AS date,
+                    i.lake_image_pic                             AS pic
+                FROM dbo.lake_image i
+                WHERE i.lake_image_ownerid = l.lake_id
+                ORDER BY i.lake_image_stamp
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]'))                                AS images
+        FROM dbo.lake l
+        LEFT JOIN dbo.vw_lake w ON w.lake_id = l.lake_id
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_stats_json('a55caadf-2892-e811-9104-00155d007b12');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_stats_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_stats_json
+GO
+-- fn_lake_stats_json : the Stats tab (LakeState.aspx) — the per-month water-state rows.
+CREATE FUNCTION dbo.fn_lake_stats_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    s.[month]      AS [month],
+                    s.PH           AS ph,
+                    s.Phosphorus   AS phosphorus,
+                    s.TDS          AS tds,
+                    s.Conductivity AS conductivity,
+                    s.Alkalinity   AS alkalinity,
+                    s.Hardness     AS hardness,
+                    s.Sodium       AS sodium,
+                    s.Chloride     AS chloride,
+                    s.Bicarbonate  AS bicarbonate,
+                    s.Transparency AS transparency,
+                    s.Oxygen       AS oxygen,
+                    s.Salinity     AS salinity,
+                    s.clarity      AS clarity,
+                    s.velocity     AS velocity,
+                    s.water_degree AS waterDegree,
+                    s.air_degree   AS airDegree,
+                    CAST(COALESCE(s.cold_cool, 0) AS bit)  AS coldCool,
+                    CAST(COALESCE(s.flow_stand, 0) AS bit) AS flowStand,
+                    CONVERT(varchar(19), s.stamp, 126)     AS stamp
+                FROM dbo.Lake_State s
+                WHERE s.Lake_id = l.lake_id
+                ORDER BY s.[month]
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS states
+        FROM dbo.lake l
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_maps_json('a55caadf-2892-e811-9104-00155d007b12');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_maps_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_maps_json
+GO
+-- fn_lake_maps_json : the Maps tab (LakeMap.aspx) — the lake_map attachments, each file's bytes
+-- embedded base64 (an external-link attachment has NULL/empty pic).
+CREATE FUNCTION dbo.fn_lake_maps_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    m.lake_map_id                              AS id,
+                    m.lake_map_source                          AS source,
+                    m.lake_map_author                          AS author,
+                    m.lake_map_link                            AS link,
+                    m.lake_map_label                           AS label,
+                    m.lake_map_location                        AS location,
+                    m.lake_map_lat                             AS lat,
+                    m.lake_map_lon                             AS lon,
+                    m.lake_map_type                            AS type,
+                    m.lake_map_kind                            AS kind,
+                    m.lake_map_tag                             AS tag,
+                    CONVERT(varchar(10), m.lake_map_stamp, 23) AS date,
+                    m.lake_map_pic                             AS pic
+                FROM dbo.lake_map m
+                WHERE m.lake_map_ownerid = l.lake_id
+                ORDER BY m.lake_map_stamp
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS maps
+        FROM dbo.lake l
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_source_json('a55caadf-2892-e811-9104-00155d007b12');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_source_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_source_json
+GO
+-- fn_lake_source_json : the Source tab (EditLakeLink.aspx?Type=16) — the source link row(s)
+-- (dbo.Tributaries side = 16) with the linked point's name and its location fields.
+CREATE FUNCTION dbo.fn_lake_source_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    t.id                                        AS id,
+                    CONVERT(varchar(36), t.Lake_id)             AS pointId,
+                    p.lake_name                                 AS pointName,
+                    t.lat                                       AS lat,
+                    t.lon                                       AS lon,
+                    t.elevation                                 AS elevation,
+                    t.Country                                   AS country,
+                    t.State                                     AS state,
+                    t.county                                    AS county,
+                    t.city                                      AS city,
+                    t.district                                  AS district,
+                    t.municipality                              AS municipality,
+                    t.region                                    AS region,
+                    t.zone                                      AS zone,
+                    t.coast                                     AS coast,
+                    t.location                                  AS location,
+                    t.descript                                  AS description,
+                    CONVERT(varchar(19), t.Tributaries_stamp, 126) AS stamp,
+                    t.pic                                       AS pic
+                FROM dbo.Tributaries t
+                LEFT JOIN dbo.lake p ON p.lake_id = t.Lake_id
+                WHERE t.Main_Lake_id = l.lake_id AND t.side = 16
+                ORDER BY t.id
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS sources
+        FROM dbo.lake l
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_mouth_json('a55caadf-2892-e811-9104-00155d007b12');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_mouth_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_mouth_json
+GO
+-- fn_lake_mouth_json : the Mouth tab (EditLakeLink.aspx?Type=32) — the mouth link row(s)
+-- (dbo.Tributaries side = 32), same shape as fn_lake_source_json.
+CREATE FUNCTION dbo.fn_lake_mouth_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    t.id                                        AS id,
+                    CONVERT(varchar(36), t.Lake_id)             AS pointId,
+                    p.lake_name                                 AS pointName,
+                    t.lat                                       AS lat,
+                    t.lon                                       AS lon,
+                    t.elevation                                 AS elevation,
+                    t.Country                                   AS country,
+                    t.State                                     AS state,
+                    t.county                                    AS county,
+                    t.city                                      AS city,
+                    t.district                                  AS district,
+                    t.municipality                              AS municipality,
+                    t.region                                    AS region,
+                    t.zone                                      AS zone,
+                    t.coast                                     AS coast,
+                    t.location                                  AS location,
+                    t.descript                                  AS description,
+                    CONVERT(varchar(19), t.Tributaries_stamp, 126) AS stamp,
+                    t.pic                                       AS pic
+                FROM dbo.Tributaries t
+                LEFT JOIN dbo.lake p ON p.lake_id = t.Lake_id
+                WHERE t.Main_Lake_id = l.lake_id AND t.side = 32
+                ORDER BY t.id
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS mouths
+        FROM dbo.lake l
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_tributary_json('a55caadf-2892-e811-9104-00155d007b12');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_tributary_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_tributary_json
+GO
+-- fn_lake_tributary_json : the Tributary tab (EditTributary.aspx) — every dbo.Tributaries row for the
+-- water body (all sides), each with the linked point's name and flow side.
+CREATE FUNCTION dbo.fn_lake_tributary_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    t.id                                        AS id,
+                    t.side                                      AS side,
+                    CONVERT(varchar(36), t.Lake_id)             AS pointId,
+                    p.lake_name                                 AS pointName,
+                    t.lat                                       AS lat,
+                    t.lon                                       AS lon,
+                    t.elevation                                 AS elevation,
+                    t.coast                                     AS coast,
+                    t.Country                                   AS country,
+                    t.State                                     AS state,
+                    t.county                                    AS county,
+                    t.city                                      AS city,
+                    t.district                                  AS district,
+                    t.municipality                              AS municipality,
+                    t.region                                    AS region,
+                    t.zone                                      AS zone,
+                    t.location                                  AS location,
+                    t.descript                                  AS description,
+                    CONVERT(varchar(19), t.Tributaries_stamp, 126) AS stamp
+                FROM dbo.Tributaries t
+                LEFT JOIN dbo.lake p ON p.lake_id = t.Lake_id
+                WHERE t.Main_Lake_id = l.lake_id
+                ORDER BY t.side, t.id
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS tributaries
+        FROM dbo.lake l
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_fishing_json('a55caadf-2892-e811-9104-00155d007b12');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_fishing_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_fishing_json
+GO
+-- fn_lake_fishing_json : the Fishing tab (EditLakeFish.aspx) — the species assigned to the water body
+-- (dbo.lake_fish) with each fish's name and per-water-body flags.
+CREATE FUNCTION dbo.fn_lake_fishing_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    CONVERT(varchar(36), lf.fish_id)            AS fishId,
+                    f.fish_name                                 AS fishName,
+                    lf.probability                              AS probability,
+                    lf.probability_source_type                  AS probabilitySourceType,
+                    lf.status                                   AS status,
+                    lf.spawn                                    AS spawn,
+                    lf.tributaries                              AS tributaries,
+                    lf.forbidden                                AS forbidden,
+                    lf.Distribution                             AS distribution,
+                    lf.note                                     AS note,
+                    lf.method                                   AS method,
+                    lf.link                                     AS link,
+                    CONVERT(varchar(19), lf.last_catch, 126)    AS lastCatch,
+                    CONVERT(varchar(19), lf.stamp, 126)         AS stamp
+                FROM dbo.lake_fish lf
+                LEFT JOIN dbo.fish f ON f.fish_id = lf.fish_id
+                WHERE lf.lake_id = l.lake_id
+                ORDER BY f.fish_name
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS fish
+        FROM dbo.lake l
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_regulation_json('a55caadf-2892-e811-9104-00155d007b12');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_regulation_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_regulation_json
+GO
+-- fn_lake_regulation_json : the Regulation tab (LakeRegulation.aspx) — the regulation rows tied to
+-- this specific water body (dbo.regulations WHERE Lake_id = @lake). Zone-wide rules (Lake_id NULL) are
+-- not this water body's own rows and are excluded.
+CREATE FUNCTION dbo.fn_lake_regulation_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    CONVERT(varchar(36), r.regulations_id)          AS id,
+                    r.regulations_part                              AS part,
+                    r.resident_type                                 AS residentType,
+                    r.state                                         AS state,
+                    r.zone_id                                       AS zoneId,
+                    CONVERT(varchar(36), r.fish_id)                 AS fishId,
+                    CONVERT(varchar(36), r.chain)                   AS chain,
+                    r.reg_year                                      AS regYear,
+                    CONVERT(varchar(10), r.regulations_date_start, 23) AS dateStart,
+                    r.regulations_start                             AS startText,
+                    CONVERT(varchar(10), r.regulations_date_end, 23)   AS dateEnd,
+                    r.regulations_end                               AS endText,
+                    r.regulations_sport                             AS sport,
+                    r.regulations_sport_text                        AS sportText,
+                    r.regulations_consr                             AS consr,
+                    r.regulations_consr_text                        AS consrText,
+                    r.possession_sport                              AS possessionSport,
+                    r.possession_consr                              AS possessionConsr,
+                    r.min_length_cm                                 AS minLengthCm,
+                    r.slot_min_cm                                   AS slotMinCm,
+                    r.slot_max_cm                                   AS slotMaxCm,
+                    r.slot_over_limit                               AS slotOverLimit,
+                    r.method_flags                                  AS methodFlags,
+                    r.day_flags                                     AS dayFlags,
+                    r.regulations_code                              AS code,
+                    r.regulations_link                              AS link,
+                    r.regulations_text                              AS ruleText,
+                    CONVERT(varchar(19), r.regulations_stamp, 126)  AS stamp
+                FROM dbo.regulations r
+                WHERE r.Lake_id = l.lake_id
+                ORDER BY r.reg_year DESC, r.regulations_part
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS regulations
+        FROM dbo.lake l
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_view_json('a55caadf-2892-e811-9104-00155d007b12');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_view_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_view_json
+GO
+-- fn_lake_view_json : the View tab (Resources/wfRiverViewer.aspx, public read-only) — the composed
+-- river-view data: the vw_lake row (source/mouth detail + resolved location) plus the assigned fish
+-- and the photo gallery (base64). Anchored on dbo.lake, so vw_lake columns are null for a water body
+-- lacking its source/mouth Tributaries placeholders, but the core still exports.
+CREATE FUNCTION dbo.fn_lake_view_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            v.alt_name                      AS altName,
+            v.native_name                   AS nativeName,
+            v.french_name                   AS french,
+            l.locType                       AS type,
+            l.descript                      AS description,
+            l.link                          AS link,
+            l.CGNDB                         AS cgndb,
+            l.basin                         AS basin,
+            l.watershield                   AS watershield,
+            l.drainage                      AS drainage,
+            l.discharge                     AS discharge,
+            l.length                        AS length_km,
+            l.width                         AS width_km,
+            l.depth                         AS maxDepth_m,
+            l.volume                        AS volume_km3,
+            l.surface                       AS surface_km2,
+            l.shoreline                     AS shoreline_km,
+            v.source_name                   AS sourceName,
+            CONVERT(varchar(36), v.source_id) AS sourceId,
+            v.source_Lat                    AS sourceLat,
+            v.source_Lon                    AS sourceLon,
+            v.source_Elevation              AS sourceElevation,
+            v.source_state                  AS sourceState,
+            v.source_country                AS sourceCountry,
+            v.source_location               AS sourceLocation,
+            v.mouth_name                    AS mouthName,
+            CONVERT(varchar(36), v.mouth_id) AS mouthId,
+            v.mouth_Lat                     AS mouthLat,
+            v.mouth_Lon                     AS mouthLon,
+            v.mouth_Elevation               AS mouthElevation,
+            v.mouth_state                   AS mouthState,
+            v.mouth_country                 AS mouthCountry,
+            v.mouth_location                AS mouthLocation,
+            v.lat                           AS lat,
+            v.lon                           AS lon,
+            v.city                          AS city,
+            v.county                        AS county,
+            v.state                         AS state,
+            v.country                       AS country,
+            v.region                        AS region,
+            v.district                      AS district,
+            v.municipality                  AS municipality,
+            v.zone                          AS zone,
+            v.location                      AS location,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    CONVERT(varchar(36), lf.fish_id) AS fishId,
+                    f.fish_name                      AS fishName,
+                    lf.status                        AS status
+                FROM dbo.lake_fish lf
+                LEFT JOIN dbo.fish f ON f.fish_id = lf.fish_id
+                WHERE lf.lake_id = l.lake_id
+                ORDER BY f.fish_name
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS fish,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    i.lake_image_id                              AS id,
+                    i.lake_image_source                          AS source,
+                    i.lake_image_author                          AS author,
+                    i.lake_image_link                            AS link,
+                    CONVERT(varchar(10), i.lake_image_stamp, 23) AS date,
+                    i.lake_image_pic                             AS pic
+                FROM dbo.lake_image i
+                WHERE i.lake_image_ownerid = l.lake_id
+                ORDER BY i.lake_image_stamp
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS images
+        FROM dbo.lake l
+        LEFT JOIN dbo.vw_lake v ON v.lake_id = l.lake_id
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_message_inbox' AND xtype = 'IF')
     DROP function dbo.fn_user_message_inbox
 GO
