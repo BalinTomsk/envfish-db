@@ -2515,7 +2515,33 @@ GO
 	1. WaterStation - meteo from water station
 	2. weather_Forecast
 
-		called from [TR_ows_meteo]
+		called from [TR_ows_meteo]  (dbo.ows_meteo rows whose type = 2)
+
+    TWO DOCUMENT SHAPES are handled, because the weather worker stores more than one provider's
+    document under type = 2:
+
+      * Open-Meteo      -- $.hourly.time[] + $.daily.time[], already METRIC (degC, km/h, mm, hPa)
+      * Visual Crossing -- $.days[], one object per day, in US UNITS (degF, mph, inches, mb)
+
+    Everything downstream (dbo.fn_station_weather_today, dbo.fn_plot_weather) expects metric, so the
+    Visual Crossing branch converts. Until 2026-08-12 only Open-Meteo was understood and a
+    Visual Crossing document parsed to zero rows -- the MERGE simply had nothing to merge, and
+    nothing was written, with NO error, because an empty parse looks exactly like success. Stations
+    that were being collected showed no weather at all (e.g. MLI 13068500).
+
+    A document in NEITHER shape is a deliberate no-op. Those two are the only FORECASTS the worker
+    stores under type = 2; measured on prod it also stores, under the same type, weather.gov/NWS
+    GeoJSON ($.@context/$.properties), MSC SWOB GeoJSON ($.features[]), Weather Underground station
+    observations ($.observations[]) and a current-conditions document ($.currentConditionsHistory).
+    Those carry OBSERVATIONS, not a forecast -- there is nothing in them that could honestly become a
+    weather_Forecast row, so they are left alone rather than invented from. Raising here is NOT an
+    option: this runs inside TR_ows_meteo, so an error would abort the worker's UPDATE and throw
+    away the payload it just fetched. The fix for those belongs in the worker, which should stop
+    stamping every provider type = 2.
+    (The Weather Company / Weather Underground v3 DAILY FORECAST -- $.daypart[] + $.temperatureMax --
+    is a different document again, and dbo.sp_ows_meteo already parses it under type = 1.)
+
+    Covered by UNIT_TESTS/unit_test@OwsMeteoOpen.sql.
 */
 CREATE OR ALTER PROCEDURE [dbo].[sp_ows_meteo_open]
       @js   nvarchar(max)
@@ -2528,6 +2554,193 @@ BEGIN
     BEGIN TRY
 
         IF @js IS NULL OR @mli IS NULL OR @link IS NULL OR ISJSON(@js) <> 1
+            RETURN;
+
+        ------------------------------------------------------------------------------------------
+        -- Visual Crossing:  $.days[] , one object per day, US units.  Handled and returned here so
+        -- the Open-Meteo block below stays exactly as it was.
+        ------------------------------------------------------------------------------------------
+        IF JSON_QUERY(@js, '$.days') IS NOT NULL AND JSON_QUERY(@js, '$.hourly') IS NULL
+        BEGIN
+            ;WITH vc_raw AS
+            (
+                SELECT d.dt, d.tempmax, d.tempmin, d.temp, d.humidity, d.precip, d.precipprob
+                     , d.windspeed, d.winddir, d.pressure, d.conditions, d.[description], d.icon
+                FROM OPENJSON(@js, '$.days')
+                WITH (
+                      dt            date          '$.datetime'
+                    , tempmax       float         '$.tempmax'
+                    , tempmin       float         '$.tempmin'
+                    , temp          float         '$.temp'
+                    , humidity      float         '$.humidity'
+                    , precip        float         '$.precip'
+                    , precipprob    float         '$.precipprob'
+                    , windspeed     float         '$.windspeed'
+                    , winddir       float         '$.winddir'
+                    , pressure      float         '$.pressure'
+                    , conditions    nvarchar(200) '$.conditions'
+                    , [description] nvarchar(400) '$.description'
+                    , icon          nvarchar(64)  '$.icon'
+                ) d
+                -- the document runs 15 days and its first day is often YESTERDAY in the station's
+                -- time zone; keep the same today..today+6 horizon the Open-Meteo branch produces
+                WHERE d.dt IS NOT NULL
+                  AND d.dt >= CAST(GETDATE() AS date)
+                  AND d.dt <  DATEADD(day, 7, CAST(GETDATE() AS date))
+            ),
+            vc AS
+            (
+                SELECT dt
+                     -- US units in, metric out
+                     , (tempmax - 32.0) * 5.0 / 9.0 AS tmHigh          -- degF -> degC
+                     , (tempmin - 32.0) * 5.0 / 9.0 AS tmLow
+                     , (temp    - 32.0) * 5.0 / 9.0 AS tmDay
+                     , humidity                                        -- % either way
+                     , precip    * 25.4             AS rain_mm         -- inches -> mm
+                     , precipprob
+                     , windspeed * 1.609344         AS wind_max_speed  -- mph -> km/h
+                     , winddir
+                     , pressure                                        -- mb = hPa, no conversion
+                     , conditions
+                     , [description]
+                     -- map the provider's icon onto the same codes the Open-Meteo branch emits, so
+                     -- weather_code and the om_*.png icon namespace stay consistent across providers
+                     , CASE icon
+                         WHEN 'clear-day'             THEN 0
+                         WHEN 'clear-night'           THEN 0
+                         WHEN 'wind'                  THEN 1
+                         WHEN 'partly-cloudy-day'     THEN 2
+                         WHEN 'partly-cloudy-night'   THEN 2
+                         WHEN 'cloudy'                THEN 3
+                         WHEN 'fog'                   THEN 45
+                         WHEN 'rain'                  THEN 63
+                         WHEN 'showers-day'           THEN 80
+                         WHEN 'showers-night'         THEN 80
+                         WHEN 'snow'                  THEN 73
+                         WHEN 'snow-showers-day'      THEN 71
+                         WHEN 'snow-showers-night'    THEN 71
+                         WHEN 'sleet'                 THEN 65
+                         WHEN 'hail'                  THEN 95
+                         WHEN 'thunder-rain'          THEN 95
+                         WHEN 'thunder-showers-day'   THEN 95
+                         WHEN 'thunder-showers-night' THEN 95
+                         ELSE NULL
+                       END AS weather_code
+                FROM vc_raw
+            ),
+            src AS
+            (
+                SELECT
+                      @link AS [link]
+                    , v.tmHigh
+                    , v.tmLow
+                    -- the daily document has no hourly resolution, so the day's total rainfall is
+                    -- split evenly rather than claimed for daytime; the SUM is what fn_plot_weather
+                    -- and the prc calculation actually use, and that stays correct
+                    , v.rain_mm / 2.0 AS gpfDay
+                    , v.rain_mm / 2.0 AS gpfNight
+                    , v.humidity
+                    , v.wind_max_speed
+                    , v.winddir AS wind_degree
+                    , CASE
+                        WHEN v.winddir IS NULL THEN NULL
+                        WHEN v.winddir >= 337.5 OR v.winddir < 22.5 THEN 'N'
+                        WHEN v.winddir < 67.5  THEN 'NE'
+                        WHEN v.winddir < 112.5 THEN 'E'
+                        WHEN v.winddir < 157.5 THEN 'SE'
+                        WHEN v.winddir < 202.5 THEN 'S'
+                        WHEN v.winddir < 247.5 THEN 'SW'
+                        WHEN v.winddir < 292.5 THEN 'W'
+                        ELSE 'NW'
+                      END AS wind_direction
+                    , v.conditions    AS shortText
+                    , v.[description] AS longText
+                    , CONCAT('om_', ISNULL(CONVERT(varchar(12), v.weather_code), 'na'), '.png') AS icon
+                    , TRY_CONVERT(int, v.precipprob) AS pop
+                    , v.dt
+                    -- a daily document has no hour. tm must stay NOT NULL to match the Open-Meteo
+                    -- rows: dbo.fnWeatherForecast selects "WHERE tm IS NULL", so a NULL here would
+                    -- make these rows visible to a caller that no other forecast row reaches.
+                    , CAST('00:00:00' AS time(7)) AS tm
+                    , @mli AS mli
+                    , CAST(NULL AS int) AS city_id
+                    , TRY_CONVERT(int, ROUND(v.pressure, 0)) AS pressure
+                    , TRY_CONVERT(int, ROUND(v.rain_mm,  0)) AS rain_today
+                    , TRY_CONVERT(int, ROUND(v.tmDay,    0)) AS air_temperature
+                    , v.tmDay
+                    , v.weather_code
+                FROM vc v
+            )
+            MERGE dbo.weather_Forecast AS t
+            USING src
+               ON t.mli = src.mli
+              AND t.dt  = src.dt
+
+            WHEN MATCHED THEN
+                UPDATE SET
+                      t.[link]            = src.[link]
+                    , t.tmHigh            = ISNULL(src.tmHigh, t.tmHigh)
+                    , t.tmLow             = ISNULL(src.tmLow, t.tmLow)
+                    , t.gpfDay            = src.gpfDay
+                    , t.gpfNight          = src.gpfNight
+                    , t.humidity          = src.humidity
+                    , t.wind_max_speed    = src.wind_max_speed
+                    , t.wind_degree       = src.wind_degree
+                    , t.wind_direction    = src.wind_direction
+                    , t.shortText         = LEFT(src.shortText, 64)
+                    , t.longText          = LEFT(src.longText, 255)
+                    , t.icon              = LEFT(src.icon, 255)
+                    , t.pop               = src.pop
+                    , t.tm                = src.tm
+                    , t.pressure          = src.pressure
+                    , t.rain_today        = src.rain_today
+                    , t.air_temperature   = src.air_temperature
+                    , t.tmDay             = src.tmDay
+                    , t.weather_code      = src.weather_code
+
+            WHEN NOT MATCHED BY TARGET THEN
+                INSERT
+                (
+                      [link], [tmHigh], [tmLow], [gpfDay], [gpfNight]
+                    , [humidity], [wind_max_speed], [wind_degree], [wind_direction]
+                    , [shortText], [longText], [icon], [pop]
+                    , [dt], [tm], [mli], [city_id]
+                    , [pressure], [rain_today], [air_temperature], [tmDay], [weather_code]
+                )
+                VALUES
+                (
+                      src.[link]
+                    , ISNULL(src.tmHigh, 0)
+                    , ISNULL(src.tmLow, 0)
+                    , ISNULL(src.gpfDay, 0)
+                    , ISNULL(src.gpfNight, 0)
+                    , src.humidity
+                    , src.wind_max_speed
+                    , src.wind_degree
+                    , src.wind_direction
+                    , LEFT(src.shortText, 64)
+                    , LEFT(src.longText, 255)
+                    , LEFT(src.icon, 255)
+                    , src.pop
+                    , src.dt
+                    , src.tm
+                    , src.mli
+                    , src.city_id
+                    , src.pressure
+                    , src.rain_today
+                    , src.air_temperature
+                    , src.tmDay
+                    , src.weather_code
+                );
+
+            RETURN;
+        END
+
+        ------------------------------------------------------------------------------------------
+        -- Not an Open-Meteo document either (e.g. the Weather Underground $.observations[] shape):
+        -- nothing here can become a forecast row, so leave weather_Forecast alone.
+        ------------------------------------------------------------------------------------------
+        IF JSON_QUERY(@js, '$.hourly') IS NULL
             RETURN;
 
         ;WITH
