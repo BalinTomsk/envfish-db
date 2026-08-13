@@ -306,9 +306,22 @@ GO
   FAILING first** (TEST 1 → `expected 2 forecast rows from the days[] document, got 0`, with 2 and 3
   passing as baselines), then **423 PASS / 0 FAIL** suite-wide (`crcstate` updated). Additionally
   verified against the **real prod payload** for 13068500 in a rolled-back local transaction: 7 rows,
-  85 °F → 29.44 °C, 12.8 mph → 20.6 km/h, yesterday correctly dropped. **Not yet applied to prod** —
-  at the time of writing 380 US stations hold a Visual Crossing document and 1,350 hold the
-  Weather Underground one, against 1,297 on Open-Meteo.
+  85 °F → 29.44 °C, 12.8 mph → 20.6 km/h, yesterday correctly dropped. **Applied to prod 2026-08-12**
+  (one committed `CREATE OR ALTER`; the live copy was confirmed byte-equal to the pre-change script
+  first — note SQL Server stores `CREATE OR ALTER PROCEDURE` as `CREATE   PROCEDURE`, which a naive
+  drift check reports as a difference). Smoke-tested live against 13068500's own stored payload in a
+  **rolled-back** transaction: 7 rows, correct conversions, 0 leftovers.
+  **Census of what is actually stored under `type = 2`** (measured, not sampled — an earlier note here
+  said "1,350 Weather Underground" and that was wrong: it came from labelling the whole
+  not-Open-Meteo/not-Visual-Crossing bucket after reading ONE payload):
+  Open-Meteo **1,029 US + 549 CA**, weather.gov/NWS GeoJSON (`@context,geometry,properties`) **592 US**,
+  Visual Crossing **315 US**, Weather Underground observations (`$.observations[]`) **259 US**,
+  MSC/Environment-Canada SWOB GeoJSON (`features,links,numberMatched`) **243 CA**, and a
+  current-conditions shape (`airPressure,cloudCover,currentConditionsHistory`) **40 US**. The counts
+  move between runs because the collector overwrites `ows` on every pass. **Only Open-Meteo and
+  Visual Crossing are forecasts**; the rest are observations or a different provider's document, and
+  none can honestly become `weather_Forecast` rows — they need the worker to stop stamping every
+  provider `type = 2`.
 - 2026-08-11: **Retired `dbo.fn_forecast_plot` — the orphan left behind by the entry below.**
   (`script02_Funct.sql`.) The pre-JSON ancestor of `dbo.fn_forecast_plot_json`: it returned the plot's
   series as `(id, line, type)` **rows** for the caller to stitch together. Production-only, never in

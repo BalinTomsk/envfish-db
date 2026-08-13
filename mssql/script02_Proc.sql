@@ -2529,12 +2529,17 @@ GO
     nothing was written, with NO error, because an empty parse looks exactly like success. Stations
     that were being collected showed no weather at all (e.g. MLI 13068500).
 
-    A document in NEITHER shape is still a deliberate no-op. The third shape the worker stores is a
-    Weather Underground personal-station document ($.observations[]), which carries CURRENT
-    OBSERVATIONS rather than a forecast -- there is nothing in it that could honestly become a
-    weather_Forecast row, so it is left alone rather than invented from. Raising here is NOT an
+    A document in NEITHER shape is a deliberate no-op. Those two are the only FORECASTS the worker
+    stores under type = 2; measured on prod it also stores, under the same type, weather.gov/NWS
+    GeoJSON ($.@context/$.properties), MSC SWOB GeoJSON ($.features[]), Weather Underground station
+    observations ($.observations[]) and a current-conditions document ($.currentConditionsHistory).
+    Those carry OBSERVATIONS, not a forecast -- there is nothing in them that could honestly become a
+    weather_Forecast row, so they are left alone rather than invented from. Raising here is NOT an
     option: this runs inside TR_ows_meteo, so an error would abort the worker's UPDATE and throw
-    away the payload it just fetched.
+    away the payload it just fetched. The fix for those belongs in the worker, which should stop
+    stamping every provider type = 2.
+    (The Weather Company / Weather Underground v3 DAILY FORECAST -- $.daypart[] + $.temperatureMax --
+    is a different document again, and dbo.sp_ows_meteo already parses it under type = 1.)
 
     Covered by UNIT_TESTS/unit_test@OwsMeteoOpen.sql.
 */

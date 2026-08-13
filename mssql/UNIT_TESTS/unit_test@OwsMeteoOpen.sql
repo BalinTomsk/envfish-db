@@ -203,10 +203,12 @@ DECLARE @rows3 int = -1, @err3 nvarchar(2048), @msg3 nvarchar(4000);
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
--- 1. prepare data for unit test : the Weather Underground personal-weather-station shape the
---    worker also stores under type = 2. It carries CURRENT OBSERVATIONS, not a forecast, so there
---    is nothing here that could become a weather_Forecast row -- the correct outcome is to write
---    nothing, quietly, rather than invent a day from an observation.
+-- 1. prepare data for unit test : the Weather Underground station-observation shape -- one of
+--    several non-forecast documents the worker also stores under type = 2 (the others measured on
+--    prod being weather.gov/NWS GeoJSON, MSC SWOB GeoJSON and a current-conditions document).
+--    It carries CURRENT OBSERVATIONS, not a forecast, so there is nothing here that could become a
+--    weather_Forecast row -- the correct outcome is to write nothing, quietly, rather than invent
+--    a day from an observation.
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake3, 2, N'UT OWS Lake 3');
 INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
