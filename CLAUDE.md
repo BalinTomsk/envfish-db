@@ -474,6 +474,33 @@ GO
   `ISNULL(@result1,-1)` fails to compile with `Incorrect syntax near 'ISNULL'`. Suite went
   **402 → 408 PASS / 0 FAIL** via `autorun.bat`, the delta being exactly these 6 and no other output
   change (`crcstate` updated). **No prod DDL — nothing here touches the database.**
+- 2026-08-10: **Fix: the build read the UTF-8 schema scripts in the ANSI code page, corrupting every
+  non-ASCII literal.** (`mssql/dbcreator.cmd`, `mssql/UNIT_TESTS/scriptrunlocal.bat`.) All
+  `scriptNN_*.sql` sources are **UTF-8 without a BOM**, but both files invoked `SQLCMD` with no `-f`,
+  so it fell back to the ANSI code page: `é` (`0xC3 0xA9`) arrived as `Ã©`, em dashes as `â€"`, and so
+  on. **6 object definitions** were affected in every build — most visibly the French water-body words
+  in `dbo.ProduceWBVariant`. Nothing errored (the text is merely wrong in the database), so this was
+  true of **every unit-test run** and would have been true of any prod rebuilt from the scripts. Fixed
+  by adding **`-f 65001`** to both `sqlcmd` invocations; that also makes the harness's output UTF-8,
+  which is what `averify.py` already assumes when it reads `result.txt`. Every source file was checked
+  as valid UTF-8 with no BOM first, so nothing flips from working to broken by being read correctly.
+  **Scope of the damage, precisely:** the corrupted French words sit in `ProduceWBVariant`'s final
+  "strip stray water-body-type words" `DELETE`, which is a **redundant safety net** — `GetWaterType` →
+  `GetValidPart` already resolve those words against `dbo.water_body.fr`, whose seed data is
+  *unaffected* because `script08_Data.sql` spells every accent as `nchar(233)`/`nchar(201)`/`nchar(251)`
+  rather than typing the character. **That escaping is this same bug, worked around by hand long ago**;
+  with `-f 65001` it is no longer necessary (leave it, it is harmless and code-page proof). No
+  behavioural difference could be reproduced through `ProduceWBVariant` — the observable damage is the
+  definition text itself. New `unit_test@ScriptEncoding.sql` — 3 tests (no object definition carries
+  the UTF-8-read-as-ANSI signature, checked across `sys.sql_modules`; the French literals in
+  `ProduceWBVariant` decode correctly; and as a control the `nchar()`-escaped seed data still resolves
+  to its `locType`). **Every literal in that test file is ASCII with accents built via `NCHAR()`** so
+  the assertions mean the same thing whichever code page the file is itself read in — written any
+  other way a corrupted expectation would silently match a corrupted definition and pass. Confirmed
+  **FAILING first** (TEST 1 reported 6 corrupted definitions naming `fn_clean_river_name`, TEST 2 found
+  the mojibake, TEST 3 passed as the control), then **426 PASS / 0 FAIL** suite-wide via `autorun.bat`
+  (`crcstate` updated). **Nothing was applied to prod** — prod's definitions are correct (it was never
+  built through this path); this only fixes what a rebuild would produce.
 - 2026-08-10: **Fix: `dbo.vwWeatherForecastToDay` permanently stranded any station whose weather
   collection had lapsed — and the schema script had drifted from prod.** (`script01_createView.sql`.)
   The weather worker's work list required `dbo.ows_meteo.stamp` to fall inside a 15-day window,
