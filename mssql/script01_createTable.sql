@@ -2444,11 +2444,30 @@ BEGIN
 	DECLARE @type int,  @json nvarchar(max), @mli varchar(64), @WaterStation_id uniqueidentifier
 	SELECT TOP 1 @json = ows, @mli = mli, @WaterStation_id = WaterStation_id, @type = type FROM INSERTED
 
+	-- ows_meteo.type identifies the PROVIDER that served this station, so the payload can be sent to
+	-- a shredder that understands its shape:
+	--     1 = The Weather Company / Weather Underground v3 daily forecast  -> sp_ows_meteo
+	--     2 = Open-Meteo                                                   -> sp_ows_meteo_open
+	--     4 = Visual Crossing                                              -> sp_ows_meteo_open
+	--     5 = weather.gov / NWS      6 = Environment Canada (MSC SWOB)
+	--     7 = Weather Underground station observations   8 = Google Weather
+	-- Types 5-8 carry OBSERVATIONS, not a forecast, so nothing in them could honestly become a
+	-- weather_Forecast row and they are deliberately not routed. Do NOT raise for an unrouted type:
+	-- this runs inside the worker's UPDATE, and an error would discard the payload it just fetched.
+	-- (Before 2026-08-13 every provider was stamped 2, so the shape had to be sniffed downstream and
+	--  four providers' documents were indistinguishable from Open-Meteo. See sp_ows_meteo_open.)
 	IF @json IS NOT NULL
 	BEGIN
-		IF @type = 1
+		-- Canonical envelope FIRST. The workers convert every provider's document to
+		-- fishfind.weather.forecast/vN before storing, so one shredder handles them all and the
+		-- provider no longer has to be inferred from the payload's shape. See sp_ows_meteo_canonical.
+		IF JSON_VALUE(@json, '$.schema') LIKE 'fishfind.weather.forecast/%'
+		  EXEC sp_ows_meteo_canonical @json, @mli, @WaterStation_id
+		-- LEGACY raw-provider payloads. Both weather services deploy independently and thousands of
+		-- stored rows still hold raw documents, so these branches stay until nothing emits raw.
+		ELSE IF @type = 1
 		  EXEC sp_ows_meteo      @json, @mli, @WaterStation_id
-		ELSE IF @type = 2
+		ELSE IF @type IN (2, 4)
 		  EXEC sp_ows_meteo_open @json, @mli, @WaterStation_id
 	END
 END

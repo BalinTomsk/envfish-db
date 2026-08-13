@@ -272,6 +272,38 @@ GO
 
 ## Changelog
 
+- 2026-08-13: **`dbo.sp_ows_meteo_canonical` — ONE shredder for every weather provider, replacing
+  per-provider T-SQL parsing.** (`script02_Proc.sql`, `script01_createTable.sql`.) The weather workers
+  now convert each provider's document to a **canonical envelope** before storing it in
+  `dbo.ows_meteo.ows`, so the database no longer has to know which provider produced a payload.
+  **Why this replaces the old approach:** each provider previously needed its own T-SQL parser
+  (`sp_ows_meteo` for The Weather Company's `$.daypart[]`, `sp_ows_meteo_open` for Open-Meteo and — from
+  2026-08-12 — Visual Crossing, and *nothing* for four others), unit conversion lived in SQL, and a
+  payload no parser understood produced **no rows and no error**. It cannot error: the shredder runs
+  inside `TR_ows_meteo`, where raising would abort the worker's `UPDATE` and discard the payload it just
+  fetched. Conversion and provider quirks now live in C#/Java where they are unit-testable **and can
+  throw**. Envelope `fishfind.weather.forecast/v1`: `schema`, `provider`, `providerType`, `mli`,
+  `fetchedUtc`, `days[]` (one object per forecast day, already metric and already reduced), and
+  **`raw`** — the provider's original document, embedded so a stored payload can still be inspected and
+  replayed, which is exactly what made the Visual Crossing diagnosis possible. Embedding it avoids an
+  `ALTER TABLE` on a replicated table. `days[]` members map **1:1** onto `weather_Forecast`, so the
+  procedure is `OPENJSON … WITH … MERGE` and nothing else. An **unknown schema version is a no-op, never
+  a guess**, so a worker deployed ahead of the database cannot have its payload half-parsed.
+  `TR_ows_meteo` now checks `$.schema` **first** and falls back to the legacy per-provider branches,
+  which stay until neither service emits raw — the two services deploy independently and thousands of
+  stored rows still hold raw documents. Also in this change: `ows_meteo.type` becomes **provenance per
+  provider** rather than a routing key (`1` TWC v3, `2` Open-Meteo, `4` Visual Crossing, `5` weather.gov,
+  `6` Environment Canada, `7` Weather Underground observations, `8` Google Weather); the trigger routes
+  `2` **and `4`** to `sp_ows_meteo_open`, and types 5–8 are deliberately unrouted because they carry
+  observations, not forecasts. New `unit_test@OwsMeteoCanonical.sql` (3 tests: envelope shredded with
+  every column mapped; legacy raw payload still shredded during rollout; unknown version writes nothing
+  and does not throw) and `unit_test@OwsMeteoOpen.sql` TEST 4–5 for the type routing. **Confirmed
+  FAILING first** in both files (canonical TEST 1 → `got 0`; routing TEST 4 → `got rows=0`), then
+  **431 PASS / 0 FAIL**. **The type-4 routing is applied to prod 2026-08-13** (live trigger confirmed
+  byte-equal to the pre-change script first, then a rolled-back type-4 update on 13068500 produced 7
+  rows); **`sp_ows_meteo_canonical` and the `$.schema` routing are NOT yet applied** — they must land
+  before either worker starts emitting canonical payloads.
+
 - 2026-08-12: **Fix: `dbo.sp_ows_meteo_open` silently discarded every Visual Crossing document, so
   collected stations showed no weather.** (`script02_Proc.sql`.) `dbo.TR_ows_meteo` routes
   `ows_meteo.type = 2` here, but **the weather worker stores more than one provider's document under

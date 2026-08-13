@@ -3030,6 +3030,179 @@ BEGIN
 END
 GO
 
+----------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------
+/*
+    THE canonical forecast shredder. One procedure for EVERY provider.
+
+    The weather workers (efcs-backend WeatherService in C#, efj-backend weather service in Java)
+    convert each provider's document to a canonical envelope BEFORE storing it in dbo.ows_meteo.ows,
+    so this procedure never has to know which provider produced it.
+
+        { "schema":"fishfind.weather.forecast/v1", "provider":"visual-crossing", "providerType":4,
+          "mli":"13068500", "fetchedUtc":"...",
+          "days":[ { "date":..., "time":..., "tempHighC":..., "tempLowC":..., "tempC":...,
+                     "tempDayC":..., "humidityPct":..., "windSpeedKmh":..., "windDegrees":...,
+                     "windDirection":..., "pressureHpa":..., "precipChancePct":..., "precipMm":...,
+                     "precipDayMm":..., "precipNightMm":..., "weatherCode":..., "icon":...,
+                     "conditionsShort":..., "conditionsLong":... } ],
+          "raw":{ ...the provider's original document... } }
+
+    The members map 1:1 onto dbo.weather_Forecast, so this is OPENJSON ... WITH ... MERGE and nothing
+    else. Unit conversion, provider quirks, picking one row per day and mapping icons all happen in
+    the worker now, where they are unit-testable and where a failure can THROW -- which it cannot do
+    here, because this runs inside TR_ows_meteo and an error would abort the worker's UPDATE and
+    discard the payload it just fetched. That silence is what hid a whole provider until 2026-08-12.
+
+    $.raw is deliberately ignored. It exists so a stored payload can still be inspected and replayed;
+    that is what made the Visual Crossing diagnosis possible, and it survives the move to canonical.
+
+    An envelope version this database does not know is a NO-OP, never a guess: a worker deployed
+    ahead of the database must not have its payload half-parsed.
+
+        called from [TR_ows_meteo]
+    Covered by UNIT_TESTS/unit_test@OwsMeteoCanonical.sql.
+*/
+CREATE OR ALTER PROCEDURE [dbo].[sp_ows_meteo_canonical]
+      @js   nvarchar(max)
+    , @mli  varchar(64)
+    , @link uniqueidentifier
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+
+        IF @js IS NULL OR @mli IS NULL OR @link IS NULL OR ISJSON(@js) <> 1
+            RETURN;
+
+        IF JSON_VALUE(@js, '$.schema') <> N'fishfind.weather.forecast/v1'
+            RETURN;
+
+        ;WITH src AS
+        (
+            SELECT
+                  @link AS [link]
+                , d.dt
+                , d.tm
+                , d.tmHigh
+                , d.tmLow
+                , d.air_temperature
+                , d.tmDay
+                , d.humidity
+                , d.wind_max_speed
+                , d.wind_degree
+                , d.wind_direction
+                , d.pressure
+                , d.pop
+                , d.rain_today
+                , d.gpfDay
+                , d.gpfNight
+                , d.weather_code
+                , d.icon
+                , d.shortText
+                , d.longText
+                , @mli AS mli
+                , CAST(NULL AS int) AS city_id
+            FROM OPENJSON(@js, '$.days')
+            WITH (
+                  dt              date         '$.date'
+                , tm              time(7)      '$.time'
+                , tmHigh          float        '$.tempHighC'
+                , tmLow           float        '$.tempLowC'
+                , air_temperature int          '$.tempC'
+                , tmDay           float        '$.tempDayC'
+                , humidity        float        '$.humidityPct'
+                , wind_max_speed  float        '$.windSpeedKmh'
+                , wind_degree     float        '$.windDegrees'
+                , wind_direction  varchar(8)   '$.windDirection'
+                , pressure        int          '$.pressureHpa'
+                , pop             int          '$.precipChancePct'
+                , rain_today      int          '$.precipMm'
+                , gpfDay          float        '$.precipDayMm'
+                , gpfNight        float        '$.precipNightMm'
+                , weather_code    int          '$.weatherCode'
+                , icon            varchar(255) '$.icon'
+                , shortText       varchar(64)  '$.conditionsShort'
+                , longText        varchar(255) '$.conditionsLong'
+            ) d
+            WHERE d.dt IS NOT NULL
+        )
+        MERGE dbo.weather_Forecast AS t
+        USING src
+           ON t.mli = src.mli
+          AND t.dt  = src.dt
+
+        WHEN MATCHED THEN
+            UPDATE SET
+                  t.[link]            = src.[link]
+                , t.tmHigh            = ISNULL(src.tmHigh, t.tmHigh)
+                , t.tmLow             = ISNULL(src.tmLow, t.tmLow)
+                , t.gpfDay            = ISNULL(src.gpfDay, 0)
+                , t.gpfNight          = ISNULL(src.gpfNight, 0)
+                , t.humidity          = src.humidity
+                , t.wind_max_speed    = src.wind_max_speed
+                , t.wind_degree       = src.wind_degree
+                , t.wind_direction    = src.wind_direction
+                , t.shortText         = src.shortText
+                , t.longText          = src.longText
+                , t.icon              = src.icon
+                , t.pop               = src.pop
+                , t.tm                = src.tm
+                , t.pressure          = src.pressure
+                , t.rain_today        = src.rain_today
+                , t.air_temperature   = src.air_temperature
+                , t.tmDay             = src.tmDay
+                , t.weather_code      = src.weather_code
+
+        WHEN NOT MATCHED BY TARGET THEN
+            INSERT
+            (
+                  [link], [tmHigh], [tmLow], [gpfDay], [gpfNight]
+                , [humidity], [wind_max_speed], [wind_degree], [wind_direction]
+                , [shortText], [longText], [icon], [pop]
+                , [dt], [tm], [mli], [city_id]
+                , [pressure], [rain_today], [air_temperature], [tmDay], [weather_code]
+            )
+            VALUES
+            (
+                  src.[link]
+                , ISNULL(src.tmHigh, 0)
+                , ISNULL(src.tmLow, 0)
+                , ISNULL(src.gpfDay, 0)
+                , ISNULL(src.gpfNight, 0)
+                , src.humidity
+                , src.wind_max_speed
+                , src.wind_degree
+                , src.wind_direction
+                , src.shortText
+                , src.longText
+                , src.icon
+                , src.pop
+                , src.dt
+                , src.tm
+                , src.mli
+                , src.city_id
+                , src.pressure
+                , src.rain_today
+                , src.air_temperature
+                , src.tmDay
+                , src.weather_code
+            );
+
+    END TRY
+    BEGIN CATCH
+        SELECT
+              ERROR_NUMBER()    AS ErrorNumber
+            , ERROR_SEVERITY()  AS ErrorSeverity
+            , ERROR_STATE()     AS ErrorState
+            , ERROR_PROCEDURE() AS ErrorProcedure
+            , ERROR_LINE()      AS ErrorLine
+            , ERROR_MESSAGE()   AS ErrorMessage;
+    END CATCH
+END
+GO
+
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
