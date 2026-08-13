@@ -299,10 +299,15 @@ GO
   every column mapped; legacy raw payload still shredded during rollout; unknown version writes nothing
   and does not throw) and `unit_test@OwsMeteoOpen.sql` TEST 4–5 for the type routing. **Confirmed
   FAILING first** in both files (canonical TEST 1 → `got 0`; routing TEST 4 → `got rows=0`), then
-  **431 PASS / 0 FAIL**. **The type-4 routing is applied to prod 2026-08-13** (live trigger confirmed
-  byte-equal to the pre-change script first, then a rolled-back type-4 update on 13068500 produced 7
-  rows); **`sp_ows_meteo_canonical` and the `$.schema` routing are NOT yet applied** — they must land
-  before either worker starts emitting canonical payloads.
+  **431 PASS / 0 FAIL**. **Fully applied to prod 2026-08-13**, in two steps: first the type-4 routing
+  (live trigger confirmed byte-equal to the pre-change script, then a rolled-back type-4 update on
+  13068500 produced 7 rows), then `sp_ows_meteo_canonical` **before** the trigger that calls it, in one
+  committed transaction guarded by an assertion that prod was still in the expected intermediate state.
+  Smoke-tested live on 13068500 in a **rolled-back** transaction, both paths in one go: a canonical
+  envelope produced 1 row at `tmHigh` 29.44 °C, and the station's own stored **raw** payload still
+  produced 7 — so the rollout window is safe in both directions. 0 leftovers (station back to 7 rows,
+  12,025-char payload). **The database is now ready for the workers**; nothing changes until one of them
+  starts emitting the envelope.
 
 - 2026-08-12: **Fix: `dbo.sp_ows_meteo_open` silently discarded every Visual Crossing document, so
   collected stations showed no weather.** (`script02_Proc.sql`.) `dbo.TR_ows_meteo` routes
