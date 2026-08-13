@@ -498,7 +498,7 @@ GO
   the assertions mean the same thing whichever code page the file is itself read in — written any
   other way a corrupted expectation would silently match a corrupted definition and pass. Confirmed
   **FAILING first** (TEST 1 reported 6 corrupted definitions naming `fn_clean_river_name`, TEST 2 found
-  the mojibake, TEST 3 passed as the control), then **405 PASS / 0 FAIL** suite-wide via `autorun.bat`
+  the mojibake, TEST 3 passed as the control), then **426 PASS / 0 FAIL** suite-wide via `autorun.bat`
   (`crcstate` updated). **Nothing was applied to prod** — prod's definitions are correct (it was never
   built through this path); this only fixes what a rebuild would produce.
 - 2026-08-10: **Fix: `dbo.vwWeatherForecastToDay` permanently stranded any station whose weather
