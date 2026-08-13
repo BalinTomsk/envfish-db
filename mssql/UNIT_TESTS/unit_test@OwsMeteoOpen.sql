@@ -250,3 +250,118 @@ ELSE
 
 IF @@TRANCOUNT > 0 ROLLBACK TRAN Test03UnknownShape
 GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 4: provider-specific type routing -- Visual Crossing is stamped type = 4 by the
+--         weather workers, and TR_ows_meteo must still send it to sp_ows_meteo_open
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test04TypeFourRouted
+    DECLARE @test_name sysname = N'Test04TypeFourRouted [TR_ows_meteo] : type 4 (Visual Crossing) routes to the shredder'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Lake4 uniqueidentifier = NEWID(), @St4 uniqueidentifier = NEWID();
+DECLARE @Mli4 varchar(64) = 'UT_OWS_VC4';
+DECLARE @today4 date = CAST(GETDATE() AS date);
+DECLARE @rows4 int, @tmHigh4 float, @err4 nvarchar(2048), @msg4 nvarchar(4000);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test : the same Visual Crossing document as TEST 1, but stamped with
+--    the provider-specific type the workers now use instead of the catch-all 2.
+
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake4, 2, N'UT OWS Lake 4');
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@St4, @Mli4, 43.13, -112.47, 'US', N'unit-test station', 2, N'UT OWS Station 4', N'', 960104, @Lake4, N'UT OWS Lake 4', 1);
+
+DECLARE @d4 varchar(10) = CONVERT(varchar(10), @today4, 23);
+DECLARE @vc4 nvarchar(max) =
+    N'{"queryCost":1,"latitude":43.13,"longitude":-112.47,"timezone":"America/Boise","days":['
+  + N'{"datetime":"' + @d4 + N'","tempmax":94.7,"tempmin":53.7,"temp":78.3,"humidity":25.9,'
+  + N'"precip":0.5,"precipprob":75.0,"windspeed":10.0,"winddir":242.7,"pressure":1011.5,'
+  + N'"conditions":"Rain","description":"Rain in the morning.","icon":"rain"}]}';
+
+-- 2. execute unit test
+
+UPDATE dbo.ows_meteo SET type = 4, ows = @vc4, stamp = GETDATE() WHERE mli = @Mli4;
+
+SELECT @rows4 = COUNT(*) FROM dbo.weather_Forecast WHERE mli = @Mli4;
+SELECT @tmHigh4 = tmHigh FROM dbo.weather_Forecast WHERE mli = @Mli4 AND dt = @today4;
+
+END TRY
+BEGIN CATCH
+    SET @err4 = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @err4 IS NOT NULL
+BEGIN
+    SET @msg4 = N'TEST 4 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err4;
+    RAISERROR (@msg4, 16, -1)
+END
+ELSE IF ISNULL(@rows4, 0) <> 1 OR ABS(ISNULL(@tmHigh4, -999) - 34.8333) > 0.01
+BEGIN
+    SET @msg4 = N'TEST 4 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: expected 1 forecast row from a type-4 document, got rows='
+              + ISNULL(CAST(@rows4 AS varchar), 'NULL') + N' tmHigh=' + ISNULL(CAST(@tmHigh4 AS varchar), 'NULL');
+    RAISERROR (@msg4, 16, -1)
+END
+ELSE
+    print 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: type 4 (Visual Crossing) is routed to sp_ows_meteo_open'
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test04TypeFourRouted
+GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 5: an observation-only provider gets its own type and is simply not routed -- it must
+--         write nothing and must not throw, since an error here would abort the worker's UPDATE
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test05ObservationTypeNoOp
+    DECLARE @test_name sysname = N'Test05ObservationTypeNoOp [TR_ows_meteo] : observation-only provider type is a no-op'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Lake5 uniqueidentifier = NEWID(), @St5 uniqueidentifier = NEWID();
+DECLARE @Mli5 varchar(64) = 'UT_OWS_WU5';
+DECLARE @rows5 int = -1, @err5 nvarchar(2048), @msg5 nvarchar(4000);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test : Weather Underground station observations, now stamped type 7.
+--    No shredder claims that type, so the trigger must leave weather_Forecast alone.
+
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake5, 2, N'UT OWS Lake 5');
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@St5, @Mli5, 48.90, -96.66, 'US', N'unit-test station', 2, N'UT OWS Station 5', N'', 960105, @Lake5, N'UT OWS Lake 5', 1);
+
+DECLARE @wu5 nvarchar(max) =
+    N'{"observations":[{"stationID":"KTESTUT5","obsTimeUtc":"2026-08-12T10:34:24Z","country":"US",'
+  + N'"humidity":95,"winddir":180,"imperial":{"temp":53,"windSpeed":3}}]}';
+
+-- 2. execute unit test
+
+UPDATE dbo.ows_meteo SET type = 7, ows = @wu5, stamp = GETDATE() WHERE mli = @Mli5;
+
+SELECT @rows5 = COUNT(*) FROM dbo.weather_Forecast WHERE mli = @Mli5;
+
+END TRY
+BEGIN CATCH
+    SET @err5 = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @err5 IS NOT NULL
+BEGIN
+    SET @msg5 = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: an unrouted provider type must not throw, but raised: ' + @err5;
+    RAISERROR (@msg5, 16, -1)
+END
+ELSE IF ISNULL(@rows5, -1) <> 0
+BEGIN
+    SET @msg5 = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: expected 0 forecast rows, got '
+              + ISNULL(CAST(@rows5 AS varchar), 'NULL');
+    RAISERROR (@msg5, 16, -1)
+END
+ELSE
+    print 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: observation-only provider type wrote nothing and did not throw'
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test05ObservationTypeNoOp
+GO
