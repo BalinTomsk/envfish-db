@@ -5179,6 +5179,104 @@ BEGIN
 END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_weather_json('0d012b12-849c-20c3-8532-2f7a21cfcc58');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_weather_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_weather_json
+GO
+-- fn_lake_weather_json : the Weather tab (Resources/wfRiverViewWeather.aspx) — every monitoring
+-- station of the water body, each with its latest water reading (dbo.vScienceView, newest by stamp)
+-- and today's weather forecast (dbo.fn_station_weather_today). Mirrors what the page renders per
+-- station; `science`/`weather` are null when that station has no reading / no forecast for today.
+CREATE FUNCTION dbo.fn_lake_weather_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    st.sid      AS sid,
+                    st.mli      AS mli,
+                    st.lat      AS lat,
+                    st.lon      AS lon,
+                    st.locName  AS locName,
+                    JSON_QUERY((
+                        SELECT TOP 1 * FROM dbo.vScienceView sv
+                        WHERE sv.sid = st.sid
+                        ORDER BY sv.stamp DESC
+                        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+                    )) AS science,
+                    JSON_QUERY(wx.j) AS weather
+                FROM dbo.vWaterStation st
+                -- OUTER APPLY: a table-valued function with a correlated argument (st.sid) is only
+                -- allowed via APPLY, not as a subquery in the SELECT list.
+                OUTER APPLY (
+                    SELECT TOP 1 * FROM dbo.fn_station_weather_today(st.sid)
+                    FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+                ) wx(j)
+                WHERE st.lakeId = l.lake_id
+                ORDER BY st.mli
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS stations
+        FROM dbo.lake l
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_fishing_view_json('0d012b12-849c-20c3-8532-2f7a21cfcc58');
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_fishing_view_json' AND xtype = 'FN')
+    DROP function dbo.fn_lake_fishing_view_json
+GO
+-- fn_lake_fishing_view_json : the Fishing tab (Resources/wfRiverViewFishing.aspx) — the fishing
+-- rules/license/fees (dbo.fn_river_view_fishing), the assigned species, and the FULL Catch Log:
+-- every catch memo rendered exactly like the admin per-memo export dbo.fn_catch_memo_json (photos
+-- embedded base64, comments), aggregated newest-first. Reuses fn_catch_memo_json (STRING_AGG of the
+-- per-memo objects) so the memo shape stays single-sourced. NOTE: the full catch log with base64
+-- photos can be a large payload — that is deliberate (self-contained round-trip).
+CREATE FUNCTION dbo.fn_lake_fishing_view_json( @lake_id uniqueidentifier )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT TOP 1
+            CONVERT(varchar(36), l.lake_id) AS guid,
+            l.lake_name                     AS lakeName,
+            JSON_QUERY(rv.j) AS fishing,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    CONVERT(varchar(36), lf.fish_id) AS fishId,
+                    f.fish_name                      AS fishName,
+                    lf.status                        AS status
+                FROM dbo.lake_fish lf
+                LEFT JOIN dbo.fish f ON f.fish_id = lf.fish_id
+                WHERE lf.lake_id = l.lake_id
+                ORDER BY f.fish_name
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS species,
+            JSON_QUERY(ISNULL((
+                SELECT N'[' + STRING_AGG(CONVERT(nvarchar(max), dbo.fn_catch_memo_json(m.catch_memo_id, NULL)), N',')
+                             WITHIN GROUP (ORDER BY m.catch_memo_created DESC) + N']'
+                FROM dbo.catch_memo m
+                WHERE m.catch_memo_lake_id = l.lake_id
+            ), N'[]')) AS catchLog
+        FROM dbo.lake l
+        -- OUTER APPLY: fn_river_view_fishing is a TVF with a correlated argument (l.lake_id).
+        OUTER APPLY (
+            SELECT TOP 1 * FROM dbo.fn_river_view_fishing(l.lake_id)
+            FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+        ) rv(j)
+        WHERE l.lake_id = @lake_id
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_message_inbox' AND xtype = 'IF')
     DROP function dbo.fn_user_message_inbox
