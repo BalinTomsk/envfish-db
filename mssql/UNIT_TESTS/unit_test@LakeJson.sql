@@ -77,15 +77,23 @@ DECLARE @Lake uniqueidentifier = NEWID();
 INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (@Lake, 1, N'UT Stats');
 INSERT INTO dbo.Lake_State (Lake_id, [month], water_degree, PH, cold_cool, stamp) VALUES (@Lake, 6, 15, 7.2, 1, '2026-01-01');
 DECLARE @json nvarchar(max) = dbo.fn_lake_stats_json(@Lake);
+-- The Stats page edits one month at a time, so the export must carry ALL 12 months: real data where a
+-- Lake_State row exists (hasData=true), a placeholder with null measurements otherwise (hasData=false).
 IF @json IS NOT NULL
-   AND CAST(JSON_VALUE(@json, '$.states[0].month') AS int)       = 6
-   AND CAST(JSON_VALUE(@json, '$.states[0].waterDegree') AS float) = 15
-   AND JSON_VALUE(@json, '$.states[0].coldCool')                 = 'true'
+   AND CAST(JSON_VALUE(@json, '$.states[0].month')  AS int)       = 1        -- Jan present even with no row
+   AND JSON_VALUE(@json, '$.states[0].hasData')                   = 'false'
+   AND JSON_VALUE(@json, '$.states[0].waterDegree')               IS NULL
+   AND CAST(JSON_VALUE(@json, '$.states[5].month')  AS int)       = 6        -- Jun has the row
+   AND CAST(JSON_VALUE(@json, '$.states[5].waterDegree') AS float) = 15
+   AND JSON_VALUE(@json, '$.states[5].coldCool')                  = 'true'
+   AND JSON_VALUE(@json, '$.states[5].hasData')                   = 'true'
+   AND CAST(JSON_VALUE(@json, '$.states[11].month') AS int)       = 12       -- exactly 12 entries
+   AND JSON_VALUE(@json, '$.states[12].month')                    IS NULL
    SET @ok = 1;
 END TRY
 BEGIN CATCH SELECT ERROR_NUMBER() AS ErrorNumber, @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage; END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-IF @ok = 1 PRINT 'TEST 3 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_lake_stats_json returns the month row';
+IF @ok = 1 PRINT 'TEST 3 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_lake_stats_json returns all 12 months (data + placeholders)';
 ELSE BEGIN DECLARE @d3 varchar(400) = LEFT(ISNULL(@json, '<NULL>'), 380); RAISERROR('TEST 3 FAIL [%dms]: %s', 16, -1, @ElapsedMs, @d3); END
 ROLLBACK TRAN TestLakeJson3
 GO

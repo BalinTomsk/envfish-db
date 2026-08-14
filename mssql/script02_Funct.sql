@@ -4746,7 +4746,11 @@ GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_stats_json' AND xtype = 'FN')
     DROP function dbo.fn_lake_stats_json
 GO
--- fn_lake_stats_json : the Stats tab (LakeState.aspx) — the per-month water-state rows.
+-- fn_lake_stats_json : the Stats tab (LakeState.aspx) — the per-month water-state rows. Always emits
+-- ALL 12 months (Jan..Dec) so the export can rebuild every month the page edits; a month with a
+-- Lake_State row carries its data and hasData=1, a month without one is a placeholder (null
+-- measurements, hasData=0). cold_cool/flow_stand are emitted raw (null when unset) rather than
+-- defaulted to 0, so an empty placeholder month is not misreported as "cold"/"flow".
 CREATE FUNCTION dbo.fn_lake_stats_json( @lake_id uniqueidentifier )
 RETURNS NVARCHAR(MAX)
 AS
@@ -4758,7 +4762,7 @@ BEGIN
             l.lake_name                     AS lakeName,
             JSON_QUERY(ISNULL((
                 SELECT
-                    s.[month]      AS [month],
+                    m.mo           AS [month],
                     s.PH           AS ph,
                     s.Phosphorus   AS phosphorus,
                     s.TDS          AS tds,
@@ -4775,12 +4779,13 @@ BEGIN
                     s.velocity     AS velocity,
                     s.water_degree AS waterDegree,
                     s.air_degree   AS airDegree,
-                    CAST(COALESCE(s.cold_cool, 0) AS bit)  AS coldCool,
-                    CAST(COALESCE(s.flow_stand, 0) AS bit) AS flowStand,
-                    CONVERT(varchar(19), s.stamp, 126)     AS stamp
-                FROM dbo.Lake_State s
-                WHERE s.Lake_id = l.lake_id
-                ORDER BY s.[month]
+                    CAST(s.cold_cool  AS bit)              AS coldCool,
+                    CAST(s.flow_stand AS bit)              AS flowStand,
+                    CONVERT(varchar(19), s.stamp, 126)     AS stamp,
+                    CAST(CASE WHEN s.Lake_id IS NULL THEN 0 ELSE 1 END AS bit) AS hasData
+                FROM (VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12)) m(mo)
+                LEFT JOIN dbo.Lake_State s ON s.Lake_id = l.lake_id AND s.[month] = m.mo
+                ORDER BY m.mo
                 FOR JSON PATH, INCLUDE_NULL_VALUES
             ), N'[]')) AS states
         FROM dbo.lake l
