@@ -315,3 +315,43 @@ ELSE
 
 ROLLBACK TRAN Test08FishLatinBadArgument
 GO
+
+-- ===================================================================================
+-- TEST 9: the same exact-latin-name bug as fn_fish_list_json TEST 15, but here it is
+--         worse: fn_fish_latin_json returns only ONE row per query (TOP 1), so the wrong
+--         tiebreak doesn't just mis-order results, it silently returns the WRONG SPECIES
+--         with no signal anything went wrong. Confirmed on live data: batch-looking-up
+--         the exact binomial "Esox lucius" (Northern Pike) returned "Muskellunge, Tiger"
+--         ("Esox lucius x E. masquinongy") instead -- a real risk for any caller (e.g. the
+--         add-fish skill's pre-check) that trusts the returned name at face value.
+-- ===================================================================================
+BEGIN TRAN Test09FishLatinExactWins
+    DECLARE @test_name sysname = N'Test09FishLatinExactWins [fn_fish_latin_json] : exact latin name beats a compound-latin substring'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(MAX), @name nvarchar(64), @latin nvarchar(64);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, water_type) VALUES
+  (NEWID(), 'UT FLA Aaa Hybrid', 'Ut fla pikeus x other', 1),  -- substring-only match, sorts first alphabetically
+  (NEWID(), 'UT FLA Zzz Exact',  'Ut fla pikeus',         1);  -- the exact binomial being looked up
+
+SET @json = dbo.fn_fish_latin_json(N'["Ut fla pikeus"]');
+
+SET @name  = JSON_VALUE(@json, '$[0].name');
+SET @latin = JSON_VALUE(@json, '$[0].latin');
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE() AS ErrorState
+         , @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF @name = N'UT FLA Zzz Exact' AND @latin = N'Ut fla pikeus'
+    PRINT 'TEST 9 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: the exact latin-name match was returned, not the alphabetically-earlier substring match';
+ELSE
+    RAISERROR ('TEST 9 FAIL [%dms]: expected name=UT FLA Zzz Exact latin=Ut fla pikeus, got name=%s latin=%s', 16, -1, @ElapsedMs, @name, @latin);
+
+ROLLBACK TRAN Test09FishLatinExactWins
+GO

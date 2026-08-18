@@ -2238,8 +2238,12 @@ GO
 -- 'lota lota' both find Burbot. The database collation is CI, so matching is already
 -- case-insensitive without a COLLATE clause. LIKE wildcards in the term are neutralized, so
 -- a search for '%' looks for a literal percent sign rather than returning everything. An
--- exact common-name hit is ordered first, so a caller reading element [0] of the array gets
--- the species it named rather than the alphabetically-first partial match. NULL or blank
+-- exact match (on EITHER the common or the latin name) is ordered first, so a caller reading
+-- element [0] of the array gets the species it named rather than the alphabetically-first
+-- partial match -- this matters even when the query is itself a latin binomial, since a
+-- compound name like "Esox lucius x E. masquinongy" (Tiger Muskellunge) is a substring match
+-- for the exact query "Esox lucius" (Northern Pike) and would otherwise win the tie by sorting
+-- first alphabetically. NULL or blank
 -- means no search. A term longer than the columns (name 32, latin 64) simply matches nothing.
 -- Both filters combine: they are ANDed.
 --
@@ -2271,7 +2275,8 @@ BEGIN
           AND ( @search IS NULL
                 OR f.fish_name  LIKE N'%' + @term + N'%' ESCAPE N'\'
                 OR f.fish_latin LIKE N'%' + @term + N'%' ESCAPE N'\' )
-        ORDER BY CASE WHEN @search IS NOT NULL AND f.fish_name = @search THEN 0 ELSE 1 END,
+        ORDER BY CASE WHEN @search IS NOT NULL
+                           AND ( f.fish_name = @search OR f.fish_latin = @search ) THEN 0 ELSE 1 END,
                  f.fish_name
         FOR JSON PATH
     ), N'[]');
@@ -2298,10 +2303,14 @@ GO
 --
 -- Matching is the same rule as fn_fish_list_json's @search -- substring of the common OR the
 -- latin name, case-insensitive by collation, LIKE metacharacters neutralized -- with an exact
--- common-name hit winning. So "Walley" resolves to "Walleye", and "Sturgeon" resolves to
--- "Sturgeon" rather than to "Chub, Sturgeon", which sorts earlier alphabetically. Only the
--- single best match per requested name is returned; use fn_fish_list_json's @search to see
--- every candidate. A blank element matches nothing on purpose: '%' + '' + '%' would otherwise
+-- match on EITHER column winning over a substring-only match. So "Walley" resolves to
+-- "Walleye", "Sturgeon" resolves to "Sturgeon" rather than "Chub, Sturgeon", and the exact
+-- binomial "Esox lucius" resolves to Northern Pike rather than "Esox lucius x E. masquinongy"
+-- (Tiger Muskellunge) -- checking fish_name alone for the tiebreak missed every case where the
+-- query itself IS a latin name, since TOP 1 means the wrong species was returned outright, not
+-- just mis-ordered. Only the single best match per requested name is returned; use
+-- fn_fish_list_json's @search to see every candidate. A blank element matches nothing on
+-- purpose: '%' + '' + '%' would otherwise
 -- match every row and silently return an arbitrary species.
 -- SELECT dbo.fn_fish_latin_json(N'["Walley","Burbot","no such fish"]')
 CREATE FUNCTION dbo.fn_fish_latin_json( @names nvarchar(max) )
@@ -2328,7 +2337,7 @@ BEGIN
             WHERE t.raw <> N''
               AND ( f.fish_name  LIKE N'%' + e.term + N'%' ESCAPE N'\'
                  OR f.fish_latin LIKE N'%' + e.term + N'%' ESCAPE N'\' )
-            ORDER BY CASE WHEN f.fish_name = t.raw THEN 0 ELSE 1 END, f.fish_name
+            ORDER BY CASE WHEN f.fish_name = t.raw OR f.fish_latin = t.raw THEN 0 ELSE 1 END, f.fish_name
         ) m
         ORDER BY CAST(q.[key] AS int)
         FOR JSON PATH, INCLUDE_NULL_VALUES

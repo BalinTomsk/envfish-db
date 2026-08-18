@@ -623,3 +623,42 @@ ELSE
 
 ROLLBACK TRAN Test14FishListSearchCombined
 GO
+
+-- ===================================================================================
+-- TEST 15: an exact LATIN-name query must win over a compound Latin name that merely
+--          contains it as a substring. Real bug found on live data: searching the exact
+--          binomial "Esox lucius" (Northern Pike) returned "Muskellunge, Tiger" instead,
+--          because that hybrid's Latin name is "Esox lucius x E. masquinongy" -- a
+--          substring match -- and the old tiebreak only checked fish_name = @search, never
+--          fish_latin = @search, so with no common-name candidate the tie fell through to
+--          plain alphabetical order by fish_name (Muskellunge < Pike).
+-- ===================================================================================
+BEGIN TRAN Test15FishListExactLatinWins
+    DECLARE @test_name sysname = N'Test15FishListExactLatinWins [fn_fish_list_json] : exact latin name beats a compound-latin substring'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(MAX), @first nvarchar(64);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, water_type) VALUES
+  (NEWID(), 'UT FLJ Aaa Hybrid', 'Ut flj exactus x other', 1),  -- substring-only match, sorts first alphabetically
+  (NEWID(), 'UT FLJ Zzz Exact',  'Ut flj exactus',         1);  -- the exact binomial being searched for
+
+SET @json = dbo.fn_fish_list_json(NULL, 'Ut flj exactus');
+
+SET @first = JSON_VALUE(@json, '$[0].name');
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE() AS ErrorState
+         , @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF @first = N'UT FLJ Zzz Exact'
+    PRINT 'TEST 15 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: the exact latin-name match sorted first, ahead of the alphabetically-earlier substring match';
+ELSE
+    RAISERROR ('TEST 15 FAIL [%dms]: expected [0]=UT FLJ Zzz Exact, got %s', 16, -1, @ElapsedMs, @first);
+
+ROLLBACK TRAN Test15FishListExactLatinWins
+GO
