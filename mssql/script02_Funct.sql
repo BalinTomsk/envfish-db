@@ -2215,6 +2215,127 @@ AS
          , fish_spawn_description, fish_spawn_location, reproductive_strategy FROM dbo.fish_spawn WHERE fish_Id = @fish_id
 GO
 ------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_fish_list_json' AND xtype = 'FN')
+    DROP function dbo.fn_fish_list_json
+GO
+-- The species catalogue as one JSON array, ordered by common name:
+--   [{"name":"Atlantic Needlefish","latin":"Strongylura marina"}, ...]
+-- Called by FishTracker.WebService.TFishService.Page_Load (~/WebService/Fish/Default.aspx),
+-- the public read-only species endpoint. Returns '[]' (never NULL) when nothing matches, so
+-- the caller can always write the result straight to the response body.
+--
+-- @water_type filters on dbo.fish.water_type, which is a BITMASK, not an enum
+-- (1 Freshwater, 2 Saltwater, 4 Clear water, 8 Low velocity, 16 Moderate velocity,
+--  32 High velocity, 64 Turbid, 128 Moderately Turbid, 256 Coldstream -- the same map
+--  Resources/wfFishViewer.aspx.cs decodes for display). A row matches when it carries EVERY
+-- requested bit, so @water_type = 1 returns freshwater species including those also tagged
+-- Clear water (5), Low velocity (9) or Saltwater (3, the diadromous ones). Testing
+-- water_type = 1 instead would drop 119 of the 756 freshwater species on the live database.
+-- NULL (or 0) means no filter -- the whole catalogue. Species with no water_type recorded
+-- never match a non-zero mask: unknown is not a claim of freshwater.
+--
+-- @search is a substring searched in BOTH the common and the latin name, so 'burbot' and
+-- 'lota lota' both find Burbot. The database collation is CI, so matching is already
+-- case-insensitive without a COLLATE clause. LIKE wildcards in the term are neutralized, so
+-- a search for '%' looks for a literal percent sign rather than returning everything. An
+-- exact common-name hit is ordered first, so a caller reading element [0] of the array gets
+-- the species it named rather than the alphabetically-first partial match. NULL or blank
+-- means no search. A term longer than the columns (name 32, latin 64) simply matches nothing.
+-- Both filters combine: they are ANDed.
+--
+-- SELECT dbo.fn_fish_list_json(NULL, NULL)       -- everything
+-- SELECT dbo.fn_fish_list_json(1, NULL)          -- freshwater only
+-- SELECT dbo.fn_fish_list_json(NULL, 'Burbot')   -- [{"name":"Burbot","latin":"Lota lota"}]
+CREATE FUNCTION dbo.fn_fish_list_json( @water_type int, @search nvarchar(200) )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    DECLARE @term nvarchar(400);
+
+    -- a blank search is no search at all
+    IF @search IS NOT NULL AND LTRIM(RTRIM(@search)) = N'' SET @search = NULL;
+    SET @search = LTRIM(RTRIM(@search));
+
+    -- neutralize LIKE metacharacters; the backslash must be doubled FIRST or it would
+    -- re-escape the escapes added after it
+    SET @term = REPLACE(REPLACE(REPLACE(REPLACE(
+                    @search, N'\', N'\\'), N'%', N'\%'), N'_', N'\_'), N'[', N'\[');
+
+    RETURN ISNULL(
+    (
+        SELECT f.fish_name  AS name,
+               f.fish_latin AS latin
+        FROM dbo.fish f
+        WHERE ( @water_type IS NULL
+                OR ( ISNULL(f.water_type, 0) & @water_type ) = @water_type )
+          AND ( @search IS NULL
+                OR f.fish_name  LIKE N'%' + @term + N'%' ESCAPE N'\'
+                OR f.fish_latin LIKE N'%' + @term + N'%' ESCAPE N'\' )
+        ORDER BY CASE WHEN @search IS NOT NULL AND f.fish_name = @search THEN 0 ELSE 1 END,
+                 f.fish_name
+        FOR JSON PATH
+    ), N'[]');
+END
+GO
+------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_fish_latin_json' AND xtype = 'FN')
+    DROP function dbo.fn_fish_latin_json
+GO
+-- Batch common-name -> latin-name lookup: one result per requested name, in the order asked.
+-- Called by FishTracker.WebService.TFishService.Page_Load (~/WebService/Fish/?fishes=...),
+-- which parses the query string and builds the array.
+--
+-- @names is a JSON ARRAY of names, e.g. N'["Walley","Burbot"]'. A JSON array rather than a
+-- delimited string because 762 of the 1041 species names CONTAIN A COMMA ("Bass, Guadalupe",
+-- "Dace, Longnose"), so comma-splitting would tear most of the catalogue in half. OPENJSON
+-- also exposes the element index, which STRING_SPLIT does not guarantee, and the result has
+-- to come back in the order it was asked for.
+--
+-- Returns [{"query":"Walley","name":"Walleye","latin":"Stizostedion vitreum"}, ...].
+-- "query" echoes the requested name so a caller can map input to output; a name that resolves
+-- to nothing comes back with name and latin null rather than being dropped, so the array is
+-- always 1:1 with the request. Returns '[]' (never NULL) for an empty or non-array argument.
+--
+-- Matching is the same rule as fn_fish_list_json's @search -- substring of the common OR the
+-- latin name, case-insensitive by collation, LIKE metacharacters neutralized -- with an exact
+-- common-name hit winning. So "Walley" resolves to "Walleye", and "Sturgeon" resolves to
+-- "Sturgeon" rather than to "Chub, Sturgeon", which sorts earlier alphabetically. Only the
+-- single best match per requested name is returned; use fn_fish_list_json's @search to see
+-- every candidate. A blank element matches nothing on purpose: '%' + '' + '%' would otherwise
+-- match every row and silently return an arbitrary species.
+-- SELECT dbo.fn_fish_latin_json(N'["Walley","Burbot","no such fish"]')
+CREATE FUNCTION dbo.fn_fish_latin_json( @names nvarchar(max) )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    -- OPENJSON over a JSON *object* would yield property names, and CAST(key AS int) would
+    -- fail, so anything that is not an array is refused up front
+    IF ISJSON(@names) <> 1 OR LEFT(LTRIM(ISNULL(@names, N'')), 1) <> N'['
+        RETURN N'[]';
+
+    RETURN ISNULL(
+    (
+        SELECT q.value      AS [query],
+               m.fish_name  AS name,
+               m.fish_latin AS latin
+        FROM OPENJSON(@names) q
+        CROSS APPLY (SELECT LTRIM(RTRIM(ISNULL(q.value, N''))) AS raw) t
+        CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(
+                        t.raw, N'\', N'\\'), N'%', N'\%'), N'_', N'\_'), N'[', N'\[') AS term) e
+        OUTER APPLY (
+            SELECT TOP 1 f.fish_name, f.fish_latin
+            FROM dbo.fish f
+            WHERE t.raw <> N''
+              AND ( f.fish_name  LIKE N'%' + e.term + N'%' ESCAPE N'\'
+                 OR f.fish_latin LIKE N'%' + e.term + N'%' ESCAPE N'\' )
+            ORDER BY CASE WHEN f.fish_name = t.raw THEN 0 ELSE 1 END, f.fish_name
+        ) m
+        ORDER BY CAST(q.[key] AS int)
+        FOR JSON PATH, INCLUDE_NULL_VALUES
+    ), N'[]');
+END
+GO
+------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_map_fish_list_bylatlon' AND xtype = 'IF')
     DROP function dbo.fn_map_fish_list_bylatlon
 GO
