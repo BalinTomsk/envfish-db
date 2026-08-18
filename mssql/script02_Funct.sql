@@ -2375,7 +2375,13 @@ RETURN
 SELECT v.fish_id, v.fish_name FROM dbo.fish v
     LEFT JOIN dbo.fish_zoo z ON z.fish_id = v.fish_id
     WHERE ( v.fish_Type & 1 ) = 1 -- 1 - sport fish
-  	AND v.water_type = 1             -- 1 - freshwater
+  	AND ( ISNULL(v.water_type, 0) & 1 ) = 1   -- Freshwater is BIT 1 of a bitmask, not the
+                                            -- whole value: a species tagged Freshwater +
+                                            -- Clear water (5), + Low velocity (9) or
+                                            -- + Saltwater (3, diadromous) carries the bit
+                                            -- too. Testing = 1 dropped 6 of the 22
+                                            -- eligible sport species on the live database.
+                                            -- fish_Type above is already read as a mask.
     AND EXISTS
     ( 
 		SELECT TOP 1 1 FROM dbo.fish_location f 
