@@ -2336,6 +2336,87 @@ BEGIN
 END
 GO
 ------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_fish_code_latin_json' AND xtype = 'FN')
+    DROP function dbo.fn_fish_code_latin_json
+GO
+-- Regional fish CODE -> latin name, for one province/state.
+-- Called by FishTracker.WebService.TFishService.Page_Load
+-- (~/WebService/Fish/?province=AB&codes=BURB,WALL), which parses the query string.
+--
+-- Returns [{"code":"BURB","latin":"Lota lota"}, ...].
+--
+-- @state  is required (a regional code means nothing without its jurisdiction: dbo.fish_code's
+--         key is country+state+code). NULL or blank returns '[]'.
+-- @country is optional -- NULL means any. Only 'CA' exists today, but country is part of the
+--         key, so leaving it out entirely would become ambiguous the moment US codes land.
+-- @codes  is a JSON ARRAY of codes, e.g. N'["BURB","WALL"]'. NULL means "every code in that
+--         province". A JSON array (not a delimited string) for the same reason as
+--         fn_fish_latin_json: OPENJSON exposes the element index, which is what lets the answer
+--         come back in the order it was asked.
+--
+-- "code" echoes the code that was ASKED FOR, trimmed, so a caller can map request to response.
+-- Matching is exact (not a substring) and case-insensitive by collation, so the echo may differ
+-- in case from the stored value.
+--
+-- ONE ELEMENT PER MATCH, not per requested code. dbo.fish_code's primary key is
+-- (fish_id, country, state, code), so a single code may legitimately name more than one species:
+-- on the live database BC 'RB' is both Rock Bass and Rainbow Trout, 'LS' both Lake Sturgeon and
+-- Largescale Sucker, 'WS' both White Sturgeon and White Sucker. Returning TOP 1 would hide half
+-- of that behind an arbitrary pick, so an ambiguous code comes back as several elements sharing
+-- the code. A code that matches nothing still yields exactly one element, with latin null, so it
+-- never silently disappears from the caller's list.
+--
+-- dbo.fish_code.code is char(16) and therefore BLANK-PADDED: every value is 16 bytes wide.
+-- It is RTRIMmed on the way out, or the document would carry "BURB            ".
+--
+-- SELECT dbo.fn_fish_code_latin_json('CA', 'AB', N'["BURB","WALL","nope"]')
+-- SELECT dbo.fn_fish_code_latin_json(NULL, 'BC', NULL)   -- every code in BC
+CREATE FUNCTION dbo.fn_fish_code_latin_json( @country char(2), @state char(2), @codes nvarchar(max) )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    IF @state IS NULL OR LTRIM(RTRIM(@state)) = N''
+        RETURN N'[]';
+
+    -- no list supplied: publish the whole province, ordered by code
+    IF @codes IS NULL
+        RETURN ISNULL(
+        (
+            SELECT RTRIM(c.code) AS code,
+                   f.fish_latin  AS latin
+            FROM dbo.fish_code c
+            JOIN dbo.fish f ON f.fish_id = c.fish_id
+            WHERE c.state = @state
+              AND ( @country IS NULL OR c.country = @country )
+            ORDER BY RTRIM(c.code), f.fish_latin
+            FOR JSON PATH
+        ), N'[]');
+
+    -- OPENJSON over a JSON object would yield property names and CAST(key AS int) would fail
+    IF ISJSON(@codes) <> 1 OR LEFT(LTRIM(@codes), 1) <> N'['
+        RETURN N'[]';
+
+    RETURN ISNULL(
+    (
+        SELECT t.raw        AS code,
+               m.fish_latin AS latin
+        FROM OPENJSON(@codes) q
+        CROSS APPLY (SELECT LTRIM(RTRIM(ISNULL(q.value, N''))) AS raw) t
+        OUTER APPLY (
+            SELECT f.fish_latin
+            FROM dbo.fish_code c
+            JOIN dbo.fish f ON f.fish_id = c.fish_id
+            WHERE t.raw <> N''
+              AND c.state = @state
+              AND ( @country IS NULL OR c.country = @country )
+              AND RTRIM(c.code) = t.raw
+        ) m
+        ORDER BY CAST(q.[key] AS int), m.fish_latin
+        FOR JSON PATH, INCLUDE_NULL_VALUES
+    ), N'[]');
+END
+GO
+------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_map_fish_list_bylatlon' AND xtype = 'IF')
     DROP function dbo.fn_map_fish_list_bylatlon
 GO
