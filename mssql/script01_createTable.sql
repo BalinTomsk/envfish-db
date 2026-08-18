@@ -163,6 +163,27 @@ GO
 ALTER TABLE dbo.County ADD CONSTRAINT DEF_County_Country  DEFAULT ('') FOR Country
 GO
 
+------------------------------------------------------------------------------
+/**
+ * @table fish_code
+ * @brief Stores region-specific codes for fish species.
+ *
+ * This table maps fish species to their regional identification codes
+ * used by different jurisdictions (country/state combinations).
+ * Examples: AEP codes (Alberta), state-specific fish codes, etc.
+ */
+------------------------------------------------------------------------------
+
+CREATE TABLE fish_code
+(
+    fish_id     uniqueidentifier NOT NULL,  -- Foreign key to fish table
+    country     char(2)          NOT NULL,  -- Country code (e.g., 'US', 'CA')
+    state       char(2)          NOT NULL,  -- State/Province code (e.g., 'AB', 'MN')
+    code        char(16)         NOT NULL,  -- Regional fish code (e.g., 'WALL', 'NRPK', 'SAVI')
+    CONSTRAINT PK_fish_code PRIMARY KEY CLUSTERED (fish_id, country, state, code)
+);
+GO
+
 ------------------------------keep current water state--------------------------------
 -- based on aggregation of latest 3 day's data from USWater.dbo.vUSWaterData
 
@@ -262,6 +283,7 @@ CREATE TABLE fish
     sid             int not null identity(1,1),
     fish_home_range float,                    -- [km]
     fish_distribution_area nvarchar(500),     -- free-text geographic distribution range, e.g. "North Atlantic; Gulf of Mexico"
+    aep             nvarchar(255),
     created         datetime2 not null,
     stamp           datetime2 not null
 );
@@ -276,6 +298,12 @@ GO
 CREATE UNIQUE NONCLUSTERED INDEX UK_fish_name  ON fish(fish_name)    
 GO
 ALTER TABLE fish ADD CONSTRAINT FK_fish_Family FOREIGN KEY (family_Id) REFERENCES fish_family(family_Id) ON DELETE CASCADE ON UPDATE CASCADE;
+GO
+-- fish_code is declared earlier in this script, but its FK must come after dbo.fish
+-- exists and carries PK_fish: this script is concatenated into ffi2.sql in file order,
+-- so a forward reference here aborts the whole database build.
+ALTER TABLE dbo.fish_code ADD CONSTRAINT FK_fish_code_fish 
+    FOREIGN KEY (fish_id) REFERENCES dbo.fish (fish_id) ON DELETE CASCADE;
 GO
 ALTER TABLE dbo.fish ADD CONSTRAINT DEF_fish_family_Id  DEFAULT ('00000000-0000-0000-0000-000000000000') FOR family_Id
 GO
