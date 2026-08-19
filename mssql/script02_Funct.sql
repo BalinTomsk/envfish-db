@@ -3823,6 +3823,387 @@ AS
 GO
 
 -----------------------------------------------------------------------------------------------------------------------------------------------
+-- RETIRED 2026-08-19: twelve functions that existed ONLY on production - none of them appeared in
+-- any scriptNN source, so a fresh build never had them and only production carried them.
+--
+-- Each was verified unreferenced three ways before removal:
+--   * no row in sys.sql_expression_dependencies pointing at it;
+--   * no other module's TEXT mentions it (so dynamic SQL is covered);
+--   * no hit anywhere in the 8 repositories under c:\envoinxishfind - all file types, INCLUDING
+--     the compiled bin\*.dll, searched in one pass. 103 of the 116 zero-dependency functions DID
+--     turn up in that pass, which is the control proving the search works.
+--
+-- Not retirable and deliberately left in place: dbo.fn_diagramobjects, which SSMS installs into the
+-- user database for database-diagram support (it reports is_ms_shipped = 0 only for that reason).
+--
+-- Their bodies were the only copies in existence, so each is preserved verbatim below the drop that
+-- removes it. Uncomment to restore.
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- dbo.fn_device_reports - analytics helper
+-- create function dbo.fn_device_reports( @p1 int, @p2 int, @p3 int)
+-- RETURNS TABLE
+-- WITH SCHEMABINDING
+-- RETURN
+-- SELECT  1 as col, 2 as num, 3 as val
+-- union all
+-- SELECT  4, 5, 6
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_device_reports' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_device_reports ;
+GO
+
+-- dbo.fn_device_category_reports - analytics helper
+-- create function dbo.fn_device_category_reports( @p1 int, @p2 int, @p3 int, @p4 int)
+-- RETURNS TABLE
+-- WITH SCHEMABINDING
+-- RETURN
+-- SELECT  1 as col, 2 as num, 3 as val, 4 as [desc]
+-- union all
+-- SELECT  4, 5, 6, 7
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_device_category_reports' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_device_category_reports ;
+GO
+
+-- dbo.fn_get_forecast - superseded by fn_plot_weather / fn_forecast_plot_json
+-- CREATE function dbo.fn_get_forecast( @mli varchar(64), @fish_id uniqueidentifier )
+-- returns @tbl table ( rw smallint identity(1,1),  iday smallint, ihour smallint, stamp datetime
+--                     , air float, wind_speed smallint, wind_direction smallint                                   -- weather data
+--                     , win_icon varchar(12), moon_phase varchar(32)
+--                     , pressure smallint, humidity smallint, precipitation smallint, pop smallint
+--                     , discharge float, turbidity float, temperature float                                       -- water data
+--                     , oxygen float, ph float, elevation float, velocity smallint
+--                     , probablity smallint
+--                     , primary key(iday, ihour) )
+-- AS
+-- BEGIN
+--   declare @start datetime = CAST(CAST(dateadd(day, -14, getdate()) AS date) AS datetime)                        -- set date 2 week back as start date point
+--                                                                                                                 -- generate a sequance: 2 week before today and 2 week after
+--   insert into @tbl (iday, ihour, stamp, moon_phase, pop, probablity)
+--     select TOP 672 datepart( day,  dateadd( hour, ROW_NUMBER() OVER (ORDER BY column_id), @start))
+--          ,         datepart( hour, dateadd( hour, ROW_NUMBER() OVER (ORDER BY column_id), @start))
+--          , dateadd( hour, ROW_NUMBER() OVER (ORDER BY column_id), @start)
+--          , dbo.get_moon_phase(dateadd( hour, ROW_NUMBER() OVER (ORDER BY column_id), @start))
+--          , 100, 100 from sys.columns
+--   set @start  = DATEADD( hour, 1, @start )
+--                                                                                                                  -- set current data from water wells
+--   update t set t.air = w.air, t.wind_speed = w.wind, t.wind_direction = w.winddir, t.humidity = w.humidity       -- weather data
+--              , t.pressure = w.pressure
+--              , t.discharge = w.discharge, t.turbidity = w.turbidity                                              -- water data
+--              , t.oxygen = w.oxygen, t.ph = w.ph, t.elevation = w.elevation
+--              , t.temperature = w.temperature, t.velocity = w.velocity
+--   from @tbl t
+--     JOIN dbo.WaterData     w ON ( dbo.fn_floor_date2hour( w.stamp ) = t.stamp )
+-- 	JOIN dbo.fish_location f ON ( f.[station_Id] = w.gid )
+--     WHERE w.mli = @mli AND f.fish_Id = @fish_id
+-- /*
+--                                                                                                                  -- set start data if missed and applicable
+--   update @tbl set oxygen    = (select top 1 oxygen    from @tbl where oxygen    is not null order by stamp asc) from @tbl where stamp  = @start and oxygen    is null
+--   update @tbl set ph        = (select top 1 ph        from @tbl where ph        is not null order by stamp asc) from @tbl where stamp  = @start and ph        is null
+--   update @tbl set turbidity = (select top 1 turbidity from @tbl where turbidity is not null order by stamp asc) from @tbl where stamp  = @start and turbidity is null
+--   update @tbl set discharge = (select top 1 discharge from @tbl where discharge is not null order by stamp asc) from @tbl where stamp  = @start and discharge is null
+--   update @tbl set elevation = (select top 1 elevation from @tbl where elevation is not null order by stamp asc) from @tbl where stamp  = @start and elevation is null
+--   update @tbl set velocity  = (select top 1 velocity  from @tbl where velocity  is not null order by stamp asc) from @tbl where stamp  = @start and velocity  is null
+-- */
+--   return
+-- END
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_get_forecast' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_get_forecast ;
+GO
+
+-- dbo.fn_get_trial_fish_byuser - siblings fn_get_fish_byuser and fn_get_trial_fish_byzip ARE used; only this variant was orphaned
+-- CREATE FUNCTION [dbo].fn_get_trial_fish_byuser( @guidUser uniqueidentifier )
+-- RETURNS  TABLE
+-- AS
+--   RETURN
+-- 	SELECT fish_Id, fish_name FROM (
+-- 	  select  c.lat, c.lon  from Users u CROSS APPLY dbo.fn_get_latlon_byzip(u.postal) c
+-- 		where id = @guidUser
+-- 	)a CROSS APPLY dbo.fn_get_trial_fish_bylatlon( a.lat, a.lon  )
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_get_trial_fish_byuser' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_get_trial_fish_byuser ;
+GO
+
+-- dbo.fn_ParserFish - read dbo.vFishOK; nothing read it
+-- create FUNCTION dbo.fn_ParserFish( @String NVARCHAR(4000))
+-- RETURNS TABLE
+-- AS
+-- RETURN
+--   select f.*   from dbo.fn_Parser( @String ) l,  vFishOK f WHERE  l.Item like f.name
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_ParserFish' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_ParserFish ;
+GO
+
+-- dbo.GetFishList
+-- CREATE FUNCTION GetFishList()
+-- RETURNS @TBL TABLE ( fish_id uniqueidentifier, fish_name varchar(32), fish_latin varchar(64), synonims  varchar(255)
+--          , link nvarchar(255), water_type int, feedsOver int , habitat int, tuL float, tuH float
+--          , tmL float, tmH float, oxL float, oxH float, phL float, phH float, depthMin float, depthMax float
+--          , food varchar(max), [length] float, periodStart int , periodEnd int
+--          , fish_Type int )
+-- AS
+-- begin
+--   -- get non-spawn period
+--   INSERT INTO @TBL (fish_id, fish_name, fish_latin, synonims, link, water_type, feedsOver, habitat, food, [length], fish_Type)
+--    SELECT fish_id, fish_name, fish_latin, synonims, link, water_type, feedsOver, habitat, food, [length], fish_Type FROM fish
+--
+--   update t SET t.depthMin = c.depthMin, t.depthMax = c.depthMax, t.oxL=c.oxL, t.oxH=c.oxH, t.tuL=c.tuL, t.tuH=c.tuH
+--      , t.phL=c.phL, t.phH=c.phH, t.tmL=c.tmL, t.tmH=c.tmH
+--      FROM @TBL t, dbo.fish_Rule c WHERE t.fish_id=c.fish_id AND -1 = c.periodStart AND -1 = c.periodEnd
+--   return
+-- end
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'GetFishList' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.GetFishList ;
+GO
+
+-- dbo.fn_GetLakeNameFromDescrition - note the misspelling in the original name
+-- CREATE function [dbo].[fn_GetLakeNameFromDescrition]( @name sysname )
+-- returns sysname
+-- WITH SCHEMABINDING
+-- as
+-- begin
+--   declare @result sysname = '', @pos int = 0
+--   set @pos = CHARINDEX(' near', @name)
+--   if 0 < @pos
+--     set @result = rtrim(SUBSTRING( @name, 0, @pos) )
+--   set @pos = CHARINDEX(' at', @name)
+--   if 0 < @pos
+--     set @result = rtrim(SUBSTRING( @name, 0, @pos) )
+--   set @pos = CHARINDEX(' below', @name)
+--   if 0 < @pos
+--     set @result = rtrim(SUBSTRING( @name, 0, @pos) )
+--   set @pos = CHARINDEX(' above', @name)
+--   if 0 < @pos
+--     set @result = rtrim(SUBSTRING( @name, 0, @pos) )
+--   set @pos = CHARINDEX(' in ', @name)
+--   if 0 < @pos
+--     set @result = rtrim(SUBSTRING( @name, 0, @pos) )
+--   return @result
+-- end
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_GetLakeNameFromDescrition' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_GetLakeNameFromDescrition ;
+GO
+
+-- dbo.fn_river_xy
+-- /******
+--  * required for wfRiverViewer to extract coordinates for river and map
+--  *
+--  * INPUT PARAMETERS:
+--  *
+--  *    @@lake_id   uniqueidentifier  - a lake guid
+--  *
+--  */
+-- -- SELECT * FROM fn_river_xy( '9c537dd1-fc59-489e-a7a1-018b2921f19f' )
+-- create FUNCTION fn_river_xy( @lake_id uniqueidentifier )
+-- RETURNS @result TABLE (lake_id uniqueidentifier, source_Lat float, source_Lon float, mouth_Lat float, mouth_Lon float, isRealSrc bit, isRealMth bit, isLake bit, istate int)
+--   WITH SCHEMABINDING
+-- AS
+-- BEGIN
+--     DECLARE @source uniqueidentifier, @mouth uniqueidentifier;
+--     DECLARE @sourceLat float, @sourceLon float, @mouthLat float, @mouthLon float;
+--     DECLARE @isLake bit = 0;  -- 0 is  river bydefault
+--     DECLARE @isRealSrc bit = 0, @isRealMth bit = 0;
+--     DECLARE @state char(2) = 'ON', @istate int = 1;
+--     SELECT @sourceLat = s.Lat, @sourceLon = s.Lon, @mouthLat = m.Lat, @mouthLon = m.Lon
+--          , @source = s.lake_id, @mouth = m.lake_id, @isLake = (CASE WHEN locType IN (1, 8, 512, 8192) THEN 1 ELSE 0 END)
+--          , @isRealSrc = ( CASE WHEN s.Lat Is NOT NULL AND s.Lon IS NOT NULL THEN 1 ELSE 0 END)
+--          , @isRealMth = ( CASE WHEN m.Lat Is NOT NULL AND m.Lon IS NOT NULL THEN 1 ELSE 0 END)
+--          , @state = s.state
+--         FROM dbo.lake l
+--              JOIN dbo.Tributaries s ON s.main_lake_id = l.lake_id AND s.side = 16 AND s.lake_id = l.lake_id
+--              JOIN dbo.Tributaries m ON m.main_lake_id = l.lake_id AND m.side = 32 AND m.lake_id = l.lake_id
+--         WHERE @lake_id = l.lake_id;
+--     IF @isLake IS NOT NULL --- check the lakeid if real
+--     BEGIN
+--         IF @isLake = 0  -- only for river
+--         BEGIN
+--             IF @sourceLat IS NULL OR  @sourceLon IS NULL
+--             BEGIN
+--                 IF @source IS NOT NULL
+--                 BEGIN
+--                     SELECT @sourceLat = s.Lat, @sourceLon = s.Lon
+--                         ,  @isRealSrc = ( CASE WHEN s.Lat Is NOT NULL AND s.Lon IS NOT NULL THEN 1 ELSE 0 END)
+--                         FROM dbo.lake l
+--                             JOIN dbo.Tributaries s ON s.main_lake_id = l.lake_id AND s.side = 16  AND s.lake_id = l.lake_id
+--                         WHERE @lake_id = l.lake_id;
+--                 END
+--             END
+--             IF @mouthLat IS NULL OR  @mouthLon IS NULL
+--             BEGIN
+--                 IF @mouth IS NOT NULL
+--                 BEGIN
+--                     SELECT @mouthLat = m.Lat, @mouthLon = m.Lon
+--                         ,  @isRealMth = ( CASE WHEN m.Lat Is NOT NULL AND m.Lon IS NOT NULL THEN 1 ELSE 0 END)
+--                         FROM dbo.lake l
+--                             JOIN dbo.Tributaries m ON m.main_lake_id = l.lake_id AND m.side = 32 AND m.lake_id = l.lake_id
+--                         WHERE @lake_id = l.lake_id;
+--                 END
+--             END
+--         END ELSE -- for lake  @isLake = 1
+--         BEGIN
+--             IF @sourceLat IS NULL OR  @sourceLon IS NULL
+--             BEGIN
+--                 IF @source IS NOT NULL
+--                 BEGIN
+--                     SELECT @sourceLat = s.Lat, @sourceLon = s.Lon
+--                         ,  @isRealSrc = ( CASE WHEN s.Lat Is NOT NULL AND s.Lon IS NOT NULL THEN 1 ELSE 0 END)
+--                         FROM dbo.lake l
+--                             JOIN dbo.Tributaries s ON s.main_lake_id = l.lake_id AND s.side = 16  AND s.lake_id = l.lake_id
+--                         WHERE @lake_id = l.lake_id;
+--                 END
+--             END
+--             IF @mouthLat IS NULL OR  @mouthLon IS NULL
+--             BEGIN
+--                 IF @mouth IS NOT NULL
+--                 BEGIN
+--                     SELECT @mouthLat = m.Lat, @mouthLon = m.Lon
+--                         ,  @isRealMth = ( CASE WHEN m.Lat Is NOT NULL AND m.Lon IS NOT NULL THEN 1 ELSE 0 END)
+--                         FROM dbo.lake l
+--                             JOIN dbo.Tributaries m ON m.main_lake_id = l.lake_id AND m.side = 32  AND m.lake_id = l.lake_id
+--                         WHERE @lake_id = l.lake_id;
+--                 END
+--             END
+--         END
+--     END
+--     -- if no data then take it from province coordinates
+--     IF ( @sourceLat IS NULL OR  @sourceLon IS NULL ) AND ( @mouthLat IS NULL OR  @mouthLon IS NULL ) AND @isLake = 0 -- for river
+--     BEGIN
+--         SELECT @sourceLat = lat - 0.5, @sourceLon = lon - 0.5, @mouthLat = lat + 0.5, @mouthLon = lon + 0.5
+--             FROM dbo.states s WHERE [state] = @state;
+--         SET @istate = 2;
+--     END
+--     IF ( @sourceLat IS NULL OR  @sourceLon IS NULL ) AND @isLake = 1 -- for lake
+--     BEGIN
+--         SELECT @sourceLat = lat, @sourceLon = lon FROM dbo.states s WHERE [state] = @state;
+--         SET @istate = @istate | 4;
+--     END
+--     IF ( @mouthLat IS NULL OR  @mouthLon IS NULL ) AND @isLake = 0
+--     BEGIN
+--         SELECT @mouthLat = @sourceLat - 0.5, @mouthLon = @sourceLon + 5;
+--         SET @istate = @istate | 8;
+--     END
+--     IF ( @sourceLat IS NULL OR  @sourceLon IS NULL ) AND @isLake = 0
+--     BEGIN
+--         SELECT @sourceLat = @mouthLat + 0.5, @sourceLon = @mouthLon - 0.5;
+--         SET @istate = @istate | 16;
+--     END
+--     IF @isRealSrc = 1 AND @isLake = 1 -- for lake
+--     BEGIN
+--         SELECT @mouthLat = @sourceLat + 0.25, @mouthLon = @sourceLon - 0.25
+--         SET @istate = @istate | 32;
+--     END
+--
+--     INSERT INTO @result (lake_id, source_Lat, source_Lon, mouth_Lat, mouth_Lon, isRealSrc, isRealMth, isLake, istate) VALUES
+--         (@lake_id, @sourceLat, @sourceLon, @mouthLat, @mouthLon, @isRealSrc, @isRealMth, @isLake, @istate);
+--
+--     RETURN
+-- END
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_river_xy' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_river_xy ;
+GO
+
+-- dbo.fn_open_weather_icon2internal - OpenWeatherMap icon mapping; that collection path is legacy
+-- CREATE FUNCTION dbo.fn_open_weather_icon2internal( @icon varchar(8) )
+-- RETURNS  varchar(8)
+-- AS
+-- BEGIN
+-- 	RETURN   ( SELECT ( CASE WHEN @icon IS NULL OR @icon = 'CLR' THEN 'clear'
+-- 	                         WHEN @icon = 'BKN' THEN 'clear'
+-- 	                         WHEN @icon = 'FEW' THEN 'clear'
+-- 	                         WHEN @icon = 'OVC' THEN 'clear'
+-- 	                         WHEN @icon = 'SCT' THEN 'clear'
+-- 	                         WHEN @icon = 'VV' THEN 'clear'
+-- 	                    ELSE @icon END ) AS icon )
+-- END
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_open_weather_icon2internal' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_open_weather_icon2internal ;
+GO
+
+-- dbo.get_moon_age - moon phase is computed in C# (Forecast/TMoonData.cs), not in the database
+-- create function dbo.get_moon_age(@dt datetime)
+-- returns tinyint
+-- as
+-- begin
+-- declare @m int = MONTH(@dt)
+-- declare @d int = DAY(@dt)
+-- declare @r int = YEAR(@dt) %100
+-- declare @r1 float = @r % 19
+-- declare @r2 int, @m3 float, @r4 int, @m2 int, @r3 int, @r5 float, @moonage float
+-- 	if @r1 > 9
+-- 	   set @r2 = @r1 - 19
+-- 	else
+-- 		set @r2 = @r1;
+-- 	if @m <3
+-- 	   set @m2 = @m + 2
+-- 	else
+-- 		set @m2 = @m;
+-- 	set @r3 = ((@r2 * 11) % 30) + @m2 + @d
+-- 	set @r4 =
+-- 		case
+-- 			when YEAR(@dt) < 2000 then
+-- 				@r3 -4
+-- 			else
+-- 				@r3 - 8.3
+-- 		end
+-- 	set @r5 = FLOOR(@r4+ 0.5)%30
+-- 	set @moonAge =
+-- 		case
+-- 			when @r5 < 0 then
+-- 				@r5+30
+-- 			else @r5
+-- 		end
+--
+--   return cast(@moonAge as tinyint)
+-- end
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'get_moon_age' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.get_moon_age ;
+GO
+
+-- dbo.fn_splitter - string helper
+-- CREATE FUNCTION [dbo].[fn_splitter]( @String NVARCHAR(4000) )
+-- RETURNS TABLE
+-- WITH SCHEMABINDING
+-- AS
+-- RETURN
+-- (
+--     WITH Split( stpos, endpos )
+--     AS(
+--         SELECT 0          AS stpos, CHARINDEX(';', @String)              AS endpos
+--         UNION ALL
+--         SELECT endpos + 1 AS stpos, CHARINDEX(';', @String, endpos + 1 ) AS endpos
+--           FROM Split
+--           WHERE endpos > 0
+--     )
+--     SELECT ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS Id,
+--            LTRIM(RTRIM(SUBSTRING( @String, stpos, COALESCE(NULLIF(endpos, 0), LEN(@String) + 1) - stpos))) AS Item
+--       FROM Split
+-- )
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_splitter' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_splitter ;
+GO
+
+-- dbo.uniParser - string helper
+-- CREATE FUNCTION dbo.uniParser( @String NVARCHAR(4000), @ch nchar)
+-- RETURNS TABLE
+-- WITH SCHEMABINDING
+-- AS
+-- RETURN
+-- (
+--     WITH Split( stpos, endpos )
+--     AS(
+--         SELECT 0          AS stpos, CHARINDEX(@ch, @String)              AS endpos
+--         UNION ALL
+--         SELECT endpos + 1 AS stpos, CHARINDEX(@ch, @String, endpos + 1 ) AS endpos
+--           FROM Split
+--           WHERE endpos > 0
+--     )
+--     SELECT ROW_NUMBER() OVER (ORDER BY (SELECT 1)) AS Id,
+--            LTRIM(RTRIM(SUBSTRING( @String, stpos, COALESCE(NULLIF(endpos, 0), LEN(@String) + 1) - stpos))) AS Item
+--       FROM Split
+-- )
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'uniParser' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.uniParser ;
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
 -- dbo.fn_forecast_plot RETIRED (2026-08-11).
 -- The pre-JSON ancestor of dbo.fn_forecast_plot_json below: it returned the plot's series as
 -- (id, line, type) ROWS for the caller to stitch together. Production-only - it was never in these

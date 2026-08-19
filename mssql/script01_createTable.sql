@@ -186,13 +186,13 @@ GO
 ALTER TABLE fish_code ADD CONSTRAINT PK_fish_code PRIMARY KEY CLUSTERED (fish_id, country, state, code);
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX UK_fish_code ON fish_code(state, code)    
+CREATE UNIQUE NONCLUSTERED INDEX UK_fish_code ON fish_code(state, code)
 GO
 
-
-ALTER TABLE dbo.fish_code ADD CONSTRAINT FK_fish_code_fish 
-    FOREIGN KEY (fish_id) REFERENCES dbo.fish (fish_id) ON DELETE CASCADE;
-GO
+-- NOTE: FK_fish_code_fish is NOT declared here. These scripts are concatenated into ffi2.sql in
+-- file order, and dbo.fish is not created until further down, so a forward reference aborts the
+-- whole build with "Foreign key 'FK_fish_code_fish' references invalid table 'dbo.fish'".
+-- The constraint lives immediately after PK_fish instead.
 
 ------------------------------keep current water state--------------------------------
 -- based on aggregation of latest 3 day's data from USWater.dbo.vUSWaterData
@@ -300,6 +300,12 @@ CREATE TABLE fish
 GO
 
 ALTER TABLE fish ADD CONSTRAINT PK_fish PRIMARY KEY CLUSTERED (fish_id);
+GO
+-- Declared here, not next to CREATE TABLE fish_code above: the scripts are concatenated in file
+-- order, so the FK has to come after both dbo.fish and PK_fish exist. (Regressed once already -
+-- fixed in fdbb7ac, reintroduced by 4fa1532, which broke every fresh build.)
+ALTER TABLE dbo.fish_code ADD CONSTRAINT FK_fish_code_fish
+    FOREIGN KEY (fish_id) REFERENCES dbo.fish (fish_id) ON DELETE CASCADE;
 GO
 ALTER TABLE fish ADD CONSTRAINT df_fish_id DEFAULT NEWSEQUENTIALID() FOR fish_id;
 GO
