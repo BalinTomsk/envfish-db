@@ -1,12 +1,3 @@
----------------------------------------------------------------------------------
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'vw_NewID' AND type = 'V')
-    DROP VIEW dbo.vw_NewID
-GO
-CREATE VIEW dbo.vw_NewID 
-WITH SCHEMABINDING 
-AS 
-    SELECT newid() AS new_id
-GO
 
 ------------------------------------------------------------------------------
 /**
@@ -44,59 +35,6 @@ IF NOT EXISTS (SELECT * FROM global_configuration WHERE config_attribute = 'coun
 ELSE
    UPDATE global_configuration SET config_value = (SELECT 500000 + SUM(UniqueIPCount) FROM (SELECT COUNT(DISTINCT ipAddr) AS UniqueIPCount FROM SessionHandler GROUP BY CAST(startSess AS DATE) )t)
    WHERE config_attribute = 'counter'
-GO
-
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_newid')
-    DROP FUNCTION dbo.fn_newid
-GO
-
-/*
-    SELECT dbo.fn_newid()
-*/
-
-CREATE FUNCTION dbo.fn_newid()
-RETURNS uniqueidentifier
-WITH SCHEMABINDING 
-BEGIN
-    DECLARE @result uniqueidentifier = (SELECT new_id FROM dbo.vw_NewID)
-	DECLARE @node_id char(1) = (SELECT UPPER(LEFT(config_value, 1)) FROM dbo.global_configuration WHERE config_attribute = 'node')
-    IF @node_id Is NULL OR @node_id NOT IN ('0', '1', '2', '3', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F')
-        RETURN @result
-    DECLARE @uuid varchar(36) = UPPER(CAST(@result AS varchar(36)));
-    RETURN CAST(LEFT(@uuid, 14) + @node_id + RIGHT(@uuid, 21) AS uniqueidentifier);
-END
-GO
-
-------------------------------------------------------------------------------
-
-CREATE TABLE access_point
-(
-    uuid        uniqueidentifier NOT NULL,
-    OFGID       int NULL,
-    pointType   nvarchar(255) NULL,
-    lastVerif   nvarchar(255) NULL,
-    verifSrc    nvarchar(255) NULL,
-    Parking     nvarchar(255) NULL,
-    ownerType   nvarchar(255) NULL,
-    matType     nvarchar(255) NULL,
-    accessType  nvarchar(255) NULL,
-    userFee     nvarchar(255) NULL,
-    visibility  nvarchar(255) NULL,
-    siteName    nvarchar(255) NULL,
-    photoUrl    nvarchar(255) NULL,
-    country     char(2) NULL,
-    state       char(2) NULL,
-    create_stamp  datetime2 NOT NULL,
-    update_stamp  datetime2,
-    update_by  nvarchar(255),
-    CONSTRAINT PK_access_point_uuid  PRIMARY KEY ( uuid ),
-    CONSTRAINT UK_access_point       UNIQUE      ( country, state, siteName )
-);
-GO
-
-ALTER TABLE dbo.access_point ADD  CONSTRAINT DEF_access_point_create_stamp  DEFAULT (CURRENT_TIMESTAMP) FOR create_stamp
-GO
-ALTER TABLE dbo.access_point ADD  CONSTRAINT DEF_access_point_uuid           DEFAULT (dbo.fn_newid())   FOR uuid
 GO
 ------------------------------------------------------------------------------
 
@@ -236,7 +174,7 @@ BEGIN
           WHERE mli=@mli   
     END
 END
-GO    
+GO
 --------------------------------------------------------------------------------------------
 CREATE TABLE fish_family
 (
@@ -705,27 +643,6 @@ CREATE TABLE dbo.fish_lunar_catch_probability
         CHECK (probability >= 0 AND probability <= 100)
 );
 GO
-------------------------------------------------------------------------------
-CREATE TABLE dbo.fishingAccessPoint
-(
-    [OFGID] [int] NULL,
-    [pointType] [nvarchar](255) NULL,
-    [lastVerif] [nvarchar](255) NULL,
-    [verifSrc] [nvarchar](255) NULL,
-    [Parking] [nvarchar](255) NULL,
-    [ownerType] [nvarchar](255) NULL,
-    [matType] [nvarchar](255) NULL,
-    [accessType] [nvarchar](255) NULL,
-    [userFee] [nvarchar](255) NULL,
-    [visibility] [nvarchar](255) NULL,
-    [siteName] [nvarchar](255) NULL,
-    [photoUrl] [nvarchar](255) NULL,
-    [infoUrl] [nvarchar](255) NULL,
-    [comments] [nvarchar](255) NULL,
-    [geoUpdDt] [int] NULL,
-    [effDate] [int] NULL
-)
-GO
 ------------------------------------------------------------------------------------
 
 if object_id('dbo.GeoIP') is not null 
@@ -742,7 +659,7 @@ CREATE TABLE GeoIP
     longitude float NOT NULL,
     ip4 binary(4) NOT NULL
 )
-GO 
+GO
 ALTER TABLE GeoIP ADD CONSTRAINT PK_GeoIP PRIMARY KEY CLUSTERED ([ID] ASC) ON [PRIMARY]    
 GO
 CREATE NONCLUSTERED INDEX [idx_GeoIP_lat] ON GeoIP (latitude ASC)  
@@ -906,7 +823,7 @@ GO
 ALTER TABLE Lake add constraint DF_lake_locType default(0) for locType
 GO
 ALTER TABLE Lake add constraint df_Lake_Id default( NEWSEQUENTIALID() ) for Lake_id
-GO  
+GO
 ALTER TABLE Lake add constraint DF_lake_stamp default(getutcdate()) for stamp
 GO
 ALTER TABLE Lake add constraint DF_lake_fish_type default(0) for fish_type
@@ -1143,7 +1060,7 @@ CREATE TABLE news
     CONSTRAINT PK_news PRIMARY KEY CLUSTERED (news_id)
 )
 ALTER TABLE news add constraint df_news_Id default NEWSEQUENTIALID() for news_id
-GO  
+GO
 ALTER TABLE news add constraint DF_news_stamp default getutcdate() for stamp
 GO
 ALTER TABLE news add constraint DF_news_juststamp default getutcdate() for news_stamp
@@ -1435,7 +1352,7 @@ BEGIN CATCH
     SELECT ERROR_NUMBER()   AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
          , 'TR_regulations' AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
 END CATCH
-GO    
+GO
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
 CREATE TABLE fish_record
@@ -3133,4 +3050,23 @@ GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
 
-
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- RETIRED 2026-08-19 - dropped from production, nothing referenced them.
+-- dbo.access_point (1,407 rows) and dbo.fishingAccessPoint (empty) were superseded by dbo.Spot.
+-- dbo.vw_NewID / dbo.fn_newid existed only to feed access_point's DEF_access_point_uuid default,
+-- so they died with it - fn_newid was WITH SCHEMABINDING on vw_NewID, which forced the drop order
+-- access_point -> fn_newid -> vw_NewID.
+-- Definitions remain in git history; the drops are kept so other replication nodes shed them too.
+-----------------------------------------------------------------------------------------------------------------------------------------------
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_newid' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_newid ;
+GO
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'vw_NewID' AND type = 'V')
+    DROP VIEW dbo.vw_NewID ;
+GO
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'access_point' AND type = 'U')
+    DROP TABLE dbo.access_point ;
+GO
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fishingAccessPoint' AND type = 'U')
+    DROP TABLE dbo.fishingAccessPoint ;
+GO
