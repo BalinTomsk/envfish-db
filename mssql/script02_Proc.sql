@@ -5014,3 +5014,131 @@ BEGIN
     END
 END
 GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- RECOVERED FROM PRODUCTION 2026-08-19 - these objects existed on the live database but were
+-- missing from every scriptNN source, so a freshly built database did not have them at all.
+-- Same class of gap as GetDatePeriod / fn_get_float_as_string (2026-08-05). Definitions are
+-- verbatim from production; they were NOT re-applied there.
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+-- prunes dbo.WaterData
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'usp_CleanupOldWaterData' AND type IN ('P'))
+    DROP PROCEDURE dbo.[usp_CleanupOldWaterData]
+GO
+CREATE   PROCEDURE [dbo].[usp_CleanupOldWaterData]
+    @DaysToKeep INT = 15,
+    @BatchSize INT = 1000,
+    @DelayBetweenBatchesMs INT = 0
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @RowsDeleted INT = 1;
+    DECLARE @TotalDeleted INT = 0;
+    DECLARE @CutoffDate DATE = CAST(DATEADD(day, -@DaysToKeep, GETDATE()) AS DATE);
+    DECLARE @StartTime DATETIME2 = SYSDATETIME();
+    DECLARE @DelayString CHAR(12);
+
+    -- Validate parameters
+    IF @DaysToKeep < 1
+    BEGIN
+        RAISERROR('DaysToKeep must be at least 1', 16, 1);
+        RETURN;
+    END
+
+    IF @BatchSize < 1 OR @BatchSize > 100000
+    BEGIN
+        RAISERROR('BatchSize must be between 1 and 100,000', 16, 1);
+        RETURN;
+    END
+
+    PRINT 'Starting batch delete for WaterData records older than ' + CAST(@CutoffDate AS VARCHAR(20));
+    PRINT 'Batch size: ' + CAST(@BatchSize AS VARCHAR(10));
+    PRINT '----------------------------------------';
+
+    -- Build delay string if needed
+    IF @DelayBetweenBatchesMs > 0
+    BEGIN
+        SET @DelayString = '00:00:00.' + RIGHT('000' + CAST(@DelayBetweenBatchesMs AS VARCHAR(3)), 3);
+    END
+
+    WHILE @RowsDeleted > 0
+    BEGIN
+        BEGIN TRY
+            DELETE TOP (@BatchSize)
+            FROM [dbo].[WaterData]
+            WHERE stamp < @CutoffDate;
+
+            SET @RowsDeleted = @@ROWCOUNT;
+            SET @TotalDeleted = @TotalDeleted + @RowsDeleted;
+
+            IF @RowsDeleted > 0
+            BEGIN
+                PRINT 'Deleted ' + CAST(@RowsDeleted AS VARCHAR(10)) + ' rows. Total: ' + CAST(@TotalDeleted AS VARCHAR(10));
+
+                -- Optional delay between batches
+                IF @DelayBetweenBatchesMs > 0 AND @RowsDeleted = @BatchSize
+                BEGIN
+                    WAITFOR DELAY @DelayString;
+                END
+            END
+        END TRY
+        BEGIN CATCH
+            DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
+            DECLARE @ErrorSeverity INT = ERROR_SEVERITY();
+            DECLARE @ErrorState INT = ERROR_STATE();
+
+            PRINT 'Error occurred after deleting ' + CAST(@TotalDeleted AS VARCHAR(10)) + ' rows';
+            PRINT 'Error: ' + @ErrorMessage;
+
+            RAISERROR(@ErrorMessage, @ErrorSeverity, @ErrorState);
+            RETURN;
+        END CATCH
+    END
+
+    DECLARE @EndTime DATETIME2 = SYSDATETIME();
+    DECLARE @DurationSeconds INT = DATEDIFF(SECOND, @StartTime, @EndTime);
+
+    PRINT '----------------------------------------';
+    PRINT 'Batch delete completed successfully';
+    PRINT 'Total rows deleted: ' + CAST(@TotalDeleted AS VARCHAR(10));
+    PRINT 'Duration: ' + CAST(@DurationSeconds AS VARCHAR(10)) + ' seconds';
+END
+GO
+
+-- developer diagnostic: scans every int column for a value.
+-- WARNING: it calls sp_makerow, which exists in NO database - not here and not on production -
+-- so the proc cannot complete. Imported as-is so the scripts reproduce production faithfully;
+-- the unqualified EXEC is caller-dependent, so it does not break the build.
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'sp_searchint' AND type IN ('P'))
+    DROP PROCEDURE dbo.[sp_searchint]
+GO
+CREATE procedure [dbo].[sp_searchint] @IntVariable int
+AS
+BEGIN
+     SET NOCOUNT ON
+     DECLARE @tbl table(table_name sysname, column_name sysname, cnt int, datatext nvarchar(max))
+     DECLARE @value sysname, @table_name sysname, @column_name sysname
+     DECLARE cFKey CURSOR LOCAL FOR select TABLE_NAME, COLUMN_NAME from INFORMATION_SCHEMA.COLUMNS  where DATA_TYPE in ('int', 'numeric')
+     OPEN cFKey
+     FETCH NEXT FROM cFKey INTO @table_name, @column_name
+     WHILE @@FETCH_STATUS = 0
+         BEGIN
+            DECLARE @cnt int = 0;
+            DECLARE @ParmDefinition nvarchar(64)= N'@value int, @cntout int OUTPUT';
+            DECLARE @SQLString nvarchar(500) = 'select @cntout =count(*) from ' + @table_name + ' where ' + @column_name + ' = @value'
+            EXECUTE sp_executesql @SQLString, @ParmDefinition, @value = @IntVariable, @cntout = @cnt OUTPUT
+            IF @cnt > 0
+            BEGIN
+                declare @result nvarchar(max);
+                exec sp_makerow @table_name, @column_name, @IntVariable, @result out
+                INSERT INTO @tbl (table_name, column_name , cnt, datatext) values (@table_name, @column_name, @cnt, @result)
+            END
+	    FETCH NEXT FROM cFKey INTO @table_name, @column_name
+        END
+    Close cFKey
+    DeAllocate cFKey
+    select * FROM @tbl
+END
+GO

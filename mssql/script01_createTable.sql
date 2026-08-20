@@ -3070,3 +3070,48 @@ GO
  IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fishingAccessPoint' AND type = 'U')
     DROP TABLE dbo.fishingAccessPoint ;
 GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- RECOVERED FROM PRODUCTION 2026-08-19 - these objects existed on the live database but were
+-- missing from every scriptNN source, so a freshly built database did not have them at all.
+-- Same class of gap as GetDatePeriod / fn_get_float_as_string (2026-08-05). Definitions are
+-- verbatim from production; they were NOT re-applied there.
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Location-type lookup (212 rows on production). NOTE the table starts at column_id 2 there - an
+-- original first column was dropped at some point and is not reproduced here.
+CREATE TABLE dbo.ltype
+(
+    CONCISE    nvarchar(200) NULL,
+    locType    int           NULL,
+    fullType   int           NULL,
+    ctype      int           NULL,
+    gtype      int           NULL,
+    ltype_name varchar(32)   NULL
+)
+GO
+
+-- Canadian weather/observation stations (2,022 rows on production).
+CREATE TABLE dbo.stations
+(
+    id         varchar(10)   NOT NULL,
+    name       nvarchar(255) NOT NULL,
+    latitude   decimal(9,6)  NOT NULL,
+    longitude  decimal(9,6)  NOT NULL,
+    prov_terr  char(2)       NOT NULL,
+    timezone   varchar(16)   NOT NULL
+)
+GO
+ALTER TABLE dbo.stations ADD CONSTRAINT PK_stations PRIMARY KEY CLUSTERED (id ASC)
+GO
+
+-- One row per station whose data collection failed; written by the water/weather collectors.
+CREATE TABLE dbo.StationFailure
+(
+    mli   varchar(64) NOT NULL,
+    stamp datetime2   NOT NULL
+)
+GO
+-- Production carries this as the auto-named DF__StationFa__stamp__717C48C9; given a stable name here.
+ALTER TABLE dbo.StationFailure ADD CONSTRAINT DF_StationFailure_stamp DEFAULT (GETDATE()) FOR stamp
+GO

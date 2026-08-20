@@ -6399,3 +6399,143 @@ GO
  IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_DefaultLastLake' AND type IN ('FN','IF','TF'))
     DROP FUNCTION dbo.fn_DefaultLastLake ;
 GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- RECOVERED FROM PRODUCTION 2026-08-19 - these objects existed on the live database but were
+-- missing from every scriptNN source, so a freshly built database did not have them at all.
+-- Same class of gap as GetDatePeriod / fn_get_float_as_string (2026-08-05). Definitions are
+-- verbatim from production; they were NOT re-applied there.
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_floor_date2hour' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.[fn_floor_date2hour]
+GO
+CREATE function dbo.fn_floor_date2hour( @dt datetime )
+returns datetime
+WITH SCHEMABINDING
+as
+begin
+  declare @rst datetime
+  set @dt = case when datepart( minute, @dt) > 30 then dateadd(hh, 1, @dt) else @dt end
+  declare @hr int = datepart( hour, @dt)
+  set @rst = dateadd( hour, @hr, cast( cast(@dt as date) as datetime))
+  return @rst
+end
+GO
+
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'get_moon_phase' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.[get_moon_phase]
+GO
+CREATE function dbo.get_moon_phase(@dt datetime)
+returns varchar(32)
+as
+begin
+declare @m int = MONTH(@dt)
+declare @d int = DAY(@dt)
+declare @r int = YEAR(@dt) %100
+declare @r1 float = @r % 19
+declare @r2 int, @m3 float, @r4 int, @m2 int, @r3 int, @r5 float, @moonage float, @moonphase varchar(32)
+	if @r1 > 9
+	   set @r2 = @r1 - 19
+	else
+		set @r2 = @r1;
+	if @m <3
+	   set @m2 = @m + 2
+	else
+		set @m2 = @m;
+	set @r3 = ((@r2 * 11) % 30) + @m2 + @d
+	set @r4 =
+		case
+			when YEAR(@dt) < 2000 then
+				@r3 -4
+			else
+				@r3 - 8.3
+		end
+	set @r5 = FLOOR(@r4+ 0.5)%30
+	set @moonAge =
+		case
+			when @r5 < 0 then
+				@r5+30
+			else @r5
+		end
+
+	set @moonPhase =
+		case
+			when @moonAge < 1 then
+				'New Moon'
+			when @moonAge < 6 then
+				'Waxing Crescent'
+			when @moonAge < 9 then
+				'First Quarter'
+			when @moonAge < 16 then
+				'Full Moon'
+			when @moonAge < 20 then
+				'Waning Gibbous'
+			when @moonAge < 23 then
+				'Last Quarter'
+			when @moonAge < 25 then
+				'Waning Crescent'
+			when @moonAge < 29 then
+				'Waning Crescent'
+			when @moonAge < 30 then
+				'New Moon'
+		end
+
+	return @moonPhase
+end
+GO
+
+-- reads dbo.CanPostLatLon and dbo.USPost
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_map_LatLon_ByPostal' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.[fn_map_LatLon_ByPostal]
+GO
+-- Called from  FishTracker.Forecast.MapFrame.GetUserData
+-- SELECT TOP 1 lat, lon FROM dbo.[fn_map_user_location]( 'BB30165A-FD1A-4B54-B921-9334242C9BF6' )
+CREATE FUNCTION [dbo].[fn_map_LatLon_ByPostal]( @postal varchar(8) )
+RETURNS  TABLE
+WITH SCHEMABINDING
+AS
+  RETURN
+     SELECT lat, lon FROM dbo.USPost where  zip = @postal
+	   AND 1 = ISNUMERIC(@postal) AND (LEN(@postal) = 5 OR LEN(@postal) = 4)
+	UNION ALL
+	  SELECT lat, lon FROM dbo.CanPostLatLon
+	    WHERE postal=@postal AND 0 = ISNUMERIC(@postal)
+GO
+
+-- MUST come after fn_map_LatLon_ByPostal above - it calls it
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_map_user_location' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.[fn_map_user_location]
+GO
+-- Called from  FishTracker.Forecast.MapFrame.GetUserData
+-- SELECT TOP 1 lat, lon FROM dbo.[fn_map_user_location]( 'BB30165A-FD1A-4B54-B921-9334242C9BF6' )
+CREATE  function [dbo].[fn_map_user_location]( @userId uniqueidentifier )
+  RETURNS  TABLE
+  WITH SCHEMABINDING
+AS
+RETURN
+  select TOP 1 postal, lat, lon, email FROM dbo.users u
+    CROSS APPLY dbo.fn_map_LatLon_ByPostal( u.postal ) f
+    WHERE u.id = @userId
+GO
+
+-- reads Users + fn_get_fish_bylatlon / fn_get_trial_fish_bylatlon / fn_get_latlon_byzip
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_get_fish_byuser' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.[fn_get_fish_byuser]
+GO
+CREATE FUNCTION [dbo].fn_get_fish_byuser( @guidUser uniqueidentifier )
+RETURNS  TABLE
+AS
+  RETURN
+    SELECT fish_Id, fish_name FROM
+    (
+		SELECT fish_Id, fish_name, code = 0 FROM (
+		  select  c.lat, c.lon  from Users u CROSS APPLY dbo.fn_get_latlon_byzip(u.postal) c
+			where id = @guidUser
+		)a CROSS APPLY dbo.fn_get_fish_bylatlon( a.lat, a.lon, 3  )
+		UNION ALL
+		SELECT fish_Id, fish_name, code = 1 FROM (
+		  select  c.lat, c.lon  from dbo.fn_get_latlon_byzip('N2M5L4') c
+		)a CROSS APPLY dbo.fn_get_trial_fish_bylatlon( a.lat, a.lon  )
+	)p WHERE code = (CASE WHEN '00000000-0000-0000-0000-000000000000' = @guidUser THEN 1 ELSE 0 END );
+GO
