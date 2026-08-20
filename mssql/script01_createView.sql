@@ -530,8 +530,351 @@ AS
 GO
 -------------------------------------------------------------------------------------------------------
 
+----------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_koef_fish_station_oxygen' AND xtype = 'V')
+    DROP VIEW dbo.fn_get_koef_fish_station_oxygen
+GO
+
+CREATE VIEW dbo.fn_get_koef_fish_station_oxygen
+WITH SCHEMABINDING
+AS 
+  WITH cte ( fish_id, fish_name, oxL, oxH ) AS          
+  (                                                                         -- 80% 90%    100%         90%
+     SELECT  f.fish_id, f.fish_name, ox.ri_min, ox.ri_max                   ---|   |  |__optimum______|  |
+       FROM  dbo.fish f JOIN dbo.fish_Rule r ON ( r.fish_Id=f.fish_id )     ---|   |__________________|  |
+       JOIN dbo.real_interval ox ON ox.ri_parent_id = r.id AND ox.ri_type = 33
+       WHERE r.periodStart = -1 AND r.periodEnd = -1                        ---|_________________________|
+  )
+    SELECT mli, fish_ID, koef FROM 
+    (
+        SELECT mli, fish_ID, 0 AS value, ox, oxL, oxH                        -- all data exists
+        , CASE WHEN ox BETWEEN l100 AND h90  THEN 1.0 
+                WHEN (ox BETWEEN l90 AND l100) OR (ox BETWEEN h90 AND oxH) THEN 0.9
+                WHEN (ox BETWEEN oxL AND l90) THEN 0.8 ELSE 0.5 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, ox, oxL, oxH
+                , (oxL + (( optimum - oxL )  /  2)) AS l100
+                , (optimum + (( oxH - optimum ) / 4))  AS h90,  (oxL + (( optimum - oxL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, oxygen AS ox, oxL, oxH, (( oxH - oxL ) / 2) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.temperature IS NOT NULL AND oxL Is NOT NULL AND oxH Is NOT NULL
+            )b
+        ) a
+        UNION ALL
+        SELECT mli, fish_ID, 1 AS value, ox, oxL, oxH                          --- oxL Is NULL
+        , CASE WHEN ox BETWEEN l100 AND h90  THEN 1.0 
+                WHEN (ox BETWEEN l90 AND l100) OR (ox BETWEEN h90 AND oxH) THEN 0.9
+                WHEN (ox BETWEEN oxL AND l90) THEN 0.8 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, ox, oxL, oxH
+                , (optimum + (( oxH - optimum ) / 2))  AS h100, (oxL + (( optimum - oxL )  /  2)) AS l100
+                , (optimum + (( oxH - optimum ) / 4))  AS h90,  (oxL + (( optimum - oxL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, oxygen as ox, (oxH / 2) as oxL, oxH, (oxH / 2) + (oxH / 4) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.temperature IS NOT NULL AND oxL Is NULL AND oxH Is NOT NULL
+            )d
+        ) c
+        UNION ALL
+        SELECT mli, fish_ID, 2 AS value, ox, oxL, oxH
+        , CASE WHEN ox BETWEEN l100 AND h90  THEN 1.0 
+                WHEN (ox BETWEEN l90 AND l100) OR (ox BETWEEN h90 AND oxH) THEN 0.9
+                WHEN (ox BETWEEN oxL AND l90) THEN 0.8 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, ox, oxL, oxH
+                , (optimum + (( oxH - optimum ) / 2))  AS h100, (oxL + (( optimum - oxL )  /  2)) AS l100
+                , (optimum + (( oxH - optimum ) / 4))  AS h90,  (oxL + (( optimum - oxL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, oxygen as ox,  oxL, (oxL + 10) as oxH, (oxL + 5) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.temperature IS NOT NULL AND oxL IS NOT NULL AND oxH IS NULL
+            )e
+        ) f
+        UNION ALL
+        SELECT mli, fish_ID, 3 AS value, oxygen as ox,  oxL, oxH, 1 AS koef
+                FROM cte, dbo.CurrentWaterState w 
+            where w.temperature IS NULL
+    ) g WHERE value = CASE 
+          WHEN ox IS NULL OR ( ox IS NOT NULL AND oxL IS NULL AND oxH IS NULL )THEN 3
+          WHEN ox IS NOT NULL AND oxL IS NULL AND oxH IS NOT NULL THEN 1 
+          WHEN ox IS NOT NULL AND oxL IS NOT NULL AND oxH IS NULL THEN 2 
+          WHEN ox IS NOT NULL AND oxL IS NOT NULL AND oxH IS NOT NULL THEN 0 
+        END AND koef IS NOT NULL
+GO
+
+----------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_koef_fish_station_ph' AND xtype = 'V')
+    DROP VIEW dbo.fn_get_koef_fish_station_ph
+GO
+
+CREATE VIEW dbo.fn_get_koef_fish_station_ph
+WITH SCHEMABINDING
+AS 
+  WITH cte ( fish_id, fish_name, phL, phH ) AS
+  (                                                                         -- 80% 90%    100%     90% 80%
+     SELECT  f.fish_id, f.fish_name, habitate_ph.ri_min AS phL              ---|   |  |__optimum___|  |  |
+           , habitate_ph.ri_max AS phH                           
+       FROM  dbo.fish f JOIN dbo.fish_Rule r ON ( r.fish_Id=f.fish_id )     ---|   |__________________|  |
+                                                                            ---|_________________________|
+       JOIN dbo.real_interval habitate_ph ON habitate_ph.ri_parent_id = r.id AND habitate_ph.ri_type = 9
+       WHERE r.periodStart = -1 AND r.periodEnd = -1                        
+  )
+    SELECT mli, fish_ID, koef FROM 
+    (
+        SELECT mli, fish_ID, 0 AS value, ph, phL, phH                        -- all data exists
+        , CASE WHEN ph BETWEEN l100 AND h100  THEN 1.0 
+                WHEN (ph BETWEEN l90 AND l100) OR (ph BETWEEN h100 AND h90) THEN 0.9
+                WHEN (ph BETWEEN phL AND l90)  OR (ph BETWEEN h90 AND  phH) THEN 0.8 ELSE 0.5 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, ph, phL, phH
+                , (optimum + (( phH - optimum ) / 2))  AS h100, (phL + (( optimum - phL )  /  2)) AS l100
+                , (optimum + (( phH - optimum ) / 4))  AS h90,  (phL + (( optimum - phL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, ph AS ph, phL, phH, (( phH - phL ) / 2) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.ph IS NOT NULL AND phL Is NOT NULL AND phH Is NOT NULL
+            )b
+        ) a
+        UNION ALL
+        SELECT mli, fish_ID, 1 AS value, ph, phL, phH                          --- phL Is NULL
+        , CASE WHEN ph BETWEEN l100 AND h100  THEN 1.0 
+                WHEN (ph BETWEEN l90 AND l100) OR (ph BETWEEN h100 AND h90) THEN 0.9
+                WHEN (ph BETWEEN phL AND l90)  OR (ph BETWEEN h90 AND  phH) THEN 0.8 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, ph, phL, phH
+                , (optimum + (( phH - optimum ) / 2))  AS h100, (phL + (( optimum - phL )  /  2)) AS l100
+                , (optimum + (( phH - optimum ) / 4))  AS h90,  (phL + (( optimum - phL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, ph as ph, (phH / 2) as phL, phH, (phH / 2) + (phH / 4) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.ph IS NOT NULL AND phL Is NULL AND phH Is NOT NULL
+            )d
+        ) c
+        UNION ALL
+        SELECT mli, fish_ID, 2 AS value, ph, phL, phH
+        , CASE WHEN ph BETWEEN l100 AND h100  THEN 1.0 
+                WHEN (ph BETWEEN l90 AND l100) OR (ph BETWEEN h100 AND h90) THEN 0.9
+                WHEN (ph BETWEEN phL AND l90)  OR (ph BETWEEN h90 AND  phH) THEN 0.8 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, ph, phL, phH
+                , (optimum + (( phH - optimum ) / 2))  AS h100, (phL + (( optimum - phL )  /  2)) AS l100
+                , (optimum + (( phH - optimum ) / 4))  AS h90,  (phL + (( optimum - phL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, ph as ph,  phL, (phL + 10) as phH, (phL + 5) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.ph IS NOT NULL AND phL IS NOT NULL AND phH IS NULL
+            )e
+        ) f
+        UNION ALL
+        SELECT mli, fish_ID, 3 AS value, ph as ph,  phL, phH, 1 AS koef
+                FROM cte, dbo.CurrentWaterState w 
+            where w.ph IS NULL
+    ) g WHERE value = CASE 
+          WHEN ph IS NULL OR ( ph IS NOT NULL AND phL IS NULL AND phH IS NULL )THEN 3
+          WHEN ph IS NOT NULL AND phL IS NULL AND phH IS NOT NULL THEN 1 
+          WHEN ph IS NOT NULL AND phL IS NOT NULL AND phH IS NULL THEN 2 
+          WHEN ph IS NOT NULL AND phL IS NOT NULL AND phH IS NOT NULL THEN 0 
+        END AND koef IS NOT NULL
+GO
+
+----------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_koef_fish_station_temperature' AND xtype = 'V')
+    DROP VIEW dbo.fn_get_koef_fish_station_temperature
+GO
+CREATE VIEW dbo.fn_get_koef_fish_station_temperature
+WITH SCHEMABINDING
+AS 
+  WITH cte ( fish_id, fish_name, tmL, tmH ) AS
+  (                                                                         -- 80% 90%    100%     90% 80%
+     SELECT f.fish_id, f.fish_name, habitate_tm.ri_min AS tmL               ---|   |  |__optimum___|  |  |
+          , habitate_tm.ri_max AS tmH                                       ---|   |__________________|  |  
+       FROM  dbo.fish f JOIN dbo.fish_Rule r ON ( r.fish_Id=f.fish_id )     ---|_________________________|
+       JOIN dbo.real_interval habitate_tm ON habitate_tm.ri_parent_id = r.id AND habitate_tm.ri_type = 17
+       WHERE r.periodStart = -1 AND r.periodEnd = -1                        
+  )
+    SELECT mli, fish_ID, koef FROM 
+    (
+        SELECT mli, fish_ID, 0 AS value, tm, tmL, tmH                        -- all data exists
+        , CASE WHEN tm BETWEEN l100 AND h100  THEN 1.0 
+                WHEN (tm BETWEEN l90 AND l100) OR (tm BETWEEN h100 AND h90) THEN 0.9
+                WHEN (tm BETWEEN tmL AND l90)  OR (tm BETWEEN h90 AND  tmH) THEN 0.8 ELSE 0.5 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, tm, tmL, tmH
+                , (optimum + (( tmH - optimum ) / 2))  AS h100, (tmL + (( optimum - tmL )  /  2)) AS l100
+                , (optimum + (( tmH - optimum ) / 4))  AS h90,  (tmL + (( optimum - tmL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, temperature AS tm, tmL, tmH, (( tmH - tmL ) / 2) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.temperature IS NOT NULL AND tmL Is NOT NULL AND tmH Is NOT NULL
+            )b
+        ) a
+        UNION ALL
+        SELECT mli, fish_ID, 1 AS value, tm, tmL, tmH                          --- tmL Is NULL
+        , CASE WHEN tm BETWEEN l100 AND h100  THEN 1.0 
+                WHEN (tm BETWEEN l90 AND l100) OR (tm BETWEEN h100 AND h90) THEN 0.9
+                WHEN (tm BETWEEN tmL AND l90)  OR (tm BETWEEN h90 AND  tmH) THEN 0.8 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, tm, tmL, tmH
+                , (optimum + (( tmH - optimum ) / 2))  AS h100, (tmL + (( optimum - tmL )  /  2)) AS l100
+                , (optimum + (( tmH - optimum ) / 4))  AS h90,  (tmL + (( optimum - tmL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, temperature as tm, (tmH / 2) as tmL, tmH, (tmH / 2) + (tmH / 4) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.temperature IS NOT NULL AND tmL Is NULL AND tmH Is NOT NULL
+            )d
+        ) c
+        UNION ALL
+        SELECT mli, fish_ID, 2 AS value, tm, tmL, tmH
+        , CASE WHEN tm BETWEEN l100 AND h100  THEN 1.0 
+                WHEN (tm BETWEEN l90 AND l100) OR (tm BETWEEN h100 AND h90) THEN 0.9
+                WHEN (tm BETWEEN tmL AND l90)  OR (tm BETWEEN h90 AND  tmH) THEN 0.8 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, tm, tmL, tmH
+                , (optimum + (( tmH - optimum ) / 2))  AS h100, (tmL + (( optimum - tmL )  /  2)) AS l100
+                , (optimum + (( tmH - optimum ) / 4))  AS h90,  (tmL + (( optimum - tmL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, temperature as tm,  tmL, (tmL + 10) as tmH, (tmL + 5) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.temperature IS NOT NULL AND tmL IS NOT NULL AND tmH IS NULL
+            )e
+        ) f
+        UNION ALL
+        SELECT mli, fish_ID, 3 AS value, temperature as tm,  tmL, tmH, 1 AS koef
+                FROM cte, dbo.CurrentWaterState w 
+            where w.temperature IS NULL
+    ) g WHERE value = CASE 
+          WHEN tm IS NULL OR ( tm IS NOT NULL AND tmL IS NULL AND tmH IS NULL )THEN 3
+          WHEN tm IS NOT NULL AND tmL IS NULL AND tmH IS NOT NULL THEN 1 
+          WHEN tm IS NOT NULL AND tmL IS NOT NULL AND tmH IS NULL THEN 2 
+          WHEN tm IS NOT NULL AND tmL IS NOT NULL AND tmH IS NOT NULL THEN 0 
+        END AND koef IS NOT NULL
+GO
+
+----------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_koef_fish_station_velocity' AND xtype = 'V')
+    DROP VIEW dbo.fn_get_koef_fish_station_velocity
+GO
+CREATE VIEW dbo.fn_get_koef_fish_station_velocity
+WITH SCHEMABINDING
+AS 
+  WITH cte ( fish_id, fish_name, veL, veH ) AS
+  (                                                                         -- 80% 90%    100%     90% 80%
+     SELECT  f.fish_id, f.fish_name, ve.ri_min AS veL, ve.ri_max AS veH     ---|   |  |__optimum___|  |  |
+       FROM  dbo.fish f JOIN dbo.fish_Rule r ON ( r.fish_Id=f.fish_id )     ---|   |__________________|  |
+       JOIN dbo.real_interval ve ON ve.ri_parent_id = r.id AND ve.ri_type = 41
+       WHERE r.periodStart = -1 AND r.periodEnd = -1                        ---|_________________________|
+  )
+    SELECT mli, fish_ID, koef FROM 
+    (
+        SELECT mli, fish_ID, 0 AS value, ve, veL, veH                        -- all data exists
+        , CASE WHEN ve BETWEEN l100 AND h100  THEN 1.0 
+                WHEN (ve BETWEEN l90 AND l100) OR (ve BETWEEN h100 AND h90) THEN 0.9
+                WHEN (ve BETWEEN veL AND l90)  OR (ve BETWEEN h90 AND  veH) THEN 0.8 ELSE 0.5 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, ve, veL, veH
+                , (optimum + (( veH - optimum ) / 2))  AS h100, (veL + (( optimum - veL )  /  2)) AS l100
+                , (optimum + (( veH - optimum ) / 4))  AS h90,  (veL + (( optimum - veL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, velocity AS ve, veL, veH, (( veH - veL ) / 2) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.velocity IS NOT NULL AND veL Is NOT NULL AND veH Is NOT NULL
+            )b
+        ) a
+        UNION ALL
+        SELECT mli, fish_ID, 1 AS value, ve, veL, veH                          --- veL Is NULL
+        , CASE WHEN ve BETWEEN l100 AND h100  THEN 1.0 
+                WHEN (ve BETWEEN l90 AND l100) OR (ve BETWEEN h100 AND h90) THEN 0.9
+                WHEN (ve BETWEEN veL AND l90)  OR (ve BETWEEN h90 AND  veH) THEN 0.8 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, ve, veL, veH
+                , (optimum + (( veH - optimum ) / 2))  AS h100, (veL + (( optimum - veL )  /  2)) AS l100
+                , (optimum + (( veH - optimum ) / 4))  AS h90,  (veL + (( optimum - veL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, velocity as ve, (veH / 2) as veL, veH, (veH / 2) + (veH / 4) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.velocity IS NOT NULL AND veL Is NULL AND veH Is NOT NULL
+            )d
+        ) c
+        UNION ALL
+        SELECT mli, fish_ID, 2 AS value, ve, veL, veH
+        , CASE WHEN ve BETWEEN l100 AND h100  THEN 1.0 
+                WHEN (ve BETWEEN l90 AND l100) OR (ve BETWEEN h100 AND h90) THEN 0.9
+                WHEN (ve BETWEEN veL AND l90)  OR (ve BETWEEN h90 AND  veH) THEN 0.8 END AS koef
+        FROM 
+        (
+            SELECT mli, fish_ID, ve, veL, veH
+                , (optimum + (( veH - optimum ) / 2))  AS h100, (veL + (( optimum - veL )  /  2)) AS l100
+                , (optimum + (( veH - optimum ) / 4))  AS h90,  (veL + (( optimum - veL )  /  4)) AS l90
+            FROM
+            (
+                SELECT mli, fish_ID, velocity as ve,  veL, (veL + 10) as veH, (veL + 5) AS optimum
+                FROM cte, dbo.CurrentWaterState w 
+                    where w.velocity IS NOT NULL AND veL IS NOT NULL AND veH IS NULL
+            )e
+        ) f
+        UNION ALL
+        SELECT mli, fish_ID, 3 AS value, velocity as ve,  veL, veH, 1 AS koef
+                FROM cte, dbo.CurrentWaterState w 
+            where w.velocity IS NULL
+    ) g WHERE value = CASE 
+          WHEN ve IS NULL OR ( ve IS NOT NULL AND veL IS NULL AND veH IS NULL )THEN 3
+          WHEN ve IS NOT NULL AND veL IS NULL AND veH IS NOT NULL THEN 1 
+          WHEN ve IS NOT NULL AND veL IS NOT NULL AND veH IS NULL THEN 2 
+          WHEN ve IS NOT NULL AND veL IS NOT NULL AND veH IS NOT NULL THEN 0 
+        END AND koef IS NOT NULL
+GO
+
+-- select *  from  dbo.vget_trial_fish_list
+-- 1 - sport, 2 - Coarse, 4 - commersial, 8 - invading, 128 - migrate pattern (inverted logic by default)
+-------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------
+
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'vget_fish4push' AND type = 'V')
+    DROP VIEW dbo.vget_fish4push
+GO
+
+-- used in [spStepPushSpeciesFromLakeToStation]
+-- select * from vget_fish4push
+CREATE VIEW [dbo].[vget_fish4push]
+WITH SCHEMABINDING
+AS 
+SELECT fish_id, habitat, spawnPeriod, periodStart, periodEnd FROM 
+(
+    SELECT fish_id, habitat, 0 AS spawnPeriod, periodStart, periodEnd 
+    FROM dbo.fish_rule WHERE -1 = periodStart AND -1 = periodEnd
+    UNION ALL
+    SELECT fish_id, habitat, 1 AS spawnPeriod, periodStart, periodEnd 
+    FROM dbo.fish_rule WHERE -1 <> periodStart AND -1 <> periodEnd
+)e WHERE spawnPeriod = (CASE WHEN DATEPART( MM, getdate()) BETWEEN periodStart AND periodEnd THEN 1 ELSE 0 END)
+GO
+
 -----------------------------------------------------------------------------------------------------------------------------------------------
--- RETIRED 2026-08-19 - 17 views dropped from production because nothing referenced them.
+-- RETIRED 2026-08-19 - 12 views dropped from production because nothing referenced them.
+-- (The four fn_get_koef_fish_station_* views and vget_fish4push were part of this set and were
+--  REINSTATED above at the owner's request - kept despite having no caller.)
 -- Verified before removal: no sys.sql_expression_dependencies row, no other module's TEXT mentions
 -- them, and no hit anywhere in the 8 repositories under c:\envoinxishfind - all file types,
 -- including the compiled bin\*.dll. Their definitions remain in git history (this file, before this
@@ -541,26 +884,11 @@ GO
 -- NOTE dbo.vwWeatherForecastToDay is a DIFFERENT view and is very much alive - it is the work list
 -- for both weather services. Do not confuse it with vwWeatherForecast below.
 -----------------------------------------------------------------------------------------------------------------------------------------------
- IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_koef_fish_station_oxygen' AND type = 'V')
-    DROP VIEW dbo.fn_get_koef_fish_station_oxygen ;
-GO
- IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_koef_fish_station_ph' AND type = 'V')
-    DROP VIEW dbo.fn_get_koef_fish_station_ph ;
-GO
- IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_koef_fish_station_temperature' AND type = 'V')
-    DROP VIEW dbo.fn_get_koef_fish_station_temperature ;
-GO
- IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_koef_fish_station_velocity' AND type = 'V')
-    DROP VIEW dbo.fn_get_koef_fish_station_velocity ;
-GO
  IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'vCurrentWaterState' AND type = 'V')
     DROP VIEW dbo.vCurrentWaterState ;
 GO
  IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'vDefaultLastLake' AND type = 'V')
     DROP VIEW dbo.vDefaultLastLake ;
-GO
- IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'vget_fish4push' AND type = 'V')
-    DROP VIEW dbo.vget_fish4push ;
 GO
  IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'vGetCurrentWeather' AND type = 'V')
     DROP VIEW dbo.vGetCurrentWeather ;
