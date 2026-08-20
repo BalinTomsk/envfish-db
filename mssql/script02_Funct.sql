@@ -92,7 +92,7 @@ BEGIN
         AND link = @link 
   RETURN
 END  
-GO  
+GO
 ----------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_fish_list_type' AND xtype = 'IF')
     DROP FUNCTION dbo.fn_get_fish_list_type
@@ -115,7 +115,7 @@ SELECT ROW_NUMBER() OVER (ORDER BY fish_name ASC) AS num, fish_name, fish_latin,
       SELECT fish_name, fish_latin, fish_id, 1 AS line FROM dbo.fish 
         WHERE @fish_type = @fish_type & fish_type
 )a WHERE line = CASE WHEN @fish_type IS NULL OR 0 = @fish_type THEN 0 ELSE 1 END
- GO
+GO
 ----------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_trial_location' AND xtype = 'IF')
     DROP function dbo.fn_get_trial_location
@@ -200,7 +200,7 @@ begin
     insert into @TBL SELECT lat, lon  FROM CanPostLatLon  where postal=@postal
   return
 end          
-GO     
+GO
 -- SELECT TOP 1 lat, lon FROM dbo.GetLatLonByPostal( 'V2K1G7' )
 -- SELECT TOP 1 lat, lon FROM dbo.GetLatLonByPostal( '98101' )
  
@@ -229,7 +229,7 @@ GO
 ----------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'CheckInterval' AND xtype = 'FN')
     DROP FUNCTION dbo.CheckInterval
-GO    
+GO
 
 create function dbo.CheckInterval( @low float, @high float  )
 RETURNS BIT
@@ -317,7 +317,7 @@ AS
         as binary(4))
         RETURN @Tmp
     END
- GO
+GO
 ----------------------------------------------------------------------------------------------------------------------------------
 
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetLocations' AND xtype = 'TF')
@@ -659,7 +659,7 @@ BEGIN
         AND link = @link 
   RETURN
 END  
-GO  
+GO
 
 -- select * from vStationInfo
 -------------------------------------  used in a frame  --------------------------------------------------------------------
@@ -698,7 +698,7 @@ WITH SCHEMABINDING
 END      
 GO
 --  select * from dbo.GetStationInfo( (select fish_ID from dbo.fish where fish_name='Brown Trout'), 264004)
-GO  
+GO
 -- select * from dbo.WaterStation where country='CA' AND state='ON'
 ------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetLatLonByPostal' AND xtype = 'TF')
@@ -720,13 +720,13 @@ begin
       FROM dbo.CanPostLatLon  where postal=@postal
   return
 end          
-GO     
+GO
 -- SELECT TOP 1 lat, lon FROM dbo.GetLatLonByPostal( 'V2K1G7' )
 -- SELECT TOP 1 lat, lon FROM dbo.GetLatLonByPostal( '98101' )
 ----------------------------------------------------------------------------------------------------------------------------
  IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetUserLocation' AND xtype = 'TF')
     DROP FUNCTION dbo.GetUserLocation
-GO    
+GO
 create function dbo.GetUserLocation( @userId uniqueidentifier )
   RETURNS @TBL TABLE ( postal sysname, lat float, lon float, email sysname )
 WITH SCHEMABINDING
@@ -744,7 +744,7 @@ GO
 ----------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'CheckInterval' AND xtype = 'FN')
     DROP FUNCTION dbo.CheckInterval
-GO    
+GO
 create function dbo.CheckInterval( @low float, @high float  )
 RETURNS BIT
 WITH SCHEMABINDING
@@ -833,7 +833,7 @@ GO
 -------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetLastHourFishLocation' AND xtype = 'IF')
     DROP function dbo.GetLastHourFishLocation
-GO 
+GO
 --http://fishportal.biz/WebService/Update.aspx?FishLocation=75501A06-5176-4465-B299-D6041D25931C
 CREATE FUNCTION dbo.GetLastHourFishLocation( @hr int )
 RETURNS TABLE
@@ -1830,14 +1830,14 @@ GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_otherfish' AND xtype = 'FN')    DROP function dbo.fn_river_viewer_otherfish
-GO 
+GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_fish' AND xtype = 'IF')    DROP function dbo.fn_river_viewer_fish
-GO 
+GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_fish' AND xtype = 'IF') DROP function dbo.fn_river_fish
 GO
 /*
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_fish' AND xtype = 'IF')    DROP function dbo.fn_river_viewer_fish
-GO 
+GO
 */
 GO
 /******
@@ -1882,9 +1882,9 @@ RETURN
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_fish' AND xtype = 'FN')    DROP function dbo.fn_river_viewer_fish
-GO 
+GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_otherfish' AND xtype = 'FN')    DROP function dbo.fn_river_viewer_otherfish
-GO 
+GO
 /******
  * on page wfRiverViewer display list of other fishes not included to fn_river_viewer_fish
  * depend on fn_river_view
@@ -1910,9 +1910,9 @@ GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 /*
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_otherfish' AND xtype = 'FN') DROP function dbo.fn_river_viewer_otherfish
-GO 
+GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_fish' AND xtype = 'IF') DROP function dbo.fn_river_viewer_fish
-GO 
+GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_fish' AND xtype = 'IF') DROP function dbo.fn_river_fish
 GO
 */
@@ -1927,7 +1927,7 @@ GO
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_resource_state' AND xtype = 'IF')
     DROP function dbo.fn_resource_state
-GO 
+GO
 
 -- used in RiverList in combobox
 -- SELECT * FROM dbo.fn_resource_state( 'CA' )
@@ -2994,42 +2994,6 @@ SELECT sid, f.fish_id, fish_name, l.created FROM
     ) x 
 	WHERE NOT EXISTS (SELECT 1 FROM dbo.lake_fish l WHERE l.lake_Id =  @lake AND l.fish_id = x.fish_id)
 )l JOIN dbo.fish f ON l.fish_id = f.fish_id 
-GO
---------------------------------------------------------------------------------------------------------------------------------------------------
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_DefaultLastLake' AND xtype = 'IF')
-    DROP function dbo.fn_DefaultLastLake
-GO
-
--- gives suggested fished for default page
--- SELECT * FROM dbo.fn_DefaultLastLake( 'CA' )
-CREATE function dbo.fn_DefaultLastLake( @country char(2) )
-  RETURNS TABLE 
-AS
-RETURN
-    SELECT TOP 20 lake_id, lake_name, stamp, lat, lon FROM
-    (
-        SELECT TOP 5 l.lake_id, l.lake_name, l.stamp, s.lat , s.lon 
-                FROM dbo.lake l 
-                    JOIN dbo.Tributaries s ON s.main_lake_id = l.lake_id AND s.side = 16
-                WHERE s.Lat IS NOT NULL AND s.Lon IS NOT NULL AND l.locType = 2 AND s.country = @country
-				   AND EXISTS (SELECT 1 FROM lake_fish f WHERE l.lake_Id = f.lake_Id)
-                ORDER BY l.stamp DESC
-        UNION ALL
-        SELECT TOP 5 l.lake_id, l.lake_name, l.stamp, s.lat , s.lon 
-                FROM dbo.lake l
-                    JOIN dbo.Tributaries s ON s.main_lake_id = l.lake_id AND s.side = 16
-                WHERE s.Lat IS NOT NULL AND s.Lon IS NOT NULL AND l.locType = 1 AND s.country = @country
-					AND EXISTS (SELECT 1 FROM lake_fish f WHERE l.lake_Id = f.lake_Id)
-                ORDER BY l.stamp DESC
-        UNION ALL
-        SELECT TOP 5 l.lake_id, l.lake_name, l.stamp, s.lat , s.lon 
-                FROM dbo.lake l
-                    JOIN dbo.Tributaries s ON s.main_lake_id = l.lake_id AND s.side = 16
-                    , dbo.vw_NewID n
-                WHERE s.Lat IS NOT NULL AND s.Lon IS NOT NULL AND l.locType IN (1,2) AND s.country = @country
-								   AND EXISTS (SELECT 1 FROM lake_fish f WHERE l.lake_Id = f.lake_Id)
-                ORDER BY n.new_id
-    )x ORDER BY lake_id
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 --------------------------------------------------------------------------------------------------------------------------------------------------
@@ -6425,4 +6389,13 @@ RETURN
     FROM dbo.weather_station_coverage c
     JOIN dbo.WaterStation w ON w.MLI = c.mli
     WHERE c.provider = @provider AND c.covered = 0
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- RETIRED 2026-08-19 - dbo.fn_DefaultLastLake, dropped from production.
+-- It read dbo.vw_NewID (also retired). Its only mention anywhere was inside a comment in
+-- dbo.vDefaultLastLake, whose own header read "-- not used". Definition remains in git history.
+-----------------------------------------------------------------------------------------------------------------------------------------------
+ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_DefaultLastLake' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_DefaultLastLake ;
 GO
