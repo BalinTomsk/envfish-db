@@ -2049,7 +2049,15 @@ RETURN   --lat, lon, today, location, sid, country, state, county
       FROM dbo.vWaterStation w JOIN dbo.fish_location f ON (f.station_Id = w.id  )
       WHERE ( w.lat between (@lat-3.0) AND (@lat+3.0) ) AND (w.lon between (@lon-3.0) AND (@lon+3.0) ) 
         AND EXISTS( SELECT TOP 1 1 FROM dbo.fish s WHERE fish_name = @fishName and f.fish_id = s.fish_id )
-		AND EXISTS( SELECT TOP 1 1 FROM dbo.WaterData d WHERE d.mli = w.mli )
+		-- Same rule as dbo.fn_map_location: water AND weather AND fish. Kept in step deliberately --
+		-- a trial user must not be shown pins a paying one would not get, or vice versa.
+		AND EXISTS( SELECT 1 FROM dbo.CurrentWaterState c
+		             WHERE c.mli = w.mli
+		               AND c.stamp > DATEADD(day, -15, GETDATE())
+		               AND ( c.temperature IS NOT NULL OR c.discharge IS NOT NULL
+		                  OR c.oxygen IS NOT NULL OR c.ph IS NOT NULL OR c.elevation IS NOT NULL ) )
+		AND EXISTS( SELECT 1 FROM dbo.weather_Forecast wf
+		             WHERE wf.mli = w.mli AND wf.dt >= CAST(GETDATE() AS date) )
 		/*
      UNION ALL
     select  spot_lat, spot_lon, 0, '', b.spot_sid, 'CA', 'ON', ''        -- also display fish spots
@@ -2076,7 +2084,21 @@ RETURN   --lat, lon, today, location, sid, country, state, county
         JOIN dbo.fish_location f ON ( f.station_Id = w.id )
         JOIN dbo.fish          s ON ( f.fish_Id    = s.fish_Id )
         WHERE s.fish_name = @fishName AND @country = w.country
-		AND EXISTS( SELECT TOP 1 1 FROM dbo.WaterData d WHERE d.mli = w.mli )
+		-- A pin must lead to a page with something on it: WATER and WEATHER and FISH, all three.
+		-- FISH is the join above and is per species, so a station is only plotted for a fish
+		-- actually recorded there.
+		-- WATER was "EXISTS (SELECT 1 FROM dbo.WaterData WHERE mli = ...)", which only means a row
+		-- EVER arrived. The ~127 US gauges that publish a row a day carrying no measurement at all
+		-- satisfied that and got a pin over an empty water panel, so it now has to be a RECENT
+		-- reading that actually carries a value.
+		AND EXISTS( SELECT 1 FROM dbo.CurrentWaterState c
+		             WHERE c.mli = w.mli
+		               AND c.stamp > DATEADD(day, -15, GETDATE())
+		               AND ( c.temperature IS NOT NULL OR c.discharge IS NOT NULL
+		                  OR c.oxygen IS NOT NULL OR c.ph IS NOT NULL OR c.elevation IS NOT NULL ) )
+		-- WEATHER was not a condition at all, so a station with no forecast still got a pin.
+		AND EXISTS( SELECT 1 FROM dbo.weather_Forecast wf
+		             WHERE wf.mli = w.mli AND wf.dt >= CAST(GETDATE() AS date) )
 		/*
      UNION ALL
     select  spot_lat, spot_lon, 0, '', a.spot_sid, 'CA', 'ON', ''                -- also display fish spots

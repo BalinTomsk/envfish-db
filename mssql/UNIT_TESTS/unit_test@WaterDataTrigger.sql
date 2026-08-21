@@ -197,3 +197,139 @@ ELSE
 
 IF @@TRANCOUNT > 0 ROLLBACK TRAN Test03ExistingStateUpd
 GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 4: an ENTIRELY EMPTY reading must not make the cache look fresh.
+--
+-- USGS publishes different parameters at different times, so a reading that carries discharge
+-- but no temperature SHOULD keep the last known temperature - that is what the ISNULL merge is
+-- for, and TEST 5 pins it down. But a reading with NO measurement at all is not a partial
+-- reading, it is NO reading, and it still advanced dbo.CurrentWaterState.stamp. The row then
+-- claims to be current while carrying a value of unknown age: prod station 11446980 shows
+-- temperature 9.0 though no dbo.WaterData row for it has EVER held a temperature.
+--
+-- It also disables every age-out downstream. spTotalUpdateProbability clears temperature and
+-- oxygen "WHERE stamp < DATEADD(DAY,-7,GETUTCDATE())" - a predicate that can never fire for
+-- exactly the stations that need it, because the empty readings keep moving stamp forward.
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test04EmptyReadingStamp
+    DECLARE @test_name sysname = N'Test04EmptyReadingStamp [TR_insWaterData] : an all-NULL reading must not advance stamp'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @LakeId4 uniqueidentifier = NEWID();
+DECLARE @Mli4    varchar(64)      = 'UT_TRWD_EMPTY4';
+DECLARE @Sid4    int              = 970104;
+DECLARE @OldStamp datetime2 = DATEADD(day, -10, CAST(GETDATE() AS date));
+DECLARE @NewStamp datetime2 = CAST(GETDATE() AS date);
+DECLARE @stamp4 datetime2, @temp4 float, @rows4 int, @err4 nvarchar(2048), @msg4 nvarchar(4000);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test : a station whose last REAL reading was 10 days ago
+
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@LakeId4, 2, N'UT TRWD Lake 4');
+
+INSERT INTO dbo.WaterStation (MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@Mli4, 45.54, -75.54, 'US', N'unit-test station TRWD 4', 2, N'UT TRWD Station 4', N'', @Sid4, @LakeId4, N'UT TRWD Lake 4', 1);
+
+INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli4, @OldStamp, 9, 4.5, 12, 8.0, 70, 15.0);
+
+-- 2. execute unit test : today's poll returns a row carrying NOTHING, exactly as it does for
+--    the 127 US stations whose readings are entirely empty
+
+INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli4, @NewStamp, NULL, NULL, NULL, NULL, NULL, NULL);
+
+SELECT @rows4 = COUNT(*) FROM dbo.CurrentWaterState WHERE mli = @Mli4;
+SELECT @stamp4 = stamp, @temp4 = temperature FROM dbo.CurrentWaterState WHERE mli = @Mli4;
+
+END TRY
+BEGIN CATCH
+    SET @err4 = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification : the temperature is legitimately still 9 (nothing newer exists), but
+--    the stamp must still say 10 days ago, because that is when data last actually arrived.
+
+IF @err4 IS NOT NULL
+BEGIN
+    SET @msg4 = N'TEST 4 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err4;
+    RAISERROR (@msg4, 16, -1)
+END
+ELSE IF ISNULL(@rows4, 0) <> 1 OR ISNULL(@temp4, -1) <> 9 OR ISNULL(@stamp4, '1900-01-01') <> @OldStamp
+BEGIN
+    SET @msg4 = N'TEST 4 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: an empty reading must leave stamp at '
+              + CONVERT(varchar(30), @OldStamp, 120) + N' with temperature 9, got stamp='
+              + ISNULL(CONVERT(varchar(30), @stamp4, 120), 'NULL') + N' temperature='
+              + ISNULL(CAST(@temp4 AS varchar), 'NULL') + N' rows=' + ISNULL(CAST(@rows4 AS varchar), 'NULL');
+    RAISERROR (@msg4, 16, -1)
+END
+ELSE
+    print 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: an all-NULL reading left the cached value and its stamp alone'
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test04EmptyReadingStamp
+GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 5: a PARTIAL reading is not an empty one - it must still merge, and must still keep
+--         the measurements it does not carry. This is the behaviour TEST 4 must not break.
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test05PartialReadingMerges
+    DECLARE @test_name sysname = N'Test05PartialReadingMerges [TR_insWaterData] : a partial reading still merges and preserves'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @LakeId5 uniqueidentifier = NEWID();
+DECLARE @Mli5    varchar(64)      = 'UT_TRWD_PART5';
+DECLARE @Sid5    int              = 970105;
+DECLARE @Old5 datetime2 = DATEADD(day, -10, CAST(GETDATE() AS date));
+DECLARE @New5 datetime2 = CAST(GETDATE() AS date);
+DECLARE @stamp5 datetime2, @temp5 float, @disch5 float, @err5 nvarchar(2048), @msg5 nvarchar(4000);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@LakeId5, 2, N'UT TRWD Lake 5');
+
+INSERT INTO dbo.WaterStation (MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@Mli5, 45.55, -75.55, 'US', N'unit-test station TRWD 5', 2, N'UT TRWD Station 5', N'', @Sid5, @LakeId5, N'UT TRWD Lake 5', 1);
+
+INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli5, @Old5, 9, 4.5, 12, 8.0, 70, 15.0);
+
+-- 2. execute unit test : today the gauge publishes discharge but no temperature
+
+INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli5, @New5, NULL, 7.25, NULL, NULL, NULL, NULL);
+
+SELECT @stamp5 = stamp, @temp5 = temperature, @disch5 = discharge
+  FROM dbo.CurrentWaterState WHERE mli = @Mli5;
+
+END TRY
+BEGIN CATCH
+    SET @err5 = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification : discharge updated, temperature preserved, stamp DOES move - real
+--    data arrived, so the row is genuinely current.
+
+IF @err5 IS NOT NULL
+BEGIN
+    SET @msg5 = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err5;
+    RAISERROR (@msg5, 16, -1)
+END
+ELSE IF ABS(ISNULL(@disch5, -1) - 7.25) > 0.0001 OR ISNULL(@temp5, -1) <> 9
+     OR ISNULL(@stamp5, '1900-01-01') <> @New5
+BEGIN
+    SET @msg5 = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: expected discharge 7.25, temperature 9 preserved and stamp '
+              + CONVERT(varchar(30), @New5, 120) + N', got discharge=' + ISNULL(CAST(@disch5 AS varchar), 'NULL')
+              + N' temperature=' + ISNULL(CAST(@temp5 AS varchar), 'NULL')
+              + N' stamp=' + ISNULL(CONVERT(varchar(30), @stamp5, 120), 'NULL');
+    RAISERROR (@msg5, 16, -1)
+END
+ELSE
+    print 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: a partial reading merged, preserved the untouched measurement and moved stamp'
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test05PartialReadingMerges
+GO

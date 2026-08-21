@@ -1993,7 +1993,24 @@ WITH cte AS
 		, turbidity, oxygen, ph, i.elevation, w.sid 
 		FROM INSERTED i
         JOIN dbo.WaterStation w ON w.mli=i.mli
-        WHERE i.id IN ( SELECT MAX(id) FROM INSERTED GROUP BY mli )
+        -- Only a reading that actually CARRIES something may touch the cache. An entirely empty
+        -- reading is not a partial reading, it is NO reading -- and letting it through moved
+        -- CurrentWaterState.stamp forward, so a value of unknown age looked current. Prod station
+        -- 11446980 shows temperature 9.0 although no dbo.WaterData row for it has ever held a
+        -- temperature, and ~127 US stations publish nothing but empty rows. It also disabled every
+        -- age-out keyed on stamp (spTotalUpdateProbability clears readings older than 7 days, a
+        -- predicate that could never fire for exactly these stations).
+        -- A PARTIAL reading still merges and still preserves what it does not carry -- that is what
+        -- the ISNULL() updates below are for. -999 is the source's "no reading" marker for
+        -- discharge, so a row carrying only -999 counts as empty.
+        -- Taking MAX(id) over the rows WITH data also means a batch whose newest row is empty falls
+        -- back to the newest row that has readings, rather than losing the station entirely.
+        WHERE i.id IN (
+            SELECT MAX(id) FROM INSERTED
+             WHERE temperature IS NOT NULL OR turbidity IS NOT NULL OR oxygen IS NOT NULL
+                OR ph IS NOT NULL OR elevation IS NOT NULL
+                OR (discharge IS NOT NULL AND CAST(discharge AS INT) <> -999)
+             GROUP BY mli )
 )
     Merge Into dbo.CurrentWaterState As trg Using cte As src
           On src.mli = trg.mli

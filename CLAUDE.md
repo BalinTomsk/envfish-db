@@ -272,6 +272,46 @@ GO
 
 ## Changelog
 
+- 2026-08-20: **An empty water reading no longer makes the cache look fresh, and the forecast map now
+  requires water AND weather AND fish.** (`script01_createTable.sql`, `script02_Funct.sql`.)
+  Reported as "MLI 11446980 has no weather" — it has weather; what it has is **no water readings**.
+  All 16 of its `dbo.WaterData` rows in 30 days are entirely NULL, and no row for it has **ever** held
+  a measurement. Roughly **127 of 8,546** reporting US stations are in that state.
+  **Fix 1 — `dbo.TR_insWaterData`.** The cache merge is `ISNULL(src.x, trg.x)`, which is right for a
+  PARTIAL reading (USGS publishes different parameters at different times, so a reading carrying
+  discharge but not temperature should keep the recent temperature). But an **entirely empty** reading
+  is not a partial reading, it is *no* reading — and it still advanced `CurrentWaterState.stamp`. The
+  row then claimed to be current while carrying a value of unknown age: 11446980 shows
+  `temperature = 9.0` sourced from nothing. It also disabled every age-out keyed on `stamp` —
+  `spTotalUpdateProbability` clears readings older than 7 days, a predicate that could **never** fire
+  for exactly the stations needing it. The CTE now feeds the MERGE only from readings that carry at
+  least one measurement; `-999` is the source's "no reading" marker for discharge and does not count.
+  `MAX(id)` is taken **over the rows with data**, so a batch whose newest row is empty falls back to
+  the newest row that has readings rather than losing the station.
+  **Fix 2 — `dbo.fn_map_location` + `dbo.fn_map_location_trial`.** These are the FORECAST map's
+  station points (`Forecast/Planning.aspx.cs` → `FishTracker.Forecast.MapFrame.LoadMapLocation`) —
+  **not `vMapView`, which is the Editor's map** (`Editor/ViewMap.aspx.cs`) and was nearly changed by
+  mistake. The rule is now water AND weather AND fish. *Fish* was already enforced and is per species
+  via `fish_location`. *Water* was `EXISTS (SELECT 1 FROM dbo.WaterData WHERE mli = …)` — merely "a row
+  ever arrived", which the empty-row gauges satisfy — and is now a reading within 15 days that actually
+  carries a value. *Weather* was not a condition at all, so a station with no forecast still got a pin;
+  it now needs a `weather_Forecast` row for today or later. Both variants changed together so a trial
+  user does not see a different set of pins from a paying one.
+  New `unit_test@MapLocation.sql` (4 tests) and `unit_test@WaterDataTrigger.sql` TEST 4–5. **Confirmed
+  FAILING first**: map TEST 2 → `a station with no forecast must not be plotted, got 1 rows`, TEST 3 →
+  `water rows carrying no measurement must not count as water, got 1 rows`; trigger TEST 4 →
+  `stamp=2026-08-20` when the last real reading was 10 days earlier. Then **484 PASS**. TEST 5 (partial
+  reading still merges, preserves and moves `stamp`) and map TEST 1/4 are the no-regression baselines.
+  Two failures remain in `unit_test@FishCodeLatinJson.sql` — **pre-existing, verified failing on a
+  clean tree**, unrelated. **Not applied to prod.**
+  **Measured impact before deciding:** across the station table the all-three rule is 11,507 → 3,557
+  (CA 2,217 → 1,471, US 9,290 → 2,086). The dominant term is fish — **7,710** stations have no species
+  assigned — and **371 of those have an orphan `lakeId`** pointing at a lake row that does not exist
+  (8 CA, 363 US). Those are broken linkage rather than genuinely fishless water and will now disappear
+  from the map; worth its own cleanup, it does not change the rule. Also outstanding: **29
+  `CurrentWaterState` rows carry no measurement at all** (6 still looking fresh), which this fix stops
+  growing but does not clear, and prod's `spTotalUpdateProbability` is still missing the 7-day age-out
+  the scripts carry.
 - 2026-08-13: **`dbo.sp_ows_meteo_canonical` — ONE shredder for every weather provider, replacing
   per-provider T-SQL parsing.** (`script02_Proc.sql`, `script01_createTable.sql`.) The weather workers
   now convert each provider's document to a **canonical envelope** before storing it in
