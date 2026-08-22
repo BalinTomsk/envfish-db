@@ -5014,3 +5014,373 @@ BEGIN
     END
 END
 GO
+-- =====================================================================================================
+-- Per-tab JSON UPDATE procedures — the write-back counterpart of the dbo.fn_lake_<tab>_json exports.
+-- Each sp_update_lake_<tab> takes a JSON document (same shape as the matching export) plus the row
+-- key(s), and updates ONLY the columns whose key is present in that JSON — so a caller can update one,
+-- several, or all fields in a single call. A key present with a null value sets the column NULL; an
+-- absent key leaves the column unchanged (that is why presence is tested with OPENJSON, not COALESCE).
+-- Booleans accept true/false or 1/0. NOT wired into any page yet (2026-08-14).
+-- Convention here: EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'x') = "the caller supplied x".
+-- =====================================================================================================
+
+-- sp_update_lake_description : Description tab (dbo.lake scalar fields). Does not touch source/mouth
+-- (their own tabs), the derived isFish flag, MLI, or photos.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_description' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_description
+GO
+CREATE PROCEDURE dbo.sp_update_lake_description @lake_id uniqueidentifier, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @lake_id IS NULL OR @json IS NULL RETURN;
+    UPDATE l SET
+        lake_name             = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lakeName')          THEN JSON_VALUE(@json,N'$.lakeName')                       ELSE l.lake_name END,
+        alt_name              = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'altName')           THEN JSON_VALUE(@json,N'$.altName')                        ELSE l.alt_name END,
+        [native]              = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'nativeName')        THEN JSON_VALUE(@json,N'$.nativeName')                     ELSE l.[native] END,
+        french_name           = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'french')           THEN JSON_VALUE(@json,N'$.french')                         ELSE l.french_name END,
+        link                  = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'link')             THEN JSON_VALUE(@json,N'$.link')                           ELSE l.link END,
+        locType               = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'type')             THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.type'))       ELSE l.locType END,
+        length                = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'length_km')        THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.length_km'))  ELSE l.length END,
+        width                 = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'width_km')         THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.width_km'))   ELSE l.width END,
+        shoreline             = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'shoreline_km')     THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.shoreline_km')) ELSE l.shoreline END,
+        depth                 = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'maxDepth_m')       THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.maxDepth_m'))  ELSE l.depth END,
+        volume                = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'volume_km3')       THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.volume_km3'))  ELSE l.volume END,
+        surface               = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'surface_km2')      THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.surface_km2')) ELSE l.surface END,
+        Discharge             = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'discharge_m3s')    THEN JSON_VALUE(@json,N'$.discharge_m3s')                  ELSE l.Discharge END,
+        basin                 = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'basin_km2')        THEN JSON_VALUE(@json,N'$.basin_km2')                      ELSE l.basin END,
+        watershield           = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'watershield_km2')  THEN JSON_VALUE(@json,N'$.watershield_km2')                ELSE l.watershield END,
+        drainage              = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'drainage')         THEN JSON_VALUE(@json,N'$.drainage')                       ELSE l.drainage END,
+        CGNDB                 = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'cgndb')            THEN JSON_VALUE(@json,N'$.cgndb')                          ELSE l.CGNDB END,
+        lake_road_access      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'roadAccess')       THEN JSON_VALUE(@json,N'$.roadAccess')                     ELSE l.lake_road_access END,
+        is_fishing_prohibited = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'fishingProhibited') THEN CASE LOWER(JSON_VALUE(@json,N'$.fishingProhibited')) WHEN 'true' THEN 1 WHEN '1' THEN 1 WHEN 'false' THEN 0 WHEN '0' THEN 0 ELSE NULL END ELSE l.is_fishing_prohibited END,
+        isolated              = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'isolated')         THEN CASE LOWER(JSON_VALUE(@json,N'$.isolated'))         WHEN 'true' THEN 1 WHEN '1' THEN 1 WHEN 'false' THEN 0 WHEN '0' THEN 0 ELSE NULL END ELSE l.isolated END,
+        noFish                = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'noFish')           THEN CASE LOWER(JSON_VALUE(@json,N'$.noFish'))           WHEN 'true' THEN 1 WHEN '1' THEN 1 WHEN 'false' THEN 0 WHEN '0' THEN 0 ELSE NULL END ELSE l.noFish END,
+        reviewed              = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'reviewed')         THEN CASE LOWER(JSON_VALUE(@json,N'$.reviewed'))         WHEN 'true' THEN 1 WHEN '1' THEN 1 WHEN 'false' THEN 0 WHEN '0' THEN 0 ELSE NULL END ELSE l.reviewed END,
+        descript              = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'description')      THEN JSON_VALUE(@json,N'$.description')                    ELSE l.descript END
+    FROM dbo.lake l WHERE l.lake_id = @lake_id;
+END TRY
+BEGIN CATCH
+    DECLARE @e1 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_description: %s', 16, 1, @e1);
+END CATCH
+GO
+-- sp_update_lake_view : View tab (public overview). Writes the same dbo.lake scalar fields the view
+-- exports; source/mouth location, fish and photos in that export are read-only aggregations and are
+-- NOT written here. Overlaps sp_update_lake_description by design (both target dbo.lake).
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_view' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_view
+GO
+CREATE PROCEDURE dbo.sp_update_lake_view @lake_id uniqueidentifier, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @lake_id IS NULL OR @json IS NULL RETURN;
+    UPDATE l SET
+        lake_name   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lakeName')        THEN JSON_VALUE(@json,N'$.lakeName')                      ELSE l.lake_name END,
+        alt_name    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'altName')         THEN JSON_VALUE(@json,N'$.altName')                       ELSE l.alt_name END,
+        [native]    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'nativeName')      THEN JSON_VALUE(@json,N'$.nativeName')                    ELSE l.[native] END,
+        french_name = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'french')         THEN JSON_VALUE(@json,N'$.french')                        ELSE l.french_name END,
+        locType     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'type')           THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.type'))        ELSE l.locType END,
+        descript    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'description')     THEN JSON_VALUE(@json,N'$.description')                    ELSE l.descript END,
+        link        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'link')           THEN JSON_VALUE(@json,N'$.link')                          ELSE l.link END,
+        CGNDB       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'cgndb')          THEN JSON_VALUE(@json,N'$.cgndb')                         ELSE l.CGNDB END,
+        basin       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'basin')          THEN JSON_VALUE(@json,N'$.basin')                         ELSE l.basin END,
+        watershield = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'watershield')    THEN JSON_VALUE(@json,N'$.watershield')                   ELSE l.watershield END,
+        drainage    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'drainage')       THEN JSON_VALUE(@json,N'$.drainage')                      ELSE l.drainage END,
+        Discharge   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'discharge')      THEN JSON_VALUE(@json,N'$.discharge')                     ELSE l.Discharge END,
+        length      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'length_km')      THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.length_km'))   ELSE l.length END,
+        width       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'width_km')       THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.width_km'))    ELSE l.width END,
+        depth       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'maxDepth_m')     THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.maxDepth_m'))  ELSE l.depth END,
+        volume      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'volume_km3')     THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.volume_km3'))  ELSE l.volume END,
+        surface     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'surface_km2')    THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.surface_km2')) ELSE l.surface END,
+        shoreline   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'shoreline_km')   THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.shoreline_km')) ELSE l.shoreline END
+    FROM dbo.lake l WHERE l.lake_id = @lake_id;
+END TRY
+BEGIN CATCH
+    DECLARE @e2 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_view: %s', 16, 1, @e2);
+END CATCH
+GO
+-- sp_update_lake_stats : Stats tab (Lake_State), one month. UPSERT — the (lake, month) row is created
+-- if absent, then present fields applied. The CHECK constraints on Lake_State still bound the values.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_stats' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_stats
+GO
+CREATE PROCEDURE dbo.sp_update_lake_stats @lake_id uniqueidentifier, @month int, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @lake_id IS NULL OR @json IS NULL OR @month IS NULL OR @month < 1 OR @month > 12 RETURN;
+    IF NOT EXISTS (SELECT 1 FROM dbo.Lake_State WHERE Lake_id = @lake_id AND [month] = @month)
+        INSERT INTO dbo.Lake_State (Lake_id, [month], stamp) VALUES (@lake_id, @month, SYSUTCDATETIME());
+    UPDATE s SET
+        PH           = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'ph')           THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.ph'))           ELSE s.PH END,
+        Phosphorus   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'phosphorus')   THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.phosphorus'))   ELSE s.Phosphorus END,
+        TDS          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'tds')          THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.tds'))          ELSE s.TDS END,
+        Conductivity = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'conductivity') THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.conductivity')) ELSE s.Conductivity END,
+        Alkalinity   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'alkalinity')   THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.alkalinity'))   ELSE s.Alkalinity END,
+        Hardness     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'hardness')     THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.hardness'))     ELSE s.Hardness END,
+        Sodium       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'sodium')       THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.sodium'))       ELSE s.Sodium END,
+        Chloride     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'chloride')     THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.chloride'))     ELSE s.Chloride END,
+        Bicarbonate  = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'bicarbonate')  THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.bicarbonate'))  ELSE s.Bicarbonate END,
+        Transparency = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'transparency') THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.transparency')) ELSE s.Transparency END,
+        Oxygen       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'oxygen')       THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.oxygen'))       ELSE s.Oxygen END,
+        Salinity     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'salinity')     THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.salinity'))     ELSE s.Salinity END,
+        clarity      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'clarity')      THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.clarity'))      ELSE s.clarity END,
+        velocity     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'velocity')     THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.velocity'))     ELSE s.velocity END,
+        water_degree = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'waterDegree')  THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.waterDegree'))  ELSE s.water_degree END,
+        air_degree   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'airDegree')    THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.airDegree'))    ELSE s.air_degree END,
+        cold_cool    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'coldCool')     THEN CASE LOWER(JSON_VALUE(@json,N'$.coldCool'))  WHEN 'true' THEN 1 WHEN '1' THEN 1 WHEN 'false' THEN 0 WHEN '0' THEN 0 ELSE NULL END ELSE s.cold_cool END,
+        flow_stand   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'flowStand')    THEN CASE LOWER(JSON_VALUE(@json,N'$.flowStand')) WHEN 'true' THEN 1 WHEN '1' THEN 1 WHEN 'false' THEN 0 WHEN '0' THEN 0 ELSE NULL END ELSE s.flow_stand END
+    FROM dbo.Lake_State s WHERE s.Lake_id = @lake_id AND s.[month] = @month;
+END TRY
+BEGIN CATCH
+    DECLARE @e3 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_stats: %s', 16, 1, @e3);
+END CATCH
+GO
+-- sp_update_lake_maps : Maps tab (dbo.lake_map metadata), one attachment by id. The stored file bytes
+-- (lake_map_pic) are NOT updated here — use sp_add_lake_map to (re)upload the file itself.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_maps' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_maps
+GO
+CREATE PROCEDURE dbo.sp_update_lake_maps @lake_map_id int, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @lake_map_id IS NULL OR @json IS NULL RETURN;
+    UPDATE m SET
+        lake_map_source   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'source')   THEN JSON_VALUE(@json,N'$.source')                    ELSE m.lake_map_source END,
+        lake_map_author   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'author')   THEN JSON_VALUE(@json,N'$.author')                    ELSE m.lake_map_author END,
+        lake_map_link     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'link')     THEN JSON_VALUE(@json,N'$.link')                      ELSE m.lake_map_link END,
+        lake_map_label    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'label')    THEN JSON_VALUE(@json,N'$.label')                     ELSE m.lake_map_label END,
+        lake_map_location = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'location') THEN JSON_VALUE(@json,N'$.location')                  ELSE m.lake_map_location END,
+        lake_map_lat      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lat')      THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.lat'))   ELSE m.lake_map_lat END,
+        lake_map_lon      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lon')      THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.lon'))   ELSE m.lake_map_lon END,
+        lake_map_type     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'type')     THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.type'))  ELSE m.lake_map_type END,
+        lake_map_kind     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'kind')     THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.kind'))  ELSE m.lake_map_kind END,
+        lake_map_tag      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'tag')      THEN JSON_VALUE(@json,N'$.tag')                       ELSE m.lake_map_tag END
+    FROM dbo.lake_map m WHERE m.lake_map_id = @lake_map_id;
+END TRY
+BEGIN CATCH
+    DECLARE @e4 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_maps: %s', 16, 1, @e4);
+END CATCH
+GO
+-- sp_update_lake_source / _mouth : the source (side 16) / mouth (side 32) Tributaries row of a lake.
+-- pointId (the linked water body) may be repointed. Location/coordinate fields updated per key.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_source' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_source
+GO
+CREATE PROCEDURE dbo.sp_update_lake_source @lake_id uniqueidentifier, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @lake_id IS NULL OR @json IS NULL RETURN;
+    UPDATE t SET
+        Lake_id      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'pointId')      THEN TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json,N'$.pointId')) ELSE t.Lake_id END,
+        lat          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lat')          THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.lat'))       ELSE t.lat END,
+        lon          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lon')          THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.lon'))       ELSE t.lon END,
+        elevation    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'elevation')    THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.elevation')) ELSE t.elevation END,
+        Country      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'country')      THEN JSON_VALUE(@json,N'$.country')                      ELSE t.Country END,
+        State        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'state')        THEN JSON_VALUE(@json,N'$.state')                        ELSE t.State END,
+        county       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'county')       THEN JSON_VALUE(@json,N'$.county')                       ELSE t.county END,
+        city         = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'city')         THEN JSON_VALUE(@json,N'$.city')                         ELSE t.city END,
+        district     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'district')     THEN JSON_VALUE(@json,N'$.district')                     ELSE t.district END,
+        municipality = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'municipality') THEN JSON_VALUE(@json,N'$.municipality')                 ELSE t.municipality END,
+        region       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'region')       THEN JSON_VALUE(@json,N'$.region')                       ELSE t.region END,
+        zone         = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'zone')         THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.zone'))       ELSE t.zone END,
+        coast        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'coast')        THEN JSON_VALUE(@json,N'$.coast')                        ELSE t.coast END,
+        location     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'location')     THEN JSON_VALUE(@json,N'$.location')                     ELSE t.location END,
+        descript     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'description')  THEN JSON_VALUE(@json,N'$.description')                  ELSE t.descript END
+    FROM dbo.Tributaries t WHERE t.Main_Lake_id = @lake_id AND t.side = 16;
+END TRY
+BEGIN CATCH
+    DECLARE @e5 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_source: %s', 16, 1, @e5);
+END CATCH
+GO
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_mouth' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_mouth
+GO
+CREATE PROCEDURE dbo.sp_update_lake_mouth @lake_id uniqueidentifier, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @lake_id IS NULL OR @json IS NULL RETURN;
+    UPDATE t SET
+        Lake_id      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'pointId')      THEN TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json,N'$.pointId')) ELSE t.Lake_id END,
+        lat          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lat')          THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.lat'))       ELSE t.lat END,
+        lon          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lon')          THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.lon'))       ELSE t.lon END,
+        elevation    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'elevation')    THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.elevation')) ELSE t.elevation END,
+        Country      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'country')      THEN JSON_VALUE(@json,N'$.country')                      ELSE t.Country END,
+        State        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'state')        THEN JSON_VALUE(@json,N'$.state')                        ELSE t.State END,
+        county       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'county')       THEN JSON_VALUE(@json,N'$.county')                       ELSE t.county END,
+        city         = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'city')         THEN JSON_VALUE(@json,N'$.city')                         ELSE t.city END,
+        district     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'district')     THEN JSON_VALUE(@json,N'$.district')                     ELSE t.district END,
+        municipality = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'municipality') THEN JSON_VALUE(@json,N'$.municipality')                 ELSE t.municipality END,
+        region       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'region')       THEN JSON_VALUE(@json,N'$.region')                       ELSE t.region END,
+        zone         = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'zone')         THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.zone'))       ELSE t.zone END,
+        coast        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'coast')        THEN JSON_VALUE(@json,N'$.coast')                        ELSE t.coast END,
+        location     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'location')     THEN JSON_VALUE(@json,N'$.location')                     ELSE t.location END,
+        descript     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'description')  THEN JSON_VALUE(@json,N'$.description')                  ELSE t.descript END
+    FROM dbo.Tributaries t WHERE t.Main_Lake_id = @lake_id AND t.side = 32;
+END TRY
+BEGIN CATCH
+    DECLARE @e6 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_mouth: %s', 16, 1, @e6);
+END CATCH
+GO
+-- sp_update_lake_tributary : any one Tributaries row by its id (the Tributary tab lists them all).
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_tributary' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_tributary
+GO
+CREATE PROCEDURE dbo.sp_update_lake_tributary @id int, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @id IS NULL OR @json IS NULL RETURN;
+    UPDATE t SET
+        side         = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'side')         THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.side'))       ELSE t.side END,
+        Lake_id      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'pointId')      THEN TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json,N'$.pointId')) ELSE t.Lake_id END,
+        lat          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lat')          THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.lat'))       ELSE t.lat END,
+        lon          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lon')          THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.lon'))       ELSE t.lon END,
+        elevation    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'elevation')    THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.elevation')) ELSE t.elevation END,
+        coast        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'coast')        THEN JSON_VALUE(@json,N'$.coast')                        ELSE t.coast END,
+        Country      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'country')      THEN JSON_VALUE(@json,N'$.country')                      ELSE t.Country END,
+        State        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'state')        THEN JSON_VALUE(@json,N'$.state')                        ELSE t.State END,
+        county       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'county')       THEN JSON_VALUE(@json,N'$.county')                       ELSE t.county END,
+        city         = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'city')         THEN JSON_VALUE(@json,N'$.city')                         ELSE t.city END,
+        district     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'district')     THEN JSON_VALUE(@json,N'$.district')                     ELSE t.district END,
+        municipality = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'municipality') THEN JSON_VALUE(@json,N'$.municipality')                 ELSE t.municipality END,
+        region       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'region')       THEN JSON_VALUE(@json,N'$.region')                       ELSE t.region END,
+        zone         = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'zone')         THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.zone'))       ELSE t.zone END,
+        location     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'location')     THEN JSON_VALUE(@json,N'$.location')                     ELSE t.location END,
+        descript     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'description')  THEN JSON_VALUE(@json,N'$.description')                  ELSE t.descript END
+    FROM dbo.Tributaries t WHERE t.id = @id;
+END TRY
+BEGIN CATCH
+    DECLARE @e7 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_tributary: %s', 16, 1, @e7);
+END CATCH
+GO
+-- sp_update_lake_fishing : one assigned species (dbo.lake_fish) by (lake, fish).
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_fishing' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_fishing
+GO
+CREATE PROCEDURE dbo.sp_update_lake_fishing @lake_id uniqueidentifier, @fish_id uniqueidentifier, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @lake_id IS NULL OR @fish_id IS NULL OR @json IS NULL RETURN;
+    UPDATE lf SET
+        probability             = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'probability')            THEN TRY_CONVERT(tinyint, JSON_VALUE(@json,N'$.probability'))            ELSE lf.probability END,
+        probability_source_type = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'probabilitySourceType')  THEN TRY_CONVERT(tinyint, JSON_VALUE(@json,N'$.probabilitySourceType'))  ELSE lf.probability_source_type END,
+        status                  = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'status')                 THEN TRY_CONVERT(tinyint, JSON_VALUE(@json,N'$.status'))                 ELSE lf.status END,
+        spawn                   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'spawn')                  THEN TRY_CONVERT(int,     JSON_VALUE(@json,N'$.spawn'))                  ELSE lf.spawn END,
+        tributaries             = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'tributaries')            THEN TRY_CONVERT(int,     JSON_VALUE(@json,N'$.tributaries'))            ELSE lf.tributaries END,
+        forbidden               = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'forbidden')              THEN TRY_CONVERT(int,     JSON_VALUE(@json,N'$.forbidden'))              ELSE lf.forbidden END,
+        Distribution            = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'distribution')           THEN JSON_VALUE(@json,N'$.distribution')                                ELSE lf.Distribution END,
+        note                    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'note')                   THEN JSON_VALUE(@json,N'$.note')                                        ELSE lf.note END,
+        method                  = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'method')                 THEN JSON_VALUE(@json,N'$.method')                                      ELSE lf.method END,
+        link                    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'link')                   THEN JSON_VALUE(@json,N'$.link')                                        ELSE lf.link END,
+        last_catch              = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'lastCatch')              THEN TRY_CONVERT(datetime, JSON_VALUE(@json,N'$.lastCatch'))             ELSE lf.last_catch END
+    FROM dbo.lake_fish lf WHERE lf.lake_id = @lake_id AND lf.fish_id = @fish_id;
+END TRY
+BEGIN CATCH
+    DECLARE @e8 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_fishing: %s', 16, 1, @e8);
+END CATCH
+GO
+-- sp_update_lake_regulation : one regulation row (dbo.regulations) by regulations_id.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_regulation' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_regulation
+GO
+CREATE PROCEDURE dbo.sp_update_lake_regulation @regulations_id uniqueidentifier, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @regulations_id IS NULL OR @json IS NULL RETURN;
+    UPDATE r SET
+        regulations_part       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'part')             THEN JSON_VALUE(@json,N'$.part')                                    ELSE r.regulations_part END,
+        resident_type          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'residentType')     THEN TRY_CONVERT(tinyint, JSON_VALUE(@json,N'$.residentType'))       ELSE r.resident_type END,
+        state                  = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'state')            THEN JSON_VALUE(@json,N'$.state')                                   ELSE r.state END,
+        zone_id                = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'zoneId')           THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.zoneId'))                 ELSE r.zone_id END,
+        fish_id                = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'fishId')           THEN TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json,N'$.fishId'))    ELSE r.fish_id END,
+        chain                  = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'chain')            THEN TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json,N'$.chain'))     ELSE r.chain END,
+        reg_year               = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'regYear')          THEN TRY_CONVERT(smallint, JSON_VALUE(@json,N'$.regYear'))           ELSE r.reg_year END,
+        regulations_date_start = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'dateStart')        THEN TRY_CONVERT(date, JSON_VALUE(@json,N'$.dateStart'))             ELSE r.regulations_date_start END,
+        regulations_start      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'startText')        THEN JSON_VALUE(@json,N'$.startText')                               ELSE r.regulations_start END,
+        regulations_date_end   = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'dateEnd')          THEN TRY_CONVERT(date, JSON_VALUE(@json,N'$.dateEnd'))               ELSE r.regulations_date_end END,
+        regulations_end        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'endText')          THEN JSON_VALUE(@json,N'$.endText')                                 ELSE r.regulations_end END,
+        regulations_sport      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'sport')            THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.sport'))                  ELSE r.regulations_sport END,
+        regulations_sport_text = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'sportText')        THEN JSON_VALUE(@json,N'$.sportText')                               ELSE r.regulations_sport_text END,
+        regulations_consr      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'consr')            THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.consr'))                  ELSE r.regulations_consr END,
+        regulations_consr_text = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'consrText')        THEN JSON_VALUE(@json,N'$.consrText')                               ELSE r.regulations_consr_text END,
+        possession_sport       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'possessionSport')  THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.possessionSport'))        ELSE r.possession_sport END,
+        possession_consr       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'possessionConsr')  THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.possessionConsr'))        ELSE r.possession_consr END,
+        min_length_cm          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'minLengthCm')      THEN TRY_CONVERT(decimal(5,1), JSON_VALUE(@json,N'$.minLengthCm'))   ELSE r.min_length_cm END,
+        slot_min_cm            = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'slotMinCm')        THEN TRY_CONVERT(decimal(5,1), JSON_VALUE(@json,N'$.slotMinCm'))     ELSE r.slot_min_cm END,
+        slot_max_cm            = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'slotMaxCm')        THEN TRY_CONVERT(decimal(5,1), JSON_VALUE(@json,N'$.slotMaxCm'))     ELSE r.slot_max_cm END,
+        slot_over_limit        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'slotOverLimit')    THEN TRY_CONVERT(tinyint, JSON_VALUE(@json,N'$.slotOverLimit'))      ELSE r.slot_over_limit END,
+        method_flags           = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'methodFlags')      THEN TRY_CONVERT(tinyint, JSON_VALUE(@json,N'$.methodFlags'))        ELSE r.method_flags END,
+        day_flags              = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'dayFlags')         THEN TRY_CONVERT(tinyint, JSON_VALUE(@json,N'$.dayFlags'))           ELSE r.day_flags END,
+        regulations_code       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'code')             THEN TRY_CONVERT(int, JSON_VALUE(@json,N'$.code'))                  ELSE r.regulations_code END,
+        regulations_link       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'link')             THEN JSON_VALUE(@json,N'$.link')                                    ELSE r.regulations_link END,
+        regulations_text       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'ruleText')         THEN JSON_VALUE(@json,N'$.ruleText')                                ELSE r.regulations_text END
+    FROM dbo.regulations r WHERE r.regulations_id = @regulations_id;
+END TRY
+BEGIN CATCH
+    DECLARE @e9 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_regulation: %s', 16, 1, @e9);
+END CATCH
+GO
+-- sp_update_lake_weather : the collected forecast row for one station's CURRENT day
+-- (dbo.weather_Forecast, the TOP-1 by tm that fn_station_weather_today returns). This is collected
+-- data, so an update here is a manual override; the next collector run may overwrite it.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_weather' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_weather
+GO
+CREATE PROCEDURE dbo.sp_update_lake_weather @sid int, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @sid IS NULL OR @json IS NULL RETURN;
+    ;WITH tgt AS (
+        SELECT TOP 1 wf.*
+        FROM dbo.weather_Forecast wf
+        JOIN dbo.WaterStation ws ON wf.link = ws.id
+        WHERE ws.sid = @sid AND wf.dt = CAST(GETDATE() AS date)
+        ORDER BY wf.tm DESC
+    )
+    UPDATE tgt SET
+        shortText       = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'conditions')      THEN JSON_VALUE(@json,N'$.conditions')                          ELSE tgt.shortText END,
+        longText        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'conditions_long') THEN JSON_VALUE(@json,N'$.conditions_long')                     ELSE tgt.longText END,
+        icon            = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'icon')            THEN JSON_VALUE(@json,N'$.icon')                                ELSE tgt.icon END,
+        air_temperature = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'air_temp')        THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.air_temp'))         ELSE tgt.air_temperature END,
+        tmHigh          = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'temp_high')       THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.temp_high'))        ELSE tgt.tmHigh END,
+        tmLow           = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'temp_low')        THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.temp_low'))         ELSE tgt.tmLow END,
+        humidity        = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'humidity')        THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.humidity'))         ELSE tgt.humidity END,
+        wind_max_speed  = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'wind_speed')      THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.wind_speed'))       ELSE tgt.wind_max_speed END,
+        wind_direction  = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'wind_direction')  THEN JSON_VALUE(@json,N'$.wind_direction')                      ELSE tgt.wind_direction END,
+        wind_degree     = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'wind_degree')     THEN TRY_CONVERT(float, JSON_VALUE(@json,N'$.wind_degree'))      ELSE tgt.wind_degree END,
+        pop             = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'precip_chance')    THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.precip_chance'))    ELSE tgt.pop END,
+        rain_today      = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'precip_amount')   THEN TRY_CONVERT(int,   JSON_VALUE(@json,N'$.precip_amount'))    ELSE tgt.rain_today END;
+END TRY
+BEGIN CATCH
+    DECLARE @e10 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_weather: %s', 16, 1, @e10);
+END CATCH
+GO
+-- sp_update_lake_fishing_view : the per-lake fishing-rule fields the Fishing view shows ("Exceptions to
+-- Regulations" text + its link), stored on dbo.lake. NOTE: this proc covers ONLY those lake-level rule
+-- fields. The Fishing view's species list is owned by the Fishing tab (sp_update_lake_fishing / spAddFish)
+-- and its catch log by the catch-memo procs (sp_add_catch_memo); those are NOT written here.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_update_lake_fishing_view' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_update_lake_fishing_view
+GO
+CREATE PROCEDURE dbo.sp_update_lake_fishing_view @lake_id uniqueidentifier, @json nvarchar(max)
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @lake_id IS NULL OR @json IS NULL RETURN;
+    UPDATE l SET
+        regulations = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'regulations') THEN JSON_VALUE(@json,N'$.regulations') ELSE l.regulations END,
+        link_reg    = CASE WHEN EXISTS(SELECT 1 FROM OPENJSON(@json) WHERE [key]=N'linkReg')     THEN JSON_VALUE(@json,N'$.linkReg')     ELSE l.link_reg END
+    FROM dbo.lake l WHERE l.lake_id = @lake_id;
+END TRY
+BEGIN CATCH
+    DECLARE @e11 nvarchar(2048) = ERROR_MESSAGE(); RAISERROR('sp_update_lake_fishing_view: %s', 16, 1, @e11);
+END CATCH
+GO
