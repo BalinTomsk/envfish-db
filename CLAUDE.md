@@ -272,6 +272,23 @@ GO
 
 ## Changelog
 
+- 2026-08-24: **New `dbo.fn_map_fish_list_nearest_station` — sport species (length > 10 cm) at the
+  single closest `WaterStation`.** (`script02_Funct.sql`.) Registered (non-trial)
+  `Forecast/Planning.aspx` visitors see up to 10 extra locally-caught species appended after their
+  region's top-15 (`AppendNearestStationSpecies` in `Planning.aspx.cs`), deduplicated against what
+  the top-15 already offered. "Closest" is the nearest station by squared lat/lon distance — a
+  planar approximation, adequate at map scale — found via a `TOP 1 … ORDER BY` scalar subquery; no
+  true single-nearest-station lookup for fish species existed in this schema before. Filters:
+  sport-fish bit (`fish_Type & 1`), `fish_zoo.fish_max_length > 10`, and the subquery's own
+  `w2.country = @country` scoping (a geographically closer station in the other country is never
+  selected — see TEST 4). New `unit_test@MapFishListNearestStation.sql`, 4 tests, all pass via
+  `autorun.bat`: nearer-of-two-stations wins, size filter boundary (exactly 10 cm is excluded —
+  the predicate is strictly `> 10`), sport-fish filter, and country scoping under a
+  closer-but-wrong-country station. Full suite **493 PASS / 2 FAIL**, same 2 pre-existing failures
+  in `unit_test@FishCodeLatinJson.sql`, unrelated. Signature-only addition — no existing object
+  changed, so no deploy-order dependency on anything else. **Applied directly to production**
+  before this changelog entry/commit; this syncs the source.
+
 - 2026-08-24: **New `dbo.fish_region_top` — hand-curated freshwater top-15 per US state / Canadian
   province, backing `Forecast/Planning.aspx`'s "Select desire fish" combobox.** (`script01_createTable.sql`,
   `script02_Funct.sql`, `script09_fish_data.sql`.) New `dbo.fish_region_top` (945 rows: 63 regions —

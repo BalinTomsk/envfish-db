@@ -6467,3 +6467,36 @@ SELECT t.top_rank, t.fish_id, t.fish_name
       AND t.fish_id IS NOT NULL
       AND ( ISNULL(f.water_type, 0) & 1 ) = 1
 GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+-- fn_map_fish_list_nearest_station : sport species (max length > 10 cm) recorded at the single
+-- WaterStation closest to a coordinate, for registered users' "other species nearby" addition to
+-- the Forecast/Planning.aspx fish combobox (AppendNearestStationSpecies in Planning.aspx.cs, which
+-- takes up to 10 of these not already in the region's top-15). "Closest" is the nearest station by
+-- squared lat/lon distance - a planar approximation, adequate at map scale and consistent with the
+-- box-based proximity already used elsewhere in this schema (no true single-nearest-station lookup
+-- existed for fish species before this).
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_map_fish_list_nearest_station' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_map_fish_list_nearest_station
+GO
+CREATE FUNCTION dbo.fn_map_fish_list_nearest_station( @lat real, @lon real, @country char(2) )
+  RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN
+SELECT v.fish_id, v.fish_name
+    FROM dbo.fish v
+    JOIN dbo.fish_zoo z ON z.fish_id = v.fish_id
+    JOIN dbo.fish_location f ON f.fish_id = v.fish_id
+    JOIN dbo.WaterStation w ON w.id = f.station_Id
+    WHERE w.id = (
+        SELECT TOP 1 w2.id
+            FROM dbo.WaterStation w2
+            WHERE w2.country = @country
+            ORDER BY ( POWER(w2.lat - @lat, 2) + POWER(w2.lon - @lon, 2) ) ASC
+        )
+      AND ( v.fish_Type & 1 ) = 1     -- sport fish
+      AND z.fish_max_length > 10      -- cm
+GO
