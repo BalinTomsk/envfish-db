@@ -3087,3 +3087,63 @@ GO
  IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fishingAccessPoint' AND type = 'U')
     DROP TABLE dbo.fishingAccessPoint ;
 GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- fish_region_top : the region's top-15 most-caught FRESHWATER species, ranked, backing the
+-- Forecast/Planning.aspx "Select desire fish" combobox (see dbo.fn_map_fish_list_bystate /
+-- _trial in script02_Funct.sql). 63 regions (50 US states, 13 Canadian provinces/territories) x
+-- 15 ranks = 945 rows, hand-curated per region and seeded at the end of script09_fish_data.sql
+-- (after dbo.fish exists, so the fish_id resolution UPDATE has something to join against).
+--
+-- fish_id is nullable and the FK is ON DELETE SET NULL, not CASCADE: retiring a catalogue species
+-- must not silently renumber a region's top-15 - the row survives with its name and stops
+-- resolving/being offered (both read functions filter WHERE fish_id IS NOT NULL).
+-----------------------------------------------------------------------------------------------------------------------------------------------
+IF OBJECT_ID('dbo.fish_region_top', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.fish_region_top
+    (
+        country      char(2)           NOT NULL,
+        state        char(2)           NOT NULL,
+        top_rank     tinyint           NOT NULL,
+        common_name  varchar(64)       NOT NULL,
+        fish_name    varchar(32)       NULL,
+        fish_id      uniqueidentifier  NULL
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.key_constraints WHERE name = 'PK_fish_region_top')
+    ALTER TABLE dbo.fish_region_top ADD CONSTRAINT PK_fish_region_top
+        PRIMARY KEY CLUSTERED (country, state, top_rank);
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.check_constraints WHERE name = 'CK_fish_region_top_rank')
+    ALTER TABLE dbo.fish_region_top ADD CONSTRAINT CK_fish_region_top_rank
+        CHECK (top_rank BETWEEN 1 AND 15);
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.check_constraints WHERE name = 'CK_fish_region_top_country')
+    ALTER TABLE dbo.fish_region_top ADD CONSTRAINT CK_fish_region_top_country
+        CHECK (country IN ('CA', 'US'));
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_fish_region_top_lookup')
+    CREATE NONCLUSTERED INDEX IX_fish_region_top_lookup
+        ON dbo.fish_region_top(country, state, top_rank) INCLUDE (fish_id);
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_fish_region_top_name')
+    CREATE NONCLUSTERED INDEX IX_fish_region_top_name
+        ON dbo.fish_region_top(fish_name);
+GO
+
+-- Declared here, not next to CREATE TABLE above: dbo.fish is created much earlier in this same
+-- file (see FK_fish_code_fish for the identical forward-reference reasoning), so the FK has to
+-- wait until here, after both tables exist. SET NULL, not CASCADE: retiring a catalogue species
+-- must not silently renumber a region's top-15 - the row survives with its name and simply stops
+-- resolving (both read functions filter WHERE fish_id IS NOT NULL).
+IF NOT EXISTS (SELECT * FROM sys.foreign_keys WHERE name = 'FK_fish_region_top_fish')
+    ALTER TABLE dbo.fish_region_top ADD CONSTRAINT FK_fish_region_top_fish
+        FOREIGN KEY (fish_id) REFERENCES dbo.fish (fish_id) ON DELETE SET NULL;
+GO

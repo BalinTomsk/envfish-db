@@ -272,6 +272,55 @@ GO
 
 ## Changelog
 
+- 2026-08-24: **New `dbo.fish_region_top` — hand-curated freshwater top-15 per US state / Canadian
+  province, backing `Forecast/Planning.aspx`'s "Select desire fish" combobox.** (`script01_createTable.sql`,
+  `script02_Funct.sql`, `script09_fish_data.sql`.) New `dbo.fish_region_top` (945 rows: 63 regions —
+  50 US states, 13 CA provinces/territories — x 15 ranks), keyed on `(country, state, top_rank)`,
+  FK `fish_id` → `dbo.fish` **`ON DELETE SET NULL`** (not CASCADE — retiring a catalogue species
+  must not renumber a region's list; the row survives with its name and just stops resolving).
+  Read path: `dbo.fn_map_fish_list_bystate(@country, @state)` / `_trial(@country, @state)`, both a
+  **plain filtered read of the table** — no proximity/lat-lon join, both filtered to the freshwater
+  bit of `dbo.fish.water_type`. (An earlier design joined the region list onto
+  `dbo.fn_map_fish_list_bylatlon` so every offered species was guaranteed a nearby forecastable
+  station; dropped once "every region must show its 15" became the actual requirement — the
+  intersection cut most regions down to 2–6 species wherever station coverage was thin.)
+  **The seed is hand-curated, not sourced from `Top15_Fish_Canada_USA.xlsx`.** The workbook mixed
+  salt/freshwater species for every coastal or island region and named several entries as a group
+  rather than a species ("Cisco", "Grouper", "Sculpin", "Bullhead", "Snapper", "Rockfish",
+  "Sunfish" — each covering multiple catalogue rows, so none of them could resolve to one), which
+  left many regions short once filtered to freshwater-only — Hawaii had **zero** resolvable
+  freshwater species, Florida 4, Rhode Island 6. Every region's 15 were picked by hand from real
+  regional freshwater angling knowledge; every one of the ~67 distinct species names used was
+  **pre-validated against a live copy of `dbo.fish`** (exact name match + freshwater bit set)
+  *before* being written into the seed, so it resolves **945/945** with **zero** within-region
+  duplicates — the workbook-sourced predecessor had several (e.g. "Rainbow Trout" and "Steelhead"
+  both resolving to `Trout, Rainbow` in the same region, producing two identical combobox entries).
+  `common_name` is set equal to `fish_name` for every row — the workbook's separate
+  common-name/catalogue-name split is gone along with the workbook as a source.
+  New `UNIT_TESTS/unit_test@MapFishListByState.sql` (5 tests: ranked-order return, a non-freshwater
+  fixture row excluded even though resolved and ranked, an unresolved `fish_id NULL` row never
+  offered, `(country, state)` scoping — the same two-letter code under both countries stays
+  separate and an unknown region returns zero rows rather than erroring, and the trial variant
+  matching the registered one row-for-row under the current freshwater-only design). All 5 pass via
+  `autorun.bat`; full suite **489 PASS / 2 FAIL**, both pre-existing failures in
+  `unit_test@FishCodeLatinJson.sql`, unrelated to this change.
+  **Gotcha that cost a rebuild:** the table's `FOREIGN KEY … REFERENCES dbo.fish` cannot sit next to
+  the table's own `CREATE TABLE` (same forward-reference problem `FK_fish_code_fish` already
+  documents nearby) — `dbo.fish_region_top` is created late in `script01_createTable.sql`, so its
+  FK has to be added even later, **after** `dbo.fish` exists; a first attempt placed it right next
+  to `FK_fish_code_fish` (declared early, right after `PK_fish`) and broke every fresh build with
+  *"Cannot find the object 'dbo.fish_region_top'"*, since the table didn't exist yet at that point
+  in the concatenated script. Fixed by moving the `ALTER TABLE … ADD CONSTRAINT` to immediately
+  after the table's own indexes, further down the file.
+  **Frontend (fishfind-frontend):** `Forecast/Planning.aspx.cs` `LoadInitialFishes` calls
+  `FillFishListByState` first, falling back to the old proximity-based `FillFishList` only when the
+  visitor's state is unknown or the region has no rows — see that repo's `CLAUDE.md`.
+  **Already applied directly to production** via a self-gating transaction (smoke test required
+  exactly 945 rows / 63 regions / 945 resolved / 0 regions off 15 / 0 non-freshwater rows, rolling
+  back otherwise) **before** these `scriptNN_*.sql` sources were updated to match — this changelog
+  entry and commit bring the repo back in sync with what prod is actually running. A fresh build
+  from `ffi2.sql` now reproduces the same 945-row dataset.
+
 - 2026-08-20: **An empty water reading no longer makes the cache look fresh, and the forecast map now
   requires water AND weather AND fish.** (`script01_createTable.sql`, `script02_Funct.sql`.)
   Reported as "MLI 11446980 has no weather" — it has weather; what it has is **no water readings**.
