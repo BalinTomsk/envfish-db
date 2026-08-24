@@ -6421,3 +6421,49 @@ GO
  IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_DefaultLastLake' AND type IN ('FN','IF','TF'))
     DROP FUNCTION dbo.fn_DefaultLastLake ;
 GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+-- fn_map_fish_list_bystate / _trial : the region's top-15 most-caught freshwater species, ranked,
+-- for the Forecast/Planning.aspx "Select desire fish" combobox (FillFishListByState in
+-- Forecast/Planning.aspx.cs). Plain filtered reads of dbo.fish_region_top - no lat/lon/proximity
+-- join (an earlier design intersected the region list against dbo.fn_map_fish_list_bylatlon, which
+-- cut most regions down to a handful of species wherever nearby station coverage was thin; dropped
+-- once "every region must offer its 15" became the requirement). Both variants additionally filter
+-- to the freshwater bit of dbo.fish.water_type - trial and registered see the same list here, since
+-- the source data is already freshwater-only by curation (see script09_fish_data.sql), but the
+-- runtime check is kept as a safety net against a future non-freshwater row being added.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_map_fish_list_bystate' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_map_fish_list_bystate
+GO
+CREATE FUNCTION dbo.fn_map_fish_list_bystate( @country char(2), @state char(2) )
+  RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN
+SELECT t.top_rank, t.fish_id, t.fish_name
+    FROM dbo.fish_region_top t
+    JOIN dbo.fish f ON f.fish_id = t.fish_id
+    WHERE t.country = @country
+      AND t.state   = @state
+      AND t.fish_id IS NOT NULL
+      AND ( ISNULL(f.water_type, 0) & 1 ) = 1
+GO
+
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_map_fish_list_bystate_trial' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_map_fish_list_bystate_trial
+GO
+CREATE FUNCTION dbo.fn_map_fish_list_bystate_trial( @country char(2), @state char(2) )
+  RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN
+SELECT t.top_rank, t.fish_id, t.fish_name
+    FROM dbo.fish_region_top t
+    JOIN dbo.fish f ON f.fish_id = t.fish_id
+    WHERE t.country = @country
+      AND t.state   = @state
+      AND t.fish_id IS NOT NULL
+      AND ( ISNULL(f.water_type, 0) & 1 ) = 1
+GO
