@@ -1962,6 +1962,122 @@ BEGIN CATCH
 END CATCH
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: docapi RiverController (PATCH /api/v1/river/description/{guid}) via
+--   JdbcRiverDescriptionCommandRepository -- the write counterpart of dbo.fn_lake_view_json /
+--   dbo.fn_lake_description_json, modeled on the "General" tab of Editor/LakeEditor.aspx
+--   (SaveLakeGeneral). A JSON MERGE PATCH: only keys present in @patch are touched, so a caller can
+--   change one field without re-sending the whole document; sending a key with JSON null clears it.
+--
+--   Deliberately excludes the identity/linkage fields LakeEditor.aspx shows read-only in this same
+--   spot -- lake_name, the lake_id itself, and source/mouth (both the resolved name AND the id) --
+--   plus isFish (a derived cache no proc may write, see TR_insLakes_Fish/TR_delLakes_Fish) and mli
+--   (a WaterStation linkage, a different kind of edit entirely). Any of
+--   lakeName/source/sourceId/mouth/mouthId present in @patch is reported back as "protected", not
+--   silently dropped, so a caller knows it did not take effect.
+--
+--   noFish honors the same rule LakeEditor.aspx enforces client-side: it cannot be set to true while
+--   the lake has any assigned species (dbo.lake_fish) -- reported back as "ignored" rather than
+--   silently applied or erroring the whole request.
+--
+--     EXEC dbo.sp_lake_description_update 'a55caadf-2892-e811-9104-00155d007b12',
+--          N'{"description":"A small headwater stream.","link":"http://example.com","reviewed":true}';
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_lake_description_update' AND type = 'P')
+    DROP PROCEDURE dbo.sp_lake_description_update
+GO
+CREATE PROCEDURE dbo.sp_lake_description_update
+    @lake_id uniqueidentifier,
+    @patch   nvarchar(max)
+WITH EXEC AS CALLER
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake_id)
+    BEGIN
+        SELECT CAST(NULL AS nvarchar(max)) AS results;
+        RETURN;
+    END
+    IF @patch IS NULL OR ISJSON(@patch) = 0
+    BEGIN
+        SELECT (SELECT CONVERT(varchar(36), @lake_id) AS lakeId,
+                       JSON_QUERY('[]') AS updated, JSON_QUERY('[]') AS ignored,
+                       JSON_QUERY('[{"field":"$","reason":"body is not well-formed JSON"}]') AS protectedFields
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS results;
+        RETURN;
+    END
+
+    -- SQL Server does not allow a subquery inside an inline DECLARE @v = ... initializer, so @hasFish
+    -- is declared then assigned in a separate SET.
+    DECLARE @hasFish bit;
+    SET @hasFish = CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.lake_fish WHERE lake_id = @lake_id)
+                              THEN 1 ELSE 0 END AS bit);
+    DECLARE @noFishGiven bit = CASE WHEN JSON_PATH_EXISTS(@patch, '$.noFish') = 1 THEN 1 ELSE 0 END;
+    DECLARE @noFishValue bit = TRY_CONVERT(bit, JSON_VALUE(@patch, '$.noFish'));
+    DECLARE @noFishBlocked bit = CASE WHEN @noFishGiven = 1 AND @noFishValue = 1 AND @hasFish = 1
+                                       THEN 1 ELSE 0 END;
+
+    UPDATE dbo.lake SET
+        alt_name         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.altName')       = 1 THEN JSON_VALUE(@patch, '$.altName')       ELSE alt_name END,
+        [native]         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.nativeName')    = 1 THEN JSON_VALUE(@patch, '$.nativeName')    ELSE [native] END,
+        french_name      = CASE WHEN JSON_PATH_EXISTS(@patch, '$.french')        = 1 THEN JSON_VALUE(@patch, '$.french')        ELSE french_name END,
+        link             = CASE WHEN JSON_PATH_EXISTS(@patch, '$.link')          = 1 THEN JSON_VALUE(@patch, '$.link')          ELSE link END,
+        locType          = CASE WHEN JSON_PATH_EXISTS(@patch, '$.type')          = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.type'))          ELSE locType END,
+        length           = CASE WHEN JSON_PATH_EXISTS(@patch, '$.length_km')     = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.length_km'))     ELSE length END,
+        width            = CASE WHEN JSON_PATH_EXISTS(@patch, '$.width_km')      = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.width_km'))      ELSE width END,
+        Shoreline        = CASE WHEN JSON_PATH_EXISTS(@patch, '$.shoreline_km')  = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.shoreline_km'))  ELSE Shoreline END,
+        depth            = CASE WHEN JSON_PATH_EXISTS(@patch, '$.maxDepth_m')    = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.maxDepth_m'))    ELSE depth END,
+        Volume           = CASE WHEN JSON_PATH_EXISTS(@patch, '$.volume_km3')    = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.volume_km3'))    ELSE Volume END,
+        surface          = CASE WHEN JSON_PATH_EXISTS(@patch, '$.surface_km2')   = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.surface_km2'))   ELSE surface END,
+        Discharge        = CASE WHEN JSON_PATH_EXISTS(@patch, '$.discharge_m3s') = 1 THEN JSON_VALUE(@patch, '$.discharge_m3s') ELSE Discharge END,
+        basin            = CASE WHEN JSON_PATH_EXISTS(@patch, '$.basin_km2')     = 1 THEN JSON_VALUE(@patch, '$.basin_km2')     ELSE basin END,
+        watershield      = CASE WHEN JSON_PATH_EXISTS(@patch, '$.watershield_km2') = 1 THEN JSON_VALUE(@patch, '$.watershield_km2') ELSE watershield END,
+        drainage         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.drainage')      = 1 THEN JSON_VALUE(@patch, '$.drainage')      ELSE drainage END,
+        CGNDB            = CASE WHEN JSON_PATH_EXISTS(@patch, '$.cgndb')         = 1 THEN JSON_VALUE(@patch, '$.cgndb')         ELSE CGNDB END,
+        lake_road_access = CASE WHEN JSON_PATH_EXISTS(@patch, '$.roadAccess')    = 1 THEN JSON_VALUE(@patch, '$.roadAccess')    ELSE lake_road_access END,
+        is_fishing_prohibited = CASE WHEN JSON_PATH_EXISTS(@patch, '$.fishingProhibited') = 1 THEN TRY_CONVERT(bit, JSON_VALUE(@patch, '$.fishingProhibited')) ELSE is_fishing_prohibited END,
+        isolated         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.isolated')      = 1 THEN TRY_CONVERT(bit, JSON_VALUE(@patch, '$.isolated'))      ELSE isolated END,
+        noFish           = CASE WHEN @noFishGiven = 1 AND @noFishBlocked = 0 THEN @noFishValue ELSE noFish END,
+        reviewed         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.reviewed')      = 1 THEN TRY_CONVERT(bit, JSON_VALUE(@patch, '$.reviewed'))      ELSE reviewed END,
+        descript         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.description')   = 1 THEN JSON_VALUE(@patch, '$.description')   ELSE descript END
+    WHERE lake_id = @lake_id;
+
+    DECLARE @updated TABLE (field nvarchar(50));
+    INSERT INTO @updated (field)
+    SELECT v.f FROM (VALUES
+        ('altName'),('nativeName'),('french'),('link'),('type'),('length_km'),('width_km'),
+        ('shoreline_km'),('maxDepth_m'),('volume_km3'),('surface_km2'),('discharge_m3s'),
+        ('basin_km2'),('watershield_km2'),('drainage'),('cgndb'),('roadAccess'),
+        ('fishingProhibited'),('isolated'),('reviewed'),('description')
+    ) AS v(f)
+    WHERE JSON_PATH_EXISTS(@patch, '$.' + v.f) = 1;
+    IF @noFishGiven = 1 AND @noFishBlocked = 0
+        INSERT INTO @updated (field) VALUES ('noFish');
+
+    DECLARE @ignored TABLE (field nvarchar(50), reason nvarchar(200));
+    IF @noFishBlocked = 1
+        INSERT INTO @ignored (field, reason)
+        VALUES ('noFish', 'lake has assigned species -- No Fish cannot be set while species are assigned');
+
+    DECLARE @protectedFields TABLE (field nvarchar(50), reason nvarchar(200));
+    INSERT INTO @protectedFields (field, reason)
+    SELECT v.f, 'not editable through this endpoint'
+    FROM (VALUES ('lakeName'),('guid'),('source'),('sourceId'),('mouth'),('mouthId')) AS v(f)
+    WHERE JSON_PATH_EXISTS(@patch, '$.' + v.f) = 1;
+
+    SELECT (
+        SELECT
+            CONVERT(varchar(36), @lake_id) AS lakeId,
+            JSON_QUERY(ISNULL((SELECT field FROM @updated FOR JSON PATH), '[]')) AS updated,
+            JSON_QUERY(ISNULL((SELECT field, reason FROM @ignored FOR JSON PATH), '[]')) AS ignored,
+            JSON_QUERY(ISNULL((SELECT field, reason FROM @protectedFields FOR JSON PATH), '[]')) AS protectedFields
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    ) AS results;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_del_river' AND type = 'P')
     DROP PROCEDURE dbo.sp_del_river
 GO
