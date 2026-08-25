@@ -272,6 +272,18 @@ GO
 
 ## Changelog
 
+- 2026-08-24: **New `dbo.fn_river_unfished_json(@country, @state, @river)` — next un-processed water
+  body as JSON.** (`script02_Funct.sql`.) A scalar function returning the next water body of a type in a
+  state with no fish assigned (`isFish = 0`) and not flagged No Fish (`noFish = 0`):
+  `TOP 1 … FROM dbo.vw_lake WHERE @state IN (source_state, mouth_state) AND locType = @river … ORDER BY
+  lake_name`, plus `throwing` = `STRING_AGG(CGNDB, ',')` of the `dbo.Tributaries side = 2` ("Throw")
+  rows joined to `dbo.Lake`, all wrapped with `FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES`.
+  `@country` is echoed only (the query filters by state). **Duplicates the frontend
+  `Resources/wbUnFish.aspx` query for the docapi `RiverController` / `JdbcRiverQueryRepository`**
+  (`GET /api/v1/river/unfished`). New object — no signature change to anything existing, no deploy-order
+  dependency. `unit_test@RiverUnfished.sql` (4 tests: found + throwing, found + empty throwing,
+  isFish=1 skipped, noFish=1 skipped) passes via `autorun.bat` (full suite 497 PASS / 5 pre-existing
+  FAIL, none river). **Applied to prod 2026-08-24** via `sqlcmd` (verified `CA/NL/2` → "Adies River").
 - 2026-08-24: **New `dbo.fn_map_fish_list_nearest_station` — sport species (length > 10 cm) at the
   single closest `WaterStation`.** (`script02_Funct.sql`.) Registered (non-trial)
   `Forecast/Planning.aspx` visitors see up to 10 extra locally-caught species appended after their

@@ -1829,6 +1829,69 @@ RETURN
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 --------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_unfished_json' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_river_unfished_json
+GO
+
+-- Next un-processed water body of a given type in a state: no fish assigned (isFish = 0) and not
+-- flagged No Fish (noFish = 0). Duplicates the frontend Resources/wbUnFish.aspx JSON endpoint used by
+-- the add-fish tooling, now served natively by docapi's RiverController
+-- (GET /api/v1/river/unfished) via TDbInterface JdbcRiverQueryRepository.
+-- @country is ECHOED only (the original filters by @state, not country). @river is a locType value
+-- (2 = river, the page default). "throwing" = comma-joined CGNDB of the lakes flagged "Throw"
+-- (Tributaries.side = 2) for the found water body, '' when found with none, null when not found.
+-- Returns ONE JSON object (keys always present; nulls when not found):
+--   { "found":true, "country":"CA","state":"NL","river":2,
+--     "lake_id":"...","lake_name":"...","mouth_name":"...","CGNDB":"...","throwing":"ABCDE,FGHIJ" }
+-- select dbo.fn_river_unfished_json('CA','NL',2)
+CREATE FUNCTION dbo.fn_river_unfished_json( @country char(2), @state char(2), @river int )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    DECLARE @lake_id uniqueidentifier, @lake_name nvarchar(256), @mouth_name nvarchar(256), @cgndb varchar(64);
+
+    SELECT TOP 1
+           @lake_id    = lake_id,
+           @lake_name  = lake_name,
+           @mouth_name = mouth_name,
+           @cgndb      = CGNDB
+      FROM dbo.vw_lake
+     WHERE @state IN (source_state, mouth_state)
+       AND locType = @river
+       AND ISNULL(isFish, 0) = 0
+       AND ISNULL(noFish, 0) = 0
+     ORDER BY lake_name;
+
+    DECLARE @throwing nvarchar(max) = NULL;
+    IF @lake_id IS NOT NULL
+    BEGIN
+        SELECT @throwing = STRING_AGG(LTRIM(RTRIM(v.CGNDB)), ',') WITHIN GROUP (ORDER BY v.lake_name)
+          FROM dbo.Tributaries t
+          JOIN dbo.Lake v ON v.lake_id = t.lake_id
+         WHERE t.main_lake_id = @lake_id
+           AND t.side = 2
+           AND v.CGNDB IS NOT NULL
+           AND LTRIM(RTRIM(v.CGNDB)) <> '';
+        SET @throwing = ISNULL(@throwing, N'');
+    END
+
+    RETURN (
+        SELECT
+            CASE WHEN @lake_id IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS found,
+            @country    AS country,
+            @state      AS state,
+            @river      AS river,
+            @lake_id    AS lake_id,
+            @lake_name  AS lake_name,
+            @mouth_name AS mouth_name,
+            @cgndb      AS [CGNDB],
+            @throwing   AS throwing
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_otherfish' AND xtype = 'FN')    DROP function dbo.fn_river_viewer_otherfish
 GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_fish' AND xtype = 'IF')    DROP function dbo.fn_river_viewer_fish
