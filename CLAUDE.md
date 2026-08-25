@@ -272,6 +272,26 @@ GO
 
 ## Changelog
 
+- 2026-08-25: **New `dbo.sp_lake_fish_upsert_batch(@lake_id, @fish)` — batch upsert of assigned
+  species.** (`script02_Proc.sql`.) The write counterpart of `dbo.fn_lake_fishing_json`, backing the
+  new docapi `PATCH /api/v1/river/fish/{guid}` (`JdbcRiverFishCommandRepository`). `@fish` is a JSON
+  array (`[{"fishId","link","trustLevel","year","status"}, …]`) mirroring the fields the "Add" form on
+  `Editor/EditLakeFish.aspx` writes (`AddFishToLake`: `link`, `probability`/`probability_source_type`
+  from `trustLevel` 0-4, `last_catch` year-only, `status` conservation bitmask). Loops the batch with a
+  local cursor (small per-lake batches, clarity over set-based JSON tricks) and, per fish, picks one of
+  five actions: **`inserted`** (not yet assigned to this lake), **`updated`** (assigned but its `link`
+  is empty/NULL — the only case an existing row is touched), **`skipped`** (assigned **with** a
+  non-empty `link` — deliberately left alone so this batch endpoint can never silently clobber
+  already-sourced data), **`unknown_fish`** (well-formed guid, not in `dbo.fish`), **`invalid_fish_id`**
+  (missing/not a guid at all). Returns one result per input item, in order,
+  `[{"fishId","fishName","action"}, …]`; unknown `@lake_id` ⇒ `NULL` (same not-found contract as
+  `fn_lake_fishing_json`/`fn_lake_view_json`). Plain single-row `INSERT`s (not `BULK INSERT`), so
+  `TR_insLakes_Fish` fires normally and `lake.isFish` stays correct without any extra handling. New
+  object — no signature change to anything existing. `unit_test@LakeFishUpsertBatch.sql` (8 tests:
+  insert, fill-empty-link, skip-sourced-fish, unknown fish, invalid fish id, unknown lake, mixed batch
+  order, isFish trigger) passes via `autorun.bat` (full suite 505 PASS / 2 pre-existing FAIL, both in
+  `unit_test@FishCodeLatinJson.sql`, unrelated). **Built and tested locally; not yet applied to prod.**
+
 - 2026-08-24: **New `dbo.fn_river_unfished_json(@country, @state, @river)` — next un-processed water
   body as JSON.** (`script02_Funct.sql`.) A scalar function returning the next water body of a type in a
   state with no fish assigned (`isFish = 0`) and not flagged No Fish (`noFish = 0`):

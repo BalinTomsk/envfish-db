@@ -1808,7 +1808,158 @@ END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
          , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
-END CATCH;     
+END CATCH;
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: docapi RiverController (PATCH /api/v1/river/fish/{guid}) via JdbcRiverFishCommandRepository,
+--   the write counterpart of dbo.fn_lake_fishing_json -- itself modeled on the "Add" form of
+--   FishTracker.Editor.EditLakeFish.aspx (AddFishToLake). Upserts a BATCH of species assignments for one
+--   water body in a single call, writing the same fields the Add form writes: source link, Trust Level
+--   (probability / probability_source_type), catch/release year (last_catch, year-only), and the
+--   per-water-body conservation status bitmask.
+--
+--   @fish is a JSON array: [{"fishId":"<guid>","link":"<url>","trustLevel":0-4,"year":2024,"status":0}, ...]
+--   trustLevel: 0 high priority (->probability 100), 1 site owner (80), 2 paid fisher (65),
+--     3 unknown source (30), anything else/omitted (10) -- mirrors ddlTrustLevel on EditLakeFish.aspx.
+--   status: bitmask, 1 at risk, 2 invasive, 4 special concern, 8 threatened, 16 non-native (0 = normal).
+--
+--   Deliberately conservative about what it overwrites -- this endpoint is for filling in NEW species
+--   or enriching ones still missing a source, never for silently clobbering already-sourced data:
+--     - fish not yet assigned to this lake                       -> INSERT,  action 'inserted'
+--     - fish already assigned with an EMPTY/NULL link             -> UPDATE,  action 'updated'
+--     - fish already assigned with a NON-EMPTY link                -> left alone, action 'skipped'
+--     - fishId is a well-formed guid but not in dbo.fish           -> action 'unknown_fish'
+--     - fishId is missing/not a guid at all                        -> action 'invalid_fish_id'
+--   Unknown @lake_id -> a single NULL row (results IS NULL), same "not found" contract as
+--   dbo.fn_lake_fishing_json / dbo.fn_lake_view_json.
+--
+--     EXEC dbo.sp_lake_fish_upsert_batch 'a55caadf-2892-e811-9104-00155d007b12',
+--          N'[{"fishId":"a85ebf22-4ab9-4a91-a14a-cef6c8e64d97","link":"http://example.com","trustLevel":0,"year":2024,"status":0}]';
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_lake_fish_upsert_batch' AND type = 'P')
+    DROP PROCEDURE dbo.sp_lake_fish_upsert_batch
+GO
+CREATE PROCEDURE dbo.sp_lake_fish_upsert_batch
+    @lake_id uniqueidentifier,
+    @fish    nvarchar(max)
+WITH EXEC AS CALLER
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake_id)
+    BEGIN
+        SELECT CAST(NULL AS nvarchar(max)) AS results;
+        RETURN;
+    END
+
+    DECLARE @items TABLE (
+        rn         int IDENTITY(1,1) PRIMARY KEY,
+        rawFishId  nvarchar(64) NULL,
+        fishId     uniqueidentifier NULL,
+        link       nvarchar(max) NULL,
+        trustLevel int NULL,
+        [year]     int NULL,
+        status     tinyint NULL
+    );
+
+    INSERT INTO @items (rawFishId, fishId, link, trustLevel, [year], status)
+    SELECT
+        JSON_VALUE(value, '$.fishId'),
+        TRY_CONVERT(uniqueidentifier, JSON_VALUE(value, '$.fishId')),
+        NULLIF(LTRIM(RTRIM(JSON_VALUE(value, '$.link'))), ''),
+        TRY_CONVERT(int, JSON_VALUE(value, '$.trustLevel')),
+        TRY_CONVERT(int, JSON_VALUE(value, '$.year')),
+        TRY_CONVERT(tinyint, JSON_VALUE(value, '$.status'))
+    FROM OPENJSON(@fish);
+
+    DECLARE @results TABLE (rn int, fishId nvarchar(64), fishName nvarchar(256), action varchar(20));
+
+    DECLARE @rn int, @rawFishId nvarchar(64), @fishId uniqueidentifier, @link nvarchar(max),
+            @trustLevel int, @year int, @status tinyint, @fishName nvarchar(256),
+            @rowExists bit, @existingLink nvarchar(max), @probability tinyint;
+
+    DECLARE items_cursor CURSOR LOCAL FAST_FORWARD FOR
+        SELECT rn, rawFishId, fishId, link, trustLevel, [year], status FROM @items ORDER BY rn;
+    OPEN items_cursor;
+    FETCH NEXT FROM items_cursor INTO @rn, @rawFishId, @fishId, @link, @trustLevel, @year, @status;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @fishName = NULL;
+        SET @rowExists = 0;
+        SET @existingLink = NULL;
+
+        IF @fishId IS NULL
+        BEGIN
+            INSERT INTO @results (rn, fishId, fishName, action) VALUES (@rn, @rawFishId, NULL, 'invalid_fish_id');
+        END
+        ELSE
+        BEGIN
+            SELECT @fishName = fish_name FROM dbo.fish WHERE fish_id = @fishId;
+
+            IF @fishName IS NULL
+            BEGIN
+                INSERT INTO @results (rn, fishId, fishName, action)
+                VALUES (@rn, CONVERT(varchar(36), @fishId), NULL, 'unknown_fish');
+            END
+            ELSE
+            BEGIN
+                SELECT TOP 1 @existingLink = link, @rowExists = 1
+                FROM dbo.lake_fish WHERE lake_id = @lake_id AND fish_id = @fishId
+                ORDER BY created DESC;
+
+                SET @probability = CASE ISNULL(@trustLevel, 4)
+                                        WHEN 0 THEN 100 WHEN 1 THEN 80 WHEN 2 THEN 65 WHEN 3 THEN 30 ELSE 10 END;
+
+                IF @rowExists = 0
+                BEGIN
+                    INSERT INTO dbo.lake_fish
+                        (Lake_id, fish_id, link, probability, probability_source_type, created, last_catch, status)
+                    VALUES
+                        (@lake_id, @fishId, @link, @probability, ISNULL(@trustLevel, 0), GETUTCDATE(),
+                         CASE WHEN @year IS NOT NULL THEN DATEFROMPARTS(@year, 1, 1) ELSE NULL END,
+                         ISNULL(@status, 0));
+
+                    INSERT INTO @results (rn, fishId, fishName, action)
+                    VALUES (@rn, CONVERT(varchar(36), @fishId), @fishName, 'inserted');
+                END
+                ELSE IF LTRIM(RTRIM(ISNULL(@existingLink, ''))) = ''
+                BEGIN
+                    UPDATE dbo.lake_fish
+                    SET link = @link,
+                        probability = @probability,
+                        probability_source_type = ISNULL(@trustLevel, probability_source_type),
+                        created = GETUTCDATE(),
+                        last_catch = CASE WHEN @year IS NOT NULL THEN DATEFROMPARTS(@year, 1, 1) ELSE last_catch END,
+                        status = ISNULL(@status, status)
+                    WHERE lake_id = @lake_id AND fish_id = @fishId;
+
+                    INSERT INTO @results (rn, fishId, fishName, action)
+                    VALUES (@rn, CONVERT(varchar(36), @fishId), @fishName, 'updated');
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO @results (rn, fishId, fishName, action)
+                    VALUES (@rn, CONVERT(varchar(36), @fishId), @fishName, 'skipped');
+                END
+            END
+        END
+
+        FETCH NEXT FROM items_cursor INTO @rn, @rawFishId, @fishId, @link, @trustLevel, @year, @status;
+    END
+    CLOSE items_cursor;
+    DEALLOCATE items_cursor;
+
+    SELECT ISNULL((
+        SELECT fishId, fishName, action
+        FROM @results
+        ORDER BY rn
+        FOR JSON PATH
+    ), N'[]') AS results;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_del_river' AND type = 'P')
