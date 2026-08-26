@@ -5442,6 +5442,66 @@ BEGIN
 END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: docapi RegulationController (GET /api/v1/region/regulation/{country} and
+--   /api/v1/region/regulation/{country}/{state}) via JdbcRegulationQueryRepository -- the region-scope
+--   counterpart of fn_lake_regulation_json above. Returns province/state-wide rules when @state is
+--   given, or whole-country rules (state IS NULL) when it's omitted -- these are two DIFFERENT,
+--   non-overlapping sets of rows, not a country roll-up of every province's rules. Zone- and
+--   water-body-scoped rows (zone_id / Lake_id set) are never returned here.
+--     SELECT dbo.fn_region_regulation_json('CA', 'ON');  -- province/state-wide
+--     SELECT dbo.fn_region_regulation_json('US', NULL);  -- whole-country
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_region_regulation_json' AND xtype = 'FN')
+    DROP function dbo.fn_region_regulation_json
+GO
+CREATE FUNCTION dbo.fn_region_regulation_json( @country char(2), @state char(2) = NULL )
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN
+    (
+        SELECT
+            @country AS country,
+            @state   AS state,
+            JSON_QUERY(ISNULL((
+                SELECT
+                    CONVERT(varchar(36), r.regulations_id)          AS id,
+                    r.regulations_part                              AS part,
+                    r.resident_type                                 AS residentType,
+                    CONVERT(varchar(36), r.fish_id)                 AS fishId,
+                    CONVERT(varchar(36), r.chain)                   AS chain,
+                    r.reg_year                                      AS regYear,
+                    CONVERT(varchar(10), r.regulations_date_start, 23) AS dateStart,
+                    r.regulations_start                             AS startText,
+                    CONVERT(varchar(10), r.regulations_date_end, 23)   AS dateEnd,
+                    r.regulations_end                               AS endText,
+                    r.regulations_sport                             AS sport,
+                    r.regulations_sport_text                        AS sportText,
+                    r.regulations_consr                             AS consr,
+                    r.regulations_consr_text                        AS consrText,
+                    r.possession_sport                              AS possessionSport,
+                    r.possession_consr                              AS possessionConsr,
+                    r.min_length_cm                                 AS minLengthCm,
+                    r.slot_min_cm                                   AS slotMinCm,
+                    r.slot_max_cm                                   AS slotMaxCm,
+                    r.slot_over_limit                                AS slotOverLimit,
+                    r.method_flags                                  AS methodFlags,
+                    r.day_flags                                     AS dayFlags,
+                    r.regulations_code                              AS code,
+                    r.regulations_link                              AS link,
+                    r.regulations_text                              AS ruleText,
+                    CONVERT(varchar(19), r.regulations_stamp, 126)  AS stamp
+                FROM dbo.regulations r
+                WHERE r.country = @country
+                  AND ((@state IS NULL AND r.state IS NULL) OR r.state = @state)
+                  AND r.zone_id IS NULL AND r.Lake_id IS NULL
+                ORDER BY r.reg_year DESC, r.regulations_part
+                FOR JSON PATH, INCLUDE_NULL_VALUES
+            ), N'[]')) AS regulations
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
 --     SELECT dbo.fn_lake_maps_json('a55caadf-2892-e811-9104-00155d007b12');
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_maps_json' AND xtype = 'FN')
     DROP function dbo.fn_lake_maps_json
@@ -5696,6 +5756,7 @@ BEGIN
                     CONVERT(varchar(36), r.regulations_id)          AS id,
                     r.regulations_part                              AS part,
                     r.resident_type                                 AS residentType,
+                    r.country                                       AS country,
                     r.state                                         AS state,
                     r.zone_id                                       AS zoneId,
                     CONVERT(varchar(36), r.fish_id)                 AS fishId,

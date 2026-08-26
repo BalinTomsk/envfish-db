@@ -1277,7 +1277,8 @@ CREATE TABLE regulations
     regulations_id          uniqueidentifier NOT NULL,
     regulations_part        nvarchar(255)    NOT NULL,      -- part/section of the water body ('' = whole water body). Part of the unique key so one fish can have several rules on the same water/year for different parts.
     resident_type           tinyint          NOT NULL,      -- 0=all residents, 1=Canadian/ON residents, 2=non-Canadian residents
-    state                   char(2)          NOT NULL,      -- ON = Ontario
+    country                 char(2)          NOT NULL,      -- CA = Canada, US = United States
+    state                   char(2)          NULL,          -- ON = Ontario; NULL = whole-country rule, no specific province/state
     zone_id                 int              NULL,
     Lake_id                 uniqueidentifier NULL,          -- NULL = zone-wide rule, no specific water body
     fish_id                 uniqueidentifier NULL,          -- NULL = no specific fish
@@ -1321,14 +1322,20 @@ ALTER TABLE regulations ADD CONSTRAINT df_regulations_part     DEFAULT N''  FOR 
 GO
 ALTER TABLE regulations ADD CONSTRAINT df_regulations_resident DEFAULT 0    FOR resident_type
 GO
--- Fish-specific regulation: one row per (year, state, zone, lake, fish, part, resident type, season start).
--- resident_type + regulations_date_start allow split seasons (same fish, different date windows) and
--- resident-specific limits (Canadian vs. non-Canadian) without conflicting on the same water body / year.
-CREATE UNIQUE INDEX UIX_reg_with_fish ON dbo.regulations (reg_year, state, zone_id, Lake_id, fish_id, regulations_part, resident_type, regulations_date_start)
+ALTER TABLE regulations ADD CONSTRAINT df_regulations_country  DEFAULT N'CA' FOR country
+GO
+-- Fish-specific regulation: one row per (year, country, state, zone, lake, fish, part, resident type,
+-- season start). resident_type + regulations_date_start allow split seasons (same fish, different date
+-- windows) and resident-specific limits (Canadian vs. non-Canadian) without conflicting on the same
+-- water body / year. country is in the key so two countries can each have their own whole-country rule
+-- (state NULL) for the same year without colliding -- SQL Server treats two NULLs as equal for unique
+-- index purposes, so without country in the key a second country's state-less rule would violate this
+-- index against the first country's.
+CREATE UNIQUE INDEX UIX_reg_with_fish ON dbo.regulations (reg_year, country, state, zone_id, Lake_id, fish_id, regulations_part, resident_type, regulations_date_start)
     WHERE fish_id IS NOT NULL
 GO
--- Water-body / zone rule with no specific fish
-CREATE UNIQUE INDEX UIX_reg_no_fish   ON dbo.regulations (reg_year, state, zone_id, Lake_id, regulations_part, resident_type, regulations_date_start)
+-- Water-body / zone / region rule with no specific fish
+CREATE UNIQUE INDEX UIX_reg_no_fish   ON dbo.regulations (reg_year, country, state, zone_id, Lake_id, regulations_part, resident_type, regulations_date_start)
     WHERE fish_id IS NULL
 GO
 
@@ -2695,6 +2702,37 @@ IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.zone_r
 GO
 -- After applying: re-run script01_createView.sql (vw_regulations, vw_zone_regulation)
 --                 and script02_Funct.sql (fn_GetLakeRegulations) to pick up new columns.
+---------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+-- PRODUCTION MIGRATION — regulations: add `country`, make `state` optional
+-- Adds a country dimension so a "whole country" rule (no specific province/state) is representable,
+-- for docapi PATCH /api/v1/region/regulation/{country}[/{state}] (see script02_Proc.sql
+-- sp_regulation_upsert and script02_Funct.sql fn_region_regulation_json / fn_lake_regulation_json).
+-- Apply once to any existing database created before this change. Safe to run multiple times.
+-- -------------------------------------------------------------------------------
+-- 1. drop the two filtered unique indexes so state/country can change under them
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UIX_reg_with_fish' AND object_id = OBJECT_ID('dbo.regulations'))
+    DROP INDEX UIX_reg_with_fish ON dbo.regulations
+GO
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UIX_reg_no_fish' AND object_id = OBJECT_ID('dbo.regulations'))
+    DROP INDEX UIX_reg_no_fish ON dbo.regulations
+GO
+-- 2. add country, defaulting every existing row to CA (the only country this app has served so far)
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.regulations') AND name = 'country')
+    ALTER TABLE dbo.regulations ADD country char(2) NOT NULL CONSTRAINT df_regulations_country DEFAULT 'CA'
+GO
+-- 3. relax state to nullable (NULL = whole-country rule, no specific province/state)
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.regulations') AND name = 'state' AND is_nullable = 0)
+    ALTER TABLE dbo.regulations ALTER COLUMN state char(2) NULL
+GO
+-- 4. recreate the filtered unique indexes with country in the key (see the comment on the base
+--    CREATE INDEX statements above for why country must be part of the key, not just a column)
+CREATE UNIQUE INDEX UIX_reg_with_fish ON dbo.regulations (reg_year, country, state, zone_id, Lake_id, fish_id, regulations_part, resident_type, regulations_date_start)
+    WHERE fish_id IS NOT NULL
+GO
+CREATE UNIQUE INDEX UIX_reg_no_fish   ON dbo.regulations (reg_year, country, state, zone_id, Lake_id, regulations_part, resident_type, regulations_date_start)
+    WHERE fish_id IS NULL
+GO
 ---------------------------------------------------------------------------------
 -- ============================================================================
 --  Catch Memo  вЂ”  angler catch logs attached to a water body (lake / river).

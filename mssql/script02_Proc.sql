@@ -2078,6 +2078,164 @@ BEGIN CATCH
 END CATCH
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: docapi RegulationController (PATCH /api/v1/regulation) via
+--   JdbcRegulationCommandRepository -- the write counterpart of Editor/LakeRegulation.aspx
+--   (ButtonSubmit_Click / FindExistingRegId). Upserts ONE row of dbo.regulations, matched by the same
+--   identity the ASPX page uses to decide Add-vs-Update -- the columns behind the two filtered unique
+--   indexes UIX_reg_with_fish / UIX_reg_no_fish:
+--     (reg_year, state, zone_id, Lake_id, fish_id, regulations_part, resident_type, regulations_date_start)
+--
+--   Scope is inferred from which of @lake / @zone are present in @body, exactly like the ASPX page's
+--   scope modes (region / zone / water body):
+--     lakeId set            -> water-body rule (fishId optional)
+--     zoneId set (no lakeId) -> zone rule (fishId optional)
+--     neither set            -> region rule: whole-country when stateGiven is omitted, else
+--                                province/state-wide (fishId optional either way)
+--   lakeId and zoneId are mutually exclusive -- a rule is never both (matches the ASPX's single
+--   scope-mode selector). Unlike sp_lake_description_update this is not a partial merge-patch of an
+--   existing row: country/state/year/scope identify WHICH row, and every other field it supports is
+--   replaced outright on that row (mirrors BindRegParams, which always writes every field from the form).
+--
+--   Note: dbo.TR_regulations (FOR INSERT) auto-adds the row to lake_fish when a NEW water-body rule
+--   also carries a fishId and that pairing isn't already there -- same as it does for a row inserted
+--   by the ASPX page. A caller that expects PATCH /api/v1/river/fish/{guid}'s inserted/updated/skipped
+--   reporting won't get it for this side effect; it is silent here, exactly as it is in the UI.
+--
+--     EXEC dbo.sp_regulation_upsert
+--          N'{"country":"CA","state":"NL","lakeId":"200d4de0-2892-e811-9104-00155d007b12","year":2026,
+--             "fishId":"a35109a0-63ba-4bf5-8a25-2e7e39b74f6e",
+--             "link":"https://laws-lois.justice.gc.ca/eng/regulations/SOR-78-443/FullText.html",
+--             "text":"Schedule I item 155: Bear Cove River, including Billy''s Pond Brook."}';
+--     -- whole-country rule: omit "state" (or send it JSON null) entirely
+--     EXEC dbo.sp_regulation_upsert N'{"country":"US","year":2026,"sport":5}';
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_regulation_upsert' AND type = 'P')
+    DROP PROCEDURE dbo.sp_regulation_upsert
+GO
+CREATE PROCEDURE dbo.sp_regulation_upsert
+    @body nvarchar(max)
+WITH EXEC AS CALLER
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF @body IS NULL OR ISJSON(@body) = 0
+    BEGIN
+        SELECT (SELECT CAST(NULL AS int) AS id, CAST(NULL AS varchar(20)) AS action,
+                       N'body is not well-formed JSON' AS [error]
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS results;
+        RETURN;
+    END
+
+    DECLARE @country char(2)   = ISNULL(JSON_VALUE(@body, '$.country'), N'CA');
+    DECLARE @state char(2)     = JSON_VALUE(@body, '$.state');
+    DECLARE @year  smallint    = TRY_CONVERT(smallint, JSON_VALUE(@body, '$.year'));
+    IF @year IS NULL
+    BEGIN
+        SELECT (SELECT CAST(NULL AS int) AS id, CAST(NULL AS varchar(20)) AS action,
+                       N'year is required' AS [error]
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS results;
+        RETURN;
+    END
+
+    DECLARE @zone int              = TRY_CONVERT(int, JSON_VALUE(@body, '$.zoneId'));
+    DECLARE @lake uniqueidentifier = TRY_CONVERT(uniqueidentifier, JSON_VALUE(@body, '$.lakeId'));
+    IF @zone IS NOT NULL AND @lake IS NOT NULL
+    BEGIN
+        SELECT (SELECT CAST(NULL AS int) AS id, CAST(NULL AS varchar(20)) AS action,
+                       N'zoneId and lakeId are mutually exclusive' AS [error]
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS results;
+        RETURN;
+    END
+    IF @lake IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake)
+    BEGIN
+        SELECT (SELECT CAST(NULL AS int) AS id, CAST(NULL AS varchar(20)) AS action,
+                       N'lakeId not found' AS [error]
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS results;
+        RETURN;
+    END
+
+    DECLARE @fish uniqueidentifier = TRY_CONVERT(uniqueidentifier, JSON_VALUE(@body, '$.fishId'));
+    IF @fish IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.fish WHERE fish_id = @fish)
+    BEGIN
+        SELECT (SELECT CAST(NULL AS int) AS id, CAST(NULL AS varchar(20)) AS action,
+                       N'fishId not found' AS [error]
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS results;
+        RETURN;
+    END
+
+    DECLARE @part            nvarchar(255) = ISNULL(JSON_VALUE(@body, '$.part'), N'');
+    DECLARE @resident        tinyint       = ISNULL(TRY_CONVERT(tinyint, JSON_VALUE(@body, '$.residentType')), 0);
+    DECLARE @dateStart       date          = TRY_CONVERT(date, JSON_VALUE(@body, '$.dateStart'));
+    DECLARE @startText       varchar(64)   = JSON_VALUE(@body, '$.startText');
+    DECLARE @dateEnd         date          = TRY_CONVERT(date, JSON_VALUE(@body, '$.dateEnd'));
+    DECLARE @endText         varchar(64)   = JSON_VALUE(@body, '$.endText');
+    DECLARE @dayFlags        tinyint       = TRY_CONVERT(tinyint, JSON_VALUE(@body, '$.dayFlags'));
+    DECLARE @sport           int           = TRY_CONVERT(int, JSON_VALUE(@body, '$.sport'));
+    DECLARE @consr           int           = TRY_CONVERT(int, JSON_VALUE(@body, '$.consr'));
+    DECLARE @possessionSport int           = TRY_CONVERT(int, JSON_VALUE(@body, '$.possessionSport'));
+    DECLARE @possessionConsr int           = TRY_CONVERT(int, JSON_VALUE(@body, '$.possessionConsr'));
+    DECLARE @minLengthCm     decimal(5,1)  = TRY_CONVERT(decimal(5,1), JSON_VALUE(@body, '$.minLengthCm'));
+    DECLARE @slotMinCm       decimal(5,1)  = TRY_CONVERT(decimal(5,1), JSON_VALUE(@body, '$.slotMinCm'));
+    DECLARE @slotMaxCm       decimal(5,1)  = TRY_CONVERT(decimal(5,1), JSON_VALUE(@body, '$.slotMaxCm'));
+    DECLARE @slotOverLimit   tinyint       = TRY_CONVERT(tinyint, JSON_VALUE(@body, '$.slotOverLimit'));
+    DECLARE @methodFlags     tinyint       = TRY_CONVERT(tinyint, JSON_VALUE(@body, '$.methodFlags'));
+    DECLARE @code            int           = TRY_CONVERT(int, JSON_VALUE(@body, '$.code'));
+    DECLARE @link            nvarchar(255) = JSON_VALUE(@body, '$.link');
+    DECLARE @text            nvarchar(max) = JSON_VALUE(@body, '$.text');
+
+    DECLARE @existingId int;
+    SELECT TOP 1 @existingId = id FROM dbo.regulations
+    WHERE reg_year = @year AND country = @country
+      AND ((@state IS NULL AND state IS NULL) OR state = @state)
+      AND ((@zone IS NULL AND zone_id IS NULL) OR zone_id = @zone)
+      AND ((@lake IS NULL AND Lake_id IS NULL) OR Lake_id = @lake)
+      AND ((@fish IS NULL AND fish_id IS NULL) OR fish_id = @fish)
+      AND regulations_part = @part AND resident_type = @resident
+      AND ((@dateStart IS NULL AND regulations_date_start IS NULL) OR regulations_date_start = @dateStart);
+
+    DECLARE @action varchar(20);
+    IF @existingId IS NULL
+    BEGIN
+        INSERT INTO dbo.regulations (country, state, zone_id, Lake_id, fish_id, reg_year, regulations_part, resident_type
+            , regulations_date_start, regulations_start, regulations_date_end, regulations_end, day_flags
+            , regulations_sport, regulations_consr, possession_sport, possession_consr
+            , min_length_cm, slot_min_cm, slot_max_cm, slot_over_limit, method_flags
+            , regulations_code, regulations_link, regulations_text)
+        VALUES (@country, @state, @zone, @lake, @fish, @year, @part, @resident
+            , @dateStart, @startText, @dateEnd, @endText, @dayFlags
+            , @sport, @consr, @possessionSport, @possessionConsr
+            , @minLengthCm, @slotMinCm, @slotMaxCm, @slotOverLimit, @methodFlags
+            , @code, @link, @text);
+        SET @existingId = SCOPE_IDENTITY();
+        SET @action = 'inserted';
+    END
+    ELSE
+    BEGIN
+        UPDATE dbo.regulations SET
+            regulations_date_start = @dateStart, regulations_start = @startText,
+            regulations_date_end   = @dateEnd,   regulations_end   = @endText,
+            day_flags              = @dayFlags,
+            regulations_sport      = @sport,     regulations_consr = @consr,
+            possession_sport       = @possessionSport, possession_consr = @possessionConsr,
+            min_length_cm           = @minLengthCm, slot_min_cm = @slotMinCm, slot_max_cm = @slotMaxCm,
+            slot_over_limit         = @slotOverLimit, method_flags = @methodFlags,
+            regulations_code        = @code, regulations_link = @link, regulations_text = @text,
+            regulations_stamp       = GETUTCDATE()
+        WHERE id = @existingId;
+        SET @action = 'updated';
+    END
+
+    SELECT (
+        SELECT @existingId AS id, @action AS action,
+               CASE WHEN @lake IS NOT NULL THEN 'waterBody' WHEN @zone IS NOT NULL THEN 'zone' ELSE 'region' END AS scope
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    ) AS results;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_del_river' AND type = 'P')
     DROP PROCEDURE dbo.sp_del_river
 GO
