@@ -2078,6 +2078,169 @@ BEGIN CATCH
 END CATCH
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: docapi RiverController (PATCH /api/v1/river/source/{guid}) via
+--   JdbcRiverLinkCommandRepository -- the write counterpart of dbo.fn_lake_source_json, modeled on the
+--   Source tab of Editor/EditLakeLink.aspx?Type=16 (ButtonSubmit_Click). A JSON MERGE PATCH against the
+--   single dbo.Tributaries row where Main_Lake_id = @lake_id AND side = 16 (at most one such row exists
+--   -- see UK_Tributaries_Source): only keys present in @patch are touched, a key holding JSON null
+--   clears that field.
+--
+--   Deliberately excludes every identity/linkage field EditLakeLink.aspx shows read-only in this exact
+--   spot -- lakeName, guid (the main water body itself), and the linked point's own pointName/pointId
+--   -- plus the row id and stamp, which are not user-editable fields at all. Any of those keys present
+--   in @patch is reported back as "protected", not silently dropped, so a caller knows it did not take
+--   effect. Relinking the source to a different water body (pointId) stays a UI-only action, same as
+--   the identity fields on sp_lake_description_update.
+--
+--     EXEC dbo.sp_lake_source_update 'a55caadf-2892-e811-9104-00155d007b12',
+--          N'{"lat":52.1,"lon":-95.4,"elevation":355,"description":"Headwater creek."}';
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_lake_source_update' AND type = 'P')
+    DROP PROCEDURE dbo.sp_lake_source_update
+GO
+CREATE PROCEDURE dbo.sp_lake_source_update
+    @lake_id uniqueidentifier,
+    @patch   nvarchar(max)
+WITH EXEC AS CALLER
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake_id)
+    BEGIN
+        SELECT CAST(NULL AS nvarchar(max)) AS results;
+        RETURN;
+    END
+    IF @patch IS NULL OR ISJSON(@patch) = 0
+    BEGIN
+        SELECT (SELECT CONVERT(varchar(36), @lake_id) AS lakeId,
+                       JSON_QUERY('[]') AS updated, JSON_QUERY('[]') AS ignored,
+                       JSON_QUERY('[{"field":"$","reason":"body is not well-formed JSON"}]') AS protectedFields
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS results;
+        RETURN;
+    END
+
+    UPDATE dbo.Tributaries SET
+        lat          = CASE WHEN JSON_PATH_EXISTS(@patch, '$.lat')          = 1 THEN TRY_CONVERT(float, JSON_VALUE(@patch, '$.lat'))       ELSE lat END,
+        lon          = CASE WHEN JSON_PATH_EXISTS(@patch, '$.lon')          = 1 THEN TRY_CONVERT(float, JSON_VALUE(@patch, '$.lon'))       ELSE lon END,
+        elevation    = CASE WHEN JSON_PATH_EXISTS(@patch, '$.elevation')    = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.elevation'))   ELSE elevation END,
+        Country      = CASE WHEN JSON_PATH_EXISTS(@patch, '$.country')      = 1 THEN JSON_VALUE(@patch, '$.country')                       ELSE Country END,
+        State        = CASE WHEN JSON_PATH_EXISTS(@patch, '$.state')       = 1 THEN JSON_VALUE(@patch, '$.state')                         ELSE State END,
+        county       = CASE WHEN JSON_PATH_EXISTS(@patch, '$.county')      = 1 THEN JSON_VALUE(@patch, '$.county')                        ELSE county END,
+        city         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.city')        = 1 THEN JSON_VALUE(@patch, '$.city')                          ELSE city END,
+        district     = CASE WHEN JSON_PATH_EXISTS(@patch, '$.district')    = 1 THEN JSON_VALUE(@patch, '$.district')                      ELSE district END,
+        municipality = CASE WHEN JSON_PATH_EXISTS(@patch, '$.municipality') = 1 THEN JSON_VALUE(@patch, '$.municipality')                 ELSE municipality END,
+        region       = CASE WHEN JSON_PATH_EXISTS(@patch, '$.region')      = 1 THEN JSON_VALUE(@patch, '$.region')                        ELSE region END,
+        zone         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.zone')        = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.zone'))        ELSE zone END,
+        coast        = CASE WHEN JSON_PATH_EXISTS(@patch, '$.coast')       = 1 THEN JSON_VALUE(@patch, '$.coast')                         ELSE coast END,
+        location     = CASE WHEN JSON_PATH_EXISTS(@patch, '$.location')    = 1 THEN JSON_VALUE(@patch, '$.location')                      ELSE location END,
+        descript     = CASE WHEN JSON_PATH_EXISTS(@patch, '$.description') = 1 THEN JSON_VALUE(@patch, '$.description')                   ELSE descript END
+    WHERE Main_Lake_id = @lake_id AND side = 16;
+
+    DECLARE @updated TABLE (field nvarchar(50));
+    INSERT INTO @updated (field)
+    SELECT v.f FROM (VALUES
+        ('lat'),('lon'),('elevation'),('country'),('state'),('county'),('city'),
+        ('district'),('municipality'),('region'),('zone'),('coast'),('location'),('description')
+    ) AS v(f)
+    WHERE JSON_PATH_EXISTS(@patch, '$.' + v.f) = 1;
+
+    DECLARE @protectedFields TABLE (field nvarchar(50), reason nvarchar(200));
+    INSERT INTO @protectedFields (field, reason)
+    SELECT v.f, 'not editable through this endpoint'
+    FROM (VALUES ('guid'),('lakeName'),('id'),('pointId'),('pointName'),('stamp')) AS v(f)
+    WHERE JSON_PATH_EXISTS(@patch, '$.' + v.f) = 1;
+
+    SELECT (
+        SELECT
+            CONVERT(varchar(36), @lake_id) AS lakeId,
+            JSON_QUERY(ISNULL((SELECT field FROM @updated FOR JSON PATH), '[]')) AS updated,
+            JSON_QUERY('[]') AS ignored,
+            JSON_QUERY(ISNULL((SELECT field, reason FROM @protectedFields FOR JSON PATH), '[]')) AS protectedFields
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    ) AS results;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: docapi RiverController (PATCH /api/v1/river/mouth/{guid}) via
+--   JdbcRiverLinkCommandRepository -- same shape as dbo.sp_lake_source_update, but targets the
+--   dbo.Tributaries row where Main_Lake_id = @lake_id AND side = 32 (the Mouth tab of
+--   Editor/EditLakeLink.aspx?Type=32; at most one such row exists -- see UK_Tributaries_Mouth).
+--
+--     EXEC dbo.sp_lake_mouth_update 'a55caadf-2892-e811-9104-00155d007b12',
+--          N'{"lat":51.9,"lon":-94.8,"elevation":198}';
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_lake_mouth_update' AND type = 'P')
+    DROP PROCEDURE dbo.sp_lake_mouth_update
+GO
+CREATE PROCEDURE dbo.sp_lake_mouth_update
+    @lake_id uniqueidentifier,
+    @patch   nvarchar(max)
+WITH EXEC AS CALLER
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake_id)
+    BEGIN
+        SELECT CAST(NULL AS nvarchar(max)) AS results;
+        RETURN;
+    END
+    IF @patch IS NULL OR ISJSON(@patch) = 0
+    BEGIN
+        SELECT (SELECT CONVERT(varchar(36), @lake_id) AS lakeId,
+                       JSON_QUERY('[]') AS updated, JSON_QUERY('[]') AS ignored,
+                       JSON_QUERY('[{"field":"$","reason":"body is not well-formed JSON"}]') AS protectedFields
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER) AS results;
+        RETURN;
+    END
+
+    UPDATE dbo.Tributaries SET
+        lat          = CASE WHEN JSON_PATH_EXISTS(@patch, '$.lat')          = 1 THEN TRY_CONVERT(float, JSON_VALUE(@patch, '$.lat'))       ELSE lat END,
+        lon          = CASE WHEN JSON_PATH_EXISTS(@patch, '$.lon')          = 1 THEN TRY_CONVERT(float, JSON_VALUE(@patch, '$.lon'))       ELSE lon END,
+        elevation    = CASE WHEN JSON_PATH_EXISTS(@patch, '$.elevation')    = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.elevation'))   ELSE elevation END,
+        Country      = CASE WHEN JSON_PATH_EXISTS(@patch, '$.country')      = 1 THEN JSON_VALUE(@patch, '$.country')                       ELSE Country END,
+        State        = CASE WHEN JSON_PATH_EXISTS(@patch, '$.state')       = 1 THEN JSON_VALUE(@patch, '$.state')                         ELSE State END,
+        county       = CASE WHEN JSON_PATH_EXISTS(@patch, '$.county')      = 1 THEN JSON_VALUE(@patch, '$.county')                        ELSE county END,
+        city         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.city')        = 1 THEN JSON_VALUE(@patch, '$.city')                          ELSE city END,
+        district     = CASE WHEN JSON_PATH_EXISTS(@patch, '$.district')    = 1 THEN JSON_VALUE(@patch, '$.district')                      ELSE district END,
+        municipality = CASE WHEN JSON_PATH_EXISTS(@patch, '$.municipality') = 1 THEN JSON_VALUE(@patch, '$.municipality')                 ELSE municipality END,
+        region       = CASE WHEN JSON_PATH_EXISTS(@patch, '$.region')      = 1 THEN JSON_VALUE(@patch, '$.region')                        ELSE region END,
+        zone         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.zone')        = 1 THEN TRY_CONVERT(int, JSON_VALUE(@patch, '$.zone'))        ELSE zone END,
+        coast        = CASE WHEN JSON_PATH_EXISTS(@patch, '$.coast')       = 1 THEN JSON_VALUE(@patch, '$.coast')                         ELSE coast END,
+        location     = CASE WHEN JSON_PATH_EXISTS(@patch, '$.location')    = 1 THEN JSON_VALUE(@patch, '$.location')                      ELSE location END,
+        descript     = CASE WHEN JSON_PATH_EXISTS(@patch, '$.description') = 1 THEN JSON_VALUE(@patch, '$.description')                   ELSE descript END
+    WHERE Main_Lake_id = @lake_id AND side = 32;
+
+    DECLARE @updated TABLE (field nvarchar(50));
+    INSERT INTO @updated (field)
+    SELECT v.f FROM (VALUES
+        ('lat'),('lon'),('elevation'),('country'),('state'),('county'),('city'),
+        ('district'),('municipality'),('region'),('zone'),('coast'),('location'),('description')
+    ) AS v(f)
+    WHERE JSON_PATH_EXISTS(@patch, '$.' + v.f) = 1;
+
+    DECLARE @protectedFields TABLE (field nvarchar(50), reason nvarchar(200));
+    INSERT INTO @protectedFields (field, reason)
+    SELECT v.f, 'not editable through this endpoint'
+    FROM (VALUES ('guid'),('lakeName'),('id'),('pointId'),('pointName'),('stamp')) AS v(f)
+    WHERE JSON_PATH_EXISTS(@patch, '$.' + v.f) = 1;
+
+    SELECT (
+        SELECT
+            CONVERT(varchar(36), @lake_id) AS lakeId,
+            JSON_QUERY(ISNULL((SELECT field FROM @updated FOR JSON PATH), '[]')) AS updated,
+            JSON_QUERY('[]') AS ignored,
+            JSON_QUERY(ISNULL((SELECT field, reason FROM @protectedFields FOR JSON PATH), '[]')) AS protectedFields
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    ) AS results;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 -- Called by: docapi RegulationController (PATCH /api/v1/regulation) via
 --   JdbcRegulationCommandRepository -- the write counterpart of Editor/LakeRegulation.aspx
 --   (ButtonSubmit_Click / FindExistingRegId). Upserts ONE row of dbo.regulations, matched by the same
