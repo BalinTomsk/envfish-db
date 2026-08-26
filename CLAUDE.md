@@ -32,6 +32,7 @@ and [Structure unit tests](#structure-unit-tests) for how, and `mssql\UNIT_TESTS
 - When create/modify existing function always mention what service/module/class/method calling it.
 - No any direct call to database table. app can use ot view or function or procedure for insert/select/execute operations
 - If you see code that use direct access to database table - use the rule from above.
+- do not allow to have duplicated db objects - make a single reusable db objects
 
 
 ## How `ffi2.sql` is generated
