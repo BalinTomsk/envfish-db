@@ -12,6 +12,10 @@
     dbo.fn_lake_regulation_json    Regulation   (LakeRegulation.aspx)  regulations for this lake
     dbo.fn_lake_view_json          View         (wfRiverViewer.aspx)   vw_lake + fish + photos
 
+  Also covers the write counterparts of the Source/Mouth tabs (docapi RiverController):
+    dbo.sp_lake_source_update      PATCH /api/v1/river/source/{guid}   merge-patch, Tributaries side 16
+    dbo.sp_lake_mouth_update       PATCH /api/v1/river/mouth/{guid}    merge-patch, Tributaries side 32
+
   Real tables only. Each test is its own named transaction, rolled back in its own GO batch.
 
   SET QUOTED_IDENTIFIER ON is required: dbo.lake and dbo.regulations carry filtered indexes, so an
@@ -337,4 +341,113 @@ SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 IF @ok = 1 PRINT 'TEST 14 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: catchLog carries the memo and its photo round-trips base64';
 ELSE BEGIN DECLARE @d14 varchar(400) = LEFT(ISNULL(@json, '<NULL>'), 380); RAISERROR('TEST 14 FAIL [%dms]: %s', 16, -1, @ElapsedMs, @d14); END
 ROLLBACK TRAN TestLakeJson14
+GO
+-- ---------------------------------------------------------------------------- TEST 15: sp_lake_source_update patches editable fields
+BEGIN TRAN TestLakeJson15
+    DECLARE @test_name sysname = N'TestLakeJson15 [sp_lake_source_update] : merge-patch editable fields';
+DECLARE @tStart datetime2, @ElapsedMs int; DECLARE @ok int = 0;
+BEGIN TRY  SET NOCOUNT ON; SET @tStart = SYSUTCDATETIME();
+DECLARE @Lake uniqueidentifier = NEWID();
+INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (@Lake, 1, N'UT SourceUpd');
+DECLARE @patch nvarchar(max) = N'{"lat":52.1,"lon":-95.4,"elevation":355,"country":"CA","state":"ON",
+    "county":"Kenora","city":"Sioux Lookout","district":"Kenora","municipality":"Sioux Lookout",
+    "region":"Northwestern Ontario","zone":5,"coast":"L","location":"Headwater","description":"A small headwater creek."}';
+DECLARE @t TABLE (results nvarchar(max));
+INSERT INTO @t EXEC dbo.sp_lake_source_update @Lake, @patch;
+DECLARE @json nvarchar(max) = (SELECT TOP 1 results FROM @t);
+DECLARE @doc nvarchar(max) = dbo.fn_lake_source_json(@Lake);
+IF @json IS NOT NULL
+   AND JSON_VALUE(@json, '$.lakeId') = CONVERT(varchar(36), @Lake)
+   AND (SELECT COUNT(*) FROM OPENJSON(@json, '$.updated')) = 14
+   AND JSON_QUERY(@json, '$.protectedFields') = '[]'
+   AND CAST(JSON_VALUE(@doc, '$.sources[0].lat') AS float) = 52.1
+   AND JSON_VALUE(@doc, '$.sources[0].city') = N'Sioux Lookout'
+   AND JSON_VALUE(@doc, '$.sources[0].description') = N'A small headwater creek.'
+   SET @ok = 1;
+END TRY
+BEGIN CATCH SELECT ERROR_NUMBER() AS ErrorNumber, @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage; END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 15 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: sp_lake_source_update writes all 14 editable fields and reports them updated';
+ELSE BEGIN DECLARE @d15 varchar(400) = LEFT(ISNULL(@json, '<NULL>'), 380); RAISERROR('TEST 15 FAIL [%dms]: %s', 16, -1, @ElapsedMs, @d15); END
+ROLLBACK TRAN TestLakeJson15
+GO
+-- ---------------------------------------------------------------------------- TEST 16: sp_lake_source_update protects identity/linkage fields
+BEGIN TRAN TestLakeJson16
+    DECLARE @test_name sysname = N'TestLakeJson16 [sp_lake_source_update] : identity fields are protected, not applied';
+DECLARE @tStart datetime2, @ElapsedMs int; DECLARE @ok int = 0;
+BEGIN TRY  SET NOCOUNT ON; SET @tStart = SYSUTCDATETIME();
+DECLARE @Lake uniqueidentifier = NEWID();
+DECLARE @Other uniqueidentifier = NEWID();
+INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (@Lake, 1, N'UT SourceProt');
+DECLARE @patch nvarchar(max) = N'{"guid":"' + CONVERT(varchar(36), @Other) + N'","lakeName":"Hijacked",
+    "id":999,"pointId":"' + CONVERT(varchar(36), @Other) + N'","pointName":"Hijacked Point","stamp":"2000-01-01T00:00:00"}';
+DECLARE @t TABLE (results nvarchar(max));
+INSERT INTO @t EXEC dbo.sp_lake_source_update @Lake, @patch;
+DECLARE @json nvarchar(max) = (SELECT TOP 1 results FROM @t);
+DECLARE @doc nvarchar(max) = dbo.fn_lake_source_json(@Lake);
+IF @json IS NOT NULL
+   AND JSON_QUERY(@json, '$.updated') = '[]'
+   AND (SELECT COUNT(*) FROM OPENJSON(@json, '$.protectedFields')) = 6
+   AND JSON_VALUE(@doc, '$.lakeName') = N'UT SourceProt'                       -- unchanged
+   AND JSON_VALUE(@doc, '$.sources[0].pointId') = CONVERT(varchar(36), @Lake)  -- still the self placeholder
+   SET @ok = 1;
+END TRY
+BEGIN CATCH SELECT ERROR_NUMBER() AS ErrorNumber, @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage; END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 16 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: sp_lake_source_update reports 6 protected fields and applies none of them';
+ELSE BEGIN DECLARE @d16 varchar(400) = LEFT(ISNULL(@json, '<NULL>'), 380); RAISERROR('TEST 16 FAIL [%dms]: %s', 16, -1, @ElapsedMs, @d16); END
+ROLLBACK TRAN TestLakeJson16
+GO
+-- ---------------------------------------------------------------------------- TEST 17: sp_lake_mouth_update targets side 32 only
+BEGIN TRAN TestLakeJson17
+    DECLARE @test_name sysname = N'TestLakeJson17 [sp_lake_mouth_update] : patches side 32, leaves side 16 untouched';
+DECLARE @tStart datetime2, @ElapsedMs int; DECLARE @ok int = 0;
+BEGIN TRY  SET NOCOUNT ON; SET @tStart = SYSUTCDATETIME();
+DECLARE @Lake uniqueidentifier = NEWID();
+INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (@Lake, 1, N'UT MouthUpd');
+DECLARE @patch nvarchar(max) = N'{"lat":51.9,"lon":-94.8,"elevation":198}';
+DECLARE @t TABLE (results nvarchar(max));
+INSERT INTO @t EXEC dbo.sp_lake_mouth_update @Lake, @patch;
+DECLARE @json nvarchar(max) = (SELECT TOP 1 results FROM @t);
+DECLARE @mouthDoc nvarchar(max) = dbo.fn_lake_mouth_json(@Lake);
+DECLARE @sourceDoc nvarchar(max) = dbo.fn_lake_source_json(@Lake);
+IF @json IS NOT NULL
+   AND (SELECT COUNT(*) FROM OPENJSON(@json, '$.updated')) = 3
+   AND CAST(JSON_VALUE(@mouthDoc, '$.mouths[0].lat') AS float) = 51.9
+   AND JSON_VALUE(@sourceDoc, '$.sources[0].lat') IS NULL                     -- side-16 row unaffected
+   SET @ok = 1;
+END TRY
+BEGIN CATCH SELECT ERROR_NUMBER() AS ErrorNumber, @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage; END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 17 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: sp_lake_mouth_update writes only the side-32 row';
+ELSE BEGIN DECLARE @d17 varchar(400) = LEFT(ISNULL(@json, '<NULL>'), 380); RAISERROR('TEST 17 FAIL [%dms]: %s', 16, -1, @ElapsedMs, @d17); END
+ROLLBACK TRAN TestLakeJson17
+GO
+-- ---------------------------------------------------------------------------- TEST 18: unknown lake id + malformed JSON
+BEGIN TRAN TestLakeJson18
+    DECLARE @test_name sysname = N'TestLakeJson18 [sp_lake_source_update/sp_lake_mouth_update] : unknown id -> NULL, bad JSON -> protected error';
+DECLARE @tStart datetime2, @ElapsedMs int; DECLARE @ok int = 0;
+BEGIN TRY  SET NOCOUNT ON; SET @tStart = SYSUTCDATETIME();
+DECLARE @Unknown uniqueidentifier = NEWID();
+DECLARE @Lake uniqueidentifier = NEWID();
+INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (@Lake, 1, N'UT BadPatch');
+DECLARE @t1 TABLE (results nvarchar(max));
+INSERT INTO @t1 EXEC dbo.sp_lake_source_update @Unknown, N'{"lat":1}';
+DECLARE @t2 TABLE (results nvarchar(max));
+INSERT INTO @t2 EXEC dbo.sp_lake_mouth_update @Unknown, N'{"lat":1}';
+DECLARE @t3 TABLE (results nvarchar(max));
+INSERT INTO @t3 EXEC dbo.sp_lake_source_update @Lake, N'not-json';
+DECLARE @badJson nvarchar(max) = (SELECT TOP 1 results FROM @t3);
+IF (SELECT TOP 1 results FROM @t1) IS NULL
+   AND (SELECT TOP 1 results FROM @t2) IS NULL
+   AND @badJson IS NOT NULL
+   AND JSON_QUERY(@badJson, '$.updated') = '[]'
+   AND JSON_VALUE(@badJson, '$.protectedFields[0].reason') = N'body is not well-formed JSON'
+   SET @ok = 1;
+END TRY
+BEGIN CATCH SELECT ERROR_NUMBER() AS ErrorNumber, @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage; END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 18 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: unknown lake id returns NULL for both procs; malformed JSON reports a protected-field error';
+ELSE RAISERROR('TEST 18 FAIL [%dms]: expected NULL for unknown id and a protectedFields error for malformed JSON', 16, -1, @ElapsedMs);
+ROLLBACK TRAN TestLakeJson18
 GO
