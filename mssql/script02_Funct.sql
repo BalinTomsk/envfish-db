@@ -3489,13 +3489,13 @@ CREATE function dbo.fn_lake_edit(@lake_id uniqueidentifier)
 RETURNS nvarchar(max)
 AS
 BEGIN
-    DECLARE @main nvarchar(max), @name sysname, @native nvarchar(255), @french_name nvarchar(255), @former_name nvarchar(255), @lake_road_access nvarchar(255)
+    DECLARE @main nvarchar(max), @name sysname, @native nvarchar(255), @french_name nvarchar(255), @former_name nvarchar(255), @spanish_name nvarchar(255), @original_name nvarchar(255), @lake_road_access nvarchar(255)
         , @source_name nvarchar(255), @mouth_name nvarchar(255), @fish nvarchar(max), @descript nvarchar(max), @link nvarchar(2048)
         , @drainage nvarchar(128), @discharge nvarchar(128), @watershield nvarchar(128), @fishing nvarchar(max), @alt_name nvarchar(64)
         , @src_id uniqueidentifier, @mth_id uniqueidentifier
     ;WITH cte AS
     (
-        SELECT l.lake_id, l.lake_name, l.alt_name, l.[native], l.french_name, l.former_name
+        SELECT l.lake_id, l.lake_name, l.alt_name, l.[native], l.french_name, l.former_name, l.spanish_name, l.original_name
         , l.stamp, l.locType, l.link, l.depth, l.width, l.length, l.volume
         -- is_fish is read live from lake_fish, NOT from the cached l.isFish flag: the editor uses it to
         -- enable/disable the No Fish checkbox, so it must match what the Fish tab actually holds even if
@@ -3506,7 +3506,7 @@ BEGIN
         , w.source_name, w.mouth_name, w.source_state, w.source_country, l.source, l.mouth, l.reviewed
       FROM dbo.lake l JOIN dbo.vw_lake w ON l.lake_id=w.lake_id WHERE w.lake_id = @lake_id
     )
-    SELECT @main = val, @name = lake_name, @native = [native], @french_name = french_name, @former_name = former_name, @descript = descript
+    SELECT @main = val, @name = lake_name, @native = [native], @french_name = french_name, @former_name = former_name, @spanish_name = spanish_name, @original_name = original_name, @descript = descript
          , @lake_road_access = lake_road_access, @source_name = source_name, @mouth_name = mouth_name, @link = link
          , @drainage = drainage, @discharge = discharge, @watershield = watershield, @fishing = fishing, @alt_name = alt_name
          , @src_id = source, @mth_id = mouth
@@ -3540,6 +3540,8 @@ BEGIN
         + dbo.fn_data2cdata(N'node', N'native',           null,     @native )
         + dbo.fn_data2cdata(N'node', N'french_name',      null,     @french_name )
         + dbo.fn_data2cdata(N'node', N'former_name',      null,     @former_name )
+        + dbo.fn_data2cdata(N'node', N'spanish_name',     null,     @spanish_name )
+        + dbo.fn_data2cdata(N'node', N'original_name',    null,     @original_name )
         + dbo.fn_data2cdata(N'node', N'lake_road_access', null,     @lake_road_access )
         + dbo.fn_data2cdata(N'node', N'source_name',      @src_id,  @source_name ) 
         + dbo.fn_data2cdata(N'node', N'mouth_name',       @mth_id,  @mouth_name )

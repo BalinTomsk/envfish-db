@@ -774,6 +774,8 @@ CREATE TABLE Lake
     Alt_Name    nvarchar (64),              -- alternative name
     french_name nvarchar (128),             -- alternative name
     former_name nvarchar (128),             -- former/historical name
+    spanish_name nvarchar (128),            -- spanish name
+    original_name nvarchar (128),           -- original/native historical name
     native      nvarchar (64),              -- lake name in native meaning
     source      uniqueidentifier,
     mouth       uniqueidentifier,
@@ -839,6 +841,8 @@ CREATE INDEX [idx_Lake_alt_name] ON Lake (alt_name) INCLUDE (lake_id) WHERE alt_
 CREATE INDEX [idx_Lake_name] ON Lake (lake_name) INCLUDE (lake_id);
 CREATE INDEX [idx_Lake_french_name] ON Lake (french_name) INCLUDE (lake_id)  WHERE french_name IS NOT NULL;
 CREATE INDEX [idx_Lake_former_name] ON Lake (former_name) INCLUDE (lake_id)  WHERE former_name IS NOT NULL;
+CREATE INDEX [idx_Lake_spanish_name] ON Lake (spanish_name) INCLUDE (lake_id)  WHERE spanish_name IS NOT NULL;
+CREATE INDEX [idx_Lake_original_name] ON Lake (original_name) INCLUDE (lake_id)  WHERE original_name IS NOT NULL;
 CREATE INDEX [idx_Lake_native] ON Lake (native) INCLUDE (lake_id)  WHERE [native] IS NOT NULL;
 GO
 CREATE UNIQUE NONCLUSTERED INDEX UK_lake_CGNDB ON LAKE(CGNDB) WHERE CGNDB IS NOT NULL
