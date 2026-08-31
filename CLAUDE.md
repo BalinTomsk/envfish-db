@@ -2,7 +2,8 @@
 
 Guidance for Claude Code when changing the database for **any** Fish Find service.
 This folder holds the SQL Server schema (`mssql/`) and the MySQL variant (`mysql/`).
-Everything below is about `mssql/` unless stated otherwise.
+Everything below is about `mssql/` unless stated otherwise — see
+[MySQL (`mysql/`)](#mysql-mysql) near the end of this file for the MySQL-specific workflow.
 
 ## ⚠️ READ THIS FIRST — non-negotiable
 
@@ -271,6 +272,82 @@ GO
 4. Open `mssql\UNIT_TESTS\cleaned.txt` and confirm no error lines (only headers/banners/PASS).
 5. If output legitimately changed, update `[mail].crcstate` in `config.ini`.
 
+
+## MySQL (`mysql/`)
+
+Guidance below is specific to `mysql/` and does not override the `mssql/` sections above — SQL
+Server via `mssql/` remains the primary database for the app. MySQL currently backs **one table**
+(`news`, migrated 2026-08-31) that a single frontend page (`News.aspx` in `fishfind-frontend`)
+reads and searches; everything else still runs on `mssql/`. Unlike `mssql/`, this MySQL database
+is **not** distributed / peer-to-peer replicated — it is one flat remote schema hosted on Winhost
+(`my06.winhost.com`).
+
+### Golden rule: same schema-source discipline as `mssql/`
+
+**All DDL changes go in versioned `scriptNN_xxxxxx.sql` source files under `mysql/` — never apply
+DDL directly to the live database without a matching, up-to-date script in this repo.** Mirror
+`mssql/`'s naming convention as new object types are needed:
+
+- `script01_createTable.sql` — tables, PKs, indexes (exists today — currently just `news`)
+- `script02_Funct.sql` — functions (create when first needed)
+- `script02_Proc.sql` — stored procedures (create when first needed)
+- `script08_Data.sql` — seed/reference data (create when first needed)
+
+`mysql/generate_db_script_ffi2.cmd` + `mysql/dbcreator.cmd` (wired together by `mysql/build.cmd
+<host> <user> <database>`) concatenate the scriptNN files into `mysql/ffi2.sql` and apply it with
+the `mysql` CLI, mirroring the mssql build — but there is still **no automated unit-test harness**
+(no `mysql/UNIT_TESTS`). The scriptNN files remain the single source of truth for what should be
+live; `ffi2.sql` is generated and deleted by `build.cmd`, same golden rule as `mssql/ffi2.sql`.
+
+### Test-first still applies — adapted for MySQL
+
+The [test-first rule](#-read-this-first--non-negotiable) at the top of this file is not
+SQL-Server-specific — apply the same discipline to MySQL. Until a `mysql/UNIT_TESTS` harness
+exists:
+
+1. **Reproduce the bug with a query first** — confirm it fails against the current live schema.
+2. **Only then apply the fix.**
+3. **Re-run the same query** to confirm it now behaves correctly.
+4. Prefer wrapping exploratory/verification queries in a transaction
+   (`START TRANSACTION; ... ; ROLLBACK;`) so nothing is left changed on a shared database —
+   `news` uses `InnoDB`, which supports this.
+
+### Applying a script
+
+- Real connection details (host, database, user, password) live **only** in the frontend app's
+  gitignored `connectionStrings.config` / MySQL helper class — never hardcode real credentials
+  into this repo's `.sql` files or into this `CLAUDE.md`.
+- Apply with the `mysql` CLI: `mysql -h <host> -u <user> -p <database> < mysql\scriptNN_xxxxxx.sql`.
+- **After any DDL change, update the matching `mysql/scriptNN_*.sql` to match exactly what was
+  applied live.** This repo is the source of truth for the MySQL schema, so letting it drift from
+  the live table is the same class of bug as `mssql/ffi2.sql` drift — just without a build step to
+  catch it, so it is on you to keep them in sync by hand.
+- Deploying a MySQL DDL/data change to the **production** Winhost database is still a production
+  deploy — get the user's explicit permission first, same as any other prod change (see
+  `fishfind-frontend/CLAUDE.md` → "Deployment policy").
+
+### Drift reconciled 2026-08-31
+
+`mysql/script01_createTable.sql` was verified against the live production Winhost table
+(`DESCRIBE news;` / `SHOW CREATE TABLE news;`) and updated to match exactly. The
+2026-08-31 SQL-Server-to-MySQL migration had left the script out of sync with what was actually
+deployed:
+
+- `news_id` / `lake_id` / `fish1_id` / `fish2_id` / `fish3_id`: script had `BINARY(16)` (via
+  `UUID_TO_BIN(UUID())`) — live is `CHAR(36)` with no default (the app supplies the GUID string
+  itself; see `MySqlNewsHelper.cs`'s string-based `Guid.TryParse` usage).
+- `news_author`: script had `VARCHAR(128) NOT NULL` — live is `VARCHAR(500)`, nullable.
+- `news_photo0` / `news_photo1` / `news_photo2`: script had `MEDIUMBLOB` (16MB cap) — live is
+  `LONGBLOB` (4GB cap).
+- `news_stamp` / `stamp` defaults: script had `DEFAULT (UTC_TIMESTAMP(6))` — live is
+  `DEFAULT CURRENT_TIMESTAMP(6)` (server local time, not UTC — a real behavioral difference).
+- `UNIQUE KEY` on `id`: script named it `uq_news_id_auto` — live has it auto-named `id`.
+- Table-level charset/collation: live pins `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+  explicitly — the script didn't specify one before.
+
+**Verify against the live shape again (`DESCRIBE news;` / `SHOW CREATE TABLE news;`) before
+writing new MySQL DDL against `news`** — there is still no automated schema-diff check for
+`mysql/`, so drift like this can reappear silently whenever the live table is changed by hand.
 
 ## Changelog
 
