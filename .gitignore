@@ -62,7 +62,8 @@ mssql/UNIT_TESTS/cleaned.txt
 mssql/UNIT_TESTS/cleaned.txt
 mssql/tools
 tools/*
-mssql/ffi2.sql 
+mssql/ffi2.sql
+mysql/ffi2.sql
 
 
 # Visual Studio 2017 auto generated files
