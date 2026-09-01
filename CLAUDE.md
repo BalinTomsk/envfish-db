@@ -291,6 +291,9 @@ DDL directly to the live database without a matching, up-to-date script in this 
 `mssql/`'s naming convention as new object types are needed:
 
 - `script01_createTable.sql` — tables, PKs, indexes (exists today — currently just `news`)
+- `script01_createView.sql` — views (exists today — `v_news_list_rows` + the `v_news_default_*`
+  chain backing `script02_Proc.sql`'s read procedures; see "Testing MySQL procedures" below for why
+  that logic lives in views rather than inline)
 - `script02_Funct.sql` — functions (create when first needed)
 - `script02_Proc.sql` — stored procedures. `sp_news_list_for_grid`, `sp_news_latest_id_with_photo`,
   `sp_news_get_by_id`, `sp_news_count` are called from `MySqlNewsHelper.cs` (nothing in that helper
@@ -302,15 +305,66 @@ DDL directly to the live database without a matching, up-to-date script in this 
 
 `mysql/generate_db_script_ffi2.cmd` + `mysql/dbcreator.cmd` (wired together by `mysql/build.cmd
 <host> <user> <database>`) concatenate the scriptNN files into `mysql/ffi2.sql` and apply it with
-the `mysql` CLI, mirroring the mssql build — but there is still **no automated unit-test harness**
-(no `mysql/UNIT_TESTS`). The scriptNN files remain the single source of truth for what should be
-live; `ffi2.sql` is generated and deleted by `build.cmd`, same golden rule as `mssql/ffi2.sql`.
+the `mysql` CLI, mirroring the mssql build. **When you add a new `scriptNN_*.sql`, add it to
+`generate_db_script_ffi2.cmd`'s `copy` line too**, in dependency order — otherwise it is silently
+missing from every fresh build and from the unit-test database. The scriptNN files remain the single
+source of truth for what should be live; `ffi2.sql` is generated and deleted by `build.cmd`, same
+golden rule as `mssql/ffi2.sql`.
 
 ### Test-first still applies — adapted for MySQL
 
 The [test-first rule](#-read-this-first--non-negotiable) at the top of this file is not
-SQL-Server-specific — apply the same discipline to MySQL. Until a `mysql/UNIT_TESTS` harness
-exists:
+SQL-Server-specific — apply the same discipline to MySQL. There **is** a `mysql/UNIT_TESTS` harness
+now (`autorun.bat`, same shape as `mssql/`'s: generate `ffi2.sql` → build a throwaway database →
+run every `unit_test@*.sql` → `averify.py` → `cleaned.txt`), so write the failing test there first,
+exactly as in `mssql/`. Its `config.ini` points at a local MySQL server, has **no `[mail]` section**
+and never emails — exit code + `cleaned.txt` is the whole contract.
+
+### Structure MySQL unit tests — one procedure per test
+
+**Every test must be its own `CREATE PROCEDURE`, with its own `EXIT HANDLER FOR SQLEXCEPTION`, its
+own transaction, and a `ROLLBACK` at the end** — then a flat list of `CALL`s runs them, and a final
+block of `DROP PROCEDURE`s leaves the database as `ffi2.sql` produced it. This is the MySQL
+equivalent of the mssql per-test `BEGIN TRAN` + `TRY/CATCH` + `ROLLBACK TRAN` pattern (see
+[Structure unit tests](#structure-unit-tests)), and it is **not optional**: the mysql CLI in batch
+mode has no `TRY/CATCH`, so without a per-test handler **one unexpected SQL error aborts the entire
+script and silently skips every test after it** — a whole file can go dark while still looking like
+a short clean run. The per-test handler turns that into one `FAIL` line and lets the rest continue.
+See `mysql/UNIT_TESTS/unit_test@NewsMySQL.sql` for a worked example with 18 tests in this shape.
+The same `TEST n PASS:` / `TEST n FAIL:` wording and sequential numbering rules as `mssql/` apply.
+
+### Testing MySQL procedures — put the query in a view
+
+**MySQL cannot capture a stored procedure's result set from calling SQL** — `INSERT INTO t CALL
+proc()` is a syntax error and there is no cursor-over-`CALL`, so a procedure that returns rows is
+otherwise impossible to assert on from a plain `SELECT`-based test. Therefore: **put a read
+procedure's query in a view (`script01_createView.sql`) and make the procedure a thin wrapper over
+it**, so the test can assert against the exact same SQL the procedure runs.
+
+Two constraints when doing this:
+- **A view cannot take a parameter or read a session variable** (`ERROR 1351: View's SELECT contains
+  a variable or parameter`). Genuinely parameterized logic must stay inline in the procedure — split
+  it so the *unparameterized* row source is a view (e.g. `v_news_list_rows`) and only the
+  caller-dependent predicates stay in the procedure (e.g. `sp_news_list_json`'s country filter and
+  CA padding).
+- **Views are not exempt from the BLOB-at-scale hazard** below — a view composing `UNION ALL` /
+  `GROUP BY` / a window function / `LIMIT` is materialized by MySQL's TEMPTABLE algorithm, the same
+  category of operation as an explicit temp table. Keep `news_photo0`/`1`/`2` out of them except in
+  a final few-row join.
+
+**JSON assertion gotchas** (verified on MySQL 8.0.46 — both silently produce a passing-but-meaningless
+test if you get them wrong):
+- `JSON_EXTRACT(doc,'$.x')` over an `IF(...)` yields a JSON **INTEGER** `1`/`0`, not a JSON boolean —
+  compare to `1`/`0`; `= TRUE` matches nothing.
+- A **JSON null is not a SQL NULL**: `JSON_EXTRACT(doc,'$.photo') IS NOT NULL` is TRUE even when the
+  value is JSON `null`. Use `JSON_TYPE(...) = 'NULL'` / `<> 'NULL'`.
+
+**Always confirm a regression test actually catches its bug**: re-introduce the old broken
+definition, watch the test FAIL, then restore the fix and watch it PASS. Both 2026-08-31 news bugs
+were verified this way (the lead-rank bug reproduces as `TEST 17 FAIL: expected exactly 2 leads, got
+4`; dropping the `has_photo0` triggers fails tests 10/12/15).
+
+When touching the **live** database rather than the test harness:
 
 1. **Reproduce the bug with a query first** — confirm it fails against the current live schema.
 2. **Only then apply the fix.**

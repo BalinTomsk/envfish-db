@@ -2,6 +2,31 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-01: **MySQL unit tests restructured to one procedure per test; news read-procedure queries
+  extracted into views (`mysql/script01_createView.sql`, new).** `unit_test@NewsMySQL.sql` previously
+  used one flat script with a `SAVEPOINT`/`ROLLBACK TO` per test, which violates the per-test
+  isolation rule (see `CLAUDE.md` → "Structure MySQL unit tests"): the mysql CLI has no `TRY/CATCH`,
+  so **one unexpected SQL error aborted the whole file and silently skipped every test after it**.
+  Each of the 18 tests is now its own `CREATE PROCEDURE` with its own `EXIT HANDLER FOR SQLEXCEPTION`
+  + transaction + `ROLLBACK`, `CALL`ed in sequence and dropped at the end.
+  Tests 10-18 are **new**, covering the two bugs found during the 2026-08-31 rollout that previously
+  had no committed regression test: the `has_photo0` trigger behaviour (insert/update, both
+  directions, incl. overriding an explicitly-wrong value) and `sp_news_default`'s "exactly 2 leads by
+  final display rank" rule. **Both were verified to actually catch their bug** by re-introducing the
+  old broken definitions — the lead-rank bug reproduces as `TEST 17 FAIL: expected exactly 2 leads,
+  got 4`, and dropping the triggers fails tests 10/12/15.
+  Because MySQL cannot capture a procedure's result set from calling SQL (`INSERT INTO t CALL proc()`
+  is a syntax error), the read procedures' unparameterized query logic moved into views
+  (`v_news_list_rows`, and the `v_news_default_*` chain) so the tests can assert on the exact same
+  SQL the procedures run; `sp_news_default` is now a one-line wrapper and no longer needs its 7-temp-
+  table chain. A view **cannot** read a session variable (`ERROR 1351`), so genuinely parameterized
+  logic — `sp_news_doc_get`'s id lookup, `sp_news_list_json`'s country filter + CA padding — stays
+  inline in the procedures. `generate_db_script_ffi2.cmd` now includes the new view script.
+  Verified identical output to the pre-refactor procedures against the 150-row local dataset (CA=22,
+  UK=27 incl. padding, 2 photo leads + 3 compact). **Repo now differs from production**, which still
+  runs the pre-refactor procedures and has no views — deploying this refactor is a separate,
+  permission-gated step.
+
 - 2026-08-31: **`news.has_photo0` cached flag + fix for a live-only performance bug in
   `sp_news_list_json`/`sp_news_default`.** Deploying the entry below to production surfaced a real
   bug: both procedures hung indefinitely on the live Winhost host (never on the local test DB, which

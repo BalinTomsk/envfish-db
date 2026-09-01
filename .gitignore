@@ -57,10 +57,15 @@ bld/
 .vs/
 # Uncomment if you have tasks that create the project's static files in wwwroot
 mssql/Data
+mysql/Data
 mssql/UNIT_TESTS/config.ini
+mysql/UNIT_TESTS/config.ini
 mssql/UNIT_TESTS/cleaned.txt
+mysql/UNIT_TESTS/cleaned.txt
 mssql/UNIT_TESTS/cleaned.txt
+mysql/UNIT_TESTS/cleaned.txt
 mssql/tools
+mysql/tools
 tools/*
 mssql/ffi2.sql
 mysql/ffi2.sql

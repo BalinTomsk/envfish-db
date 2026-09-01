@@ -127,11 +127,21 @@ END //
 -- fish3_id/lake_id are echoed as raw GUID strings (unresolved) for the same single-table-DB reason.
 -- ============================================================================================
 
+-- The unparameterized parts of these three procedures live in views (mysql/script01_createView.sql:
+-- v_news_list_rows, the v_news_default_* chain) so mysql/UNIT_TESTS/unit_test@NewsMySQL.sql can
+-- assert on the SAME query the procedures run using plain SQL -- MySQL has no way to capture a
+-- stored procedure's result set from calling SQL (INSERT INTO t CALL proc() is a syntax error, and
+-- there is no cursor-over-CALL support), so a result-set-returning procedure is otherwise
+-- untestable via a PASS/FAIL SELECT. **A view cannot reference a session variable** (ERROR 1351),
+-- so the genuinely parameterized logic -- sp_news_doc_get's id lookup and sp_news_list_json's
+-- per-country CA padding -- necessarily stays inline below. See script01_createView.sql's header.
+
 -- sp_news_doc_get : one published article as a JSON document, addressed by news_id.
 -- Mirrors dbo.fn_news_doc's shape (mssql/script02_Funct.sql) minus lake_name/fishes (no lake/fish
 -- tables here). NULL/absent 'doc' column ⇒ the caller (MySqlNewsDocumentRepository) reports 404,
 -- same contract as fn_news_doc. Only PUBLISHED news is returned -- a public endpoint must never
--- leak a draft.
+-- leak a draft. Single-row lookup by primary key, so reading news_photo0 here is safe (see the
+-- at-scale warning on sp_news_list_json below).
 DROP PROCEDURE IF EXISTS sp_news_doc_get //
 CREATE PROCEDURE sp_news_doc_get(
     IN p_news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
@@ -195,60 +205,41 @@ BEGIN
     DECLARE v_country VARCHAR(2) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULLIF(p_country, '');
     DECLARE v_own_count INT DEFAULT 0;
     DECLARE v_pad_limit INT DEFAULT 0;
-    DECLARE v_total INT DEFAULT 0;
 
     IF v_country IS NOT NULL AND v_country <> 'CA' THEN
-        SELECT COUNT(*) INTO v_own_count FROM news WHERE news_publish = 1 AND country = v_country;
+        SELECT COUNT(*) INTO v_own_count FROM v_news_list_rows WHERE country = v_country;
         SET v_pad_limit = GREATEST(100 - v_own_count, 0);
     END IF;
 
-    DROP TEMPORARY TABLE IF EXISTS tmp_news_combined;
-    CREATE TEMPORARY TABLE tmp_news_combined (
-        id BIGINT,
-        news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
-        news_title VARCHAR(128) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
-        news_source VARCHAR(255) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
-        news_stamp DATETIME(6),
-        country CHAR(2) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
-        has_photo TINYINT(1),
-        block_ord INT
-    );
-
-    -- PRIMARY block: the requested country, or every country when blank.
-    INSERT INTO tmp_news_combined
-    SELECT id, news_id, news_title, news_source, news_stamp, country,
-           has_photo0, 0
-    FROM news
-    WHERE news_publish = 1 AND (v_country IS NULL OR country = v_country);
-
-    -- PADDING block: latest CA news topping the list up to 100, only for a non-CA country short of 100.
-    IF v_country IS NOT NULL AND v_country <> 'CA' AND v_pad_limit > 0 THEN
-        INSERT INTO tmp_news_combined
-        SELECT id, news_id, news_title, news_source, news_stamp, country,
-               has_photo0, 1
-        FROM news
-        WHERE news_publish = 1 AND country = 'CA'
-        ORDER BY news_stamp DESC, id DESC
-        LIMIT v_pad_limit;
-    END IF;
-
-    SELECT COUNT(*) INTO v_total FROM tmp_news_combined;
-
-    SELECT
-        ROW_NUMBER() OVER (ORDER BY block_ord ASC, news_stamp DESC, id DESC) AS rn,
-        news_id,
-        news_title AS title,
-        news_source AS source,
-        DATE_FORMAT(news_stamp, '%Y-%m-%d') AS stamp,
-        country AS flag,
-        has_photo,
-        block_ord,
-        v_total AS total
-    FROM tmp_news_combined
-    ORDER BY block_ord ASC, news_stamp DESC, id DESC
+    -- Row source is v_news_list_rows (the shared per-row projection); the country filter, the CA
+    -- padding block, and the rn/total window functions are applied here because they depend on the
+    -- caller's parameters, which a view cannot take.
+    SELECT rn, news_id, title, source, stamp, flag, has_photo, block_ord, total
+    FROM (
+        SELECT
+            ROW_NUMBER() OVER (ORDER BY block_ord ASC, news_stamp DESC, id DESC) AS rn,
+            COUNT(*) OVER () AS total,
+            news_id, title, source, stamp, flag, has_photo, block_ord
+        FROM (
+            -- PRIMARY block: the requested country, or every country when blank.
+            SELECT id, news_id, title, source, news_stamp, stamp, flag, has_photo, 0 AS block_ord
+            FROM v_news_list_rows
+            WHERE v_country IS NULL OR country = v_country
+            UNION ALL
+            -- PADDING block: latest CA news topping the list up to 100, only for a non-CA country
+            -- short of 100 of its own.
+            SELECT id, news_id, title, source, news_stamp, stamp, flag, has_photo, 1 AS block_ord
+            FROM (
+                SELECT id, news_id, title, source, news_stamp, stamp, flag, has_photo,
+                       ROW_NUMBER() OVER (ORDER BY news_stamp DESC, id DESC) AS pad_rn
+                FROM v_news_list_rows
+                WHERE v_country IS NOT NULL AND v_country <> 'CA' AND country = 'CA'
+            ) pad
+            WHERE pad.pad_rn <= v_pad_limit
+        ) combined
+    ) ranked
+    ORDER BY rn
     LIMIT v_offset, v_limit;
-
-    DROP TEMPORARY TABLE IF EXISTS tmp_news_combined;
 END //
 
 -- sp_news_default : the assembled home page (mirrors dbo.fn_default_news_ids + dbo.fn_default_news_json
@@ -256,120 +247,21 @@ END //
 -- function call). Selection algorithm matches dbo.vDefaultNews (mssql/script01_createView.sql):
 --   nn=1 top 2 CA articles with a photo, nn=2 top 2 overall articles with a photo (excluding nn=1),
 --   nn=3 top 3 CA (excluding above), nn=4 top 3 US (excluding above), nn=5 top 3 other countries
---   (excluding above); dedup by MIN(nn), top 5 by that order. Each group is its own temp table (never
---   reading the table it's inserting into) because MySQL forbids "insert into X select ... from
---   (subquery on X)" in one statement.
+--   (excluding above); dedup by MIN(nn), top 5 by that order. Each group is its own VIEW (not a temp
+--   table -- views have no "insert into X select ... from (subquery on X)" restriction, so unlike
+--   the original implementation each group view can reference the ones before it directly).
 -- Unlike fn_default_news_json's two distinct shapes (full lead doc vs compact right-column doc),
 -- every item here uses ONE shape (same fields as sp_news_doc_get, no lake/fish name resolution --
 -- same single-table-DB reason as sp_news_doc_get) with 'with_photo' marking the top 2 by FINAL
 -- DISPLAY RANK (rn <= 2, a ROW_NUMBER() OVER (ORDER BY ord ASC, news_stamp DESC) computed after
--- dedup) -- not the raw dedup group number, since groups 1 and 2 can each contribute 2 rows and
--- "group number <= 2" would wrongly mark all 4 of those as leads. Only the leads carry the base64
--- 'photo'. docapi's MySqlNewsQueryRepository.defaultNews() just parses each row into the "items"
--- array, so it doesn't care which shape a given item uses.
+-- dedup, in v_news_default_ranked) -- not the raw dedup group number, since groups 1 and 2 can each
+-- contribute 2 rows and "group number <= 2" would wrongly mark all 4 of those as leads. Only the
+-- leads carry the base64 'photo'. docapi's MySqlNewsQueryRepository.defaultNews() just parses each
+-- row into the "items" array, so it doesn't care which shape a given item uses.
 DROP PROCEDURE IF EXISTS sp_news_default //
 CREATE PROCEDURE sp_news_default()
 BEGIN
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp1;
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp2;
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp3;
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp4;
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp5;
-    DROP TEMPORARY TABLE IF EXISTS tmp_default_top;
-
-    -- Filters on has_photo0 (the maintained flag), never news_photo0 itself -- see
-    -- sp_news_list_json's comment above for why a bulk news_photo0 reference hangs on this host.
-    CREATE TEMPORARY TABLE tmp_grp1 (news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci);
-    INSERT INTO tmp_grp1
-    SELECT news_id FROM news
-    WHERE news_publish = 1 AND country = 'CA' AND has_photo0 = 1
-    ORDER BY news_stamp DESC LIMIT 2;
-
-    CREATE TEMPORARY TABLE tmp_grp2 (news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci);
-    INSERT INTO tmp_grp2
-    SELECT news_id FROM news
-    WHERE news_publish = 1 AND has_photo0 = 1
-      AND news_id NOT IN (SELECT news_id FROM tmp_grp1)
-    ORDER BY news_stamp DESC LIMIT 2;
-
-    CREATE TEMPORARY TABLE tmp_grp3 (news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci);
-    INSERT INTO tmp_grp3
-    SELECT news_id FROM news
-    WHERE news_publish = 1 AND country = 'CA'
-      AND news_id NOT IN (SELECT news_id FROM tmp_grp1 UNION SELECT news_id FROM tmp_grp2)
-    ORDER BY news_stamp DESC LIMIT 3;
-
-    CREATE TEMPORARY TABLE tmp_grp4 (news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci);
-    INSERT INTO tmp_grp4
-    SELECT news_id FROM news
-    WHERE news_publish = 1 AND country = 'US'
-      AND news_id NOT IN (
-          SELECT news_id FROM tmp_grp1 UNION SELECT news_id FROM tmp_grp2 UNION SELECT news_id FROM tmp_grp3)
-    ORDER BY news_stamp DESC LIMIT 3;
-
-    CREATE TEMPORARY TABLE tmp_grp5 (news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci);
-    INSERT INTO tmp_grp5
-    SELECT news_id FROM news
-    WHERE news_publish = 1 AND country NOT IN ('US', 'CA')
-      AND news_id NOT IN (
-          SELECT news_id FROM tmp_grp1 UNION SELECT news_id FROM tmp_grp2
-          UNION SELECT news_id FROM tmp_grp3 UNION SELECT news_id FROM tmp_grp4)
-    ORDER BY news_stamp DESC LIMIT 3;
-
-    DROP TEMPORARY TABLE IF EXISTS tmp_default_dedup;
-    CREATE TEMPORARY TABLE tmp_default_dedup AS
-    SELECT news_id, MIN(nn) AS ord FROM (
-        SELECT news_id, 1 AS nn FROM tmp_grp1
-        UNION ALL SELECT news_id, 2 FROM tmp_grp2
-        UNION ALL SELECT news_id, 3 FROM tmp_grp3
-        UNION ALL SELECT news_id, 4 FROM tmp_grp4
-        UNION ALL SELECT news_id, 5 FROM tmp_grp5
-    ) all_groups
-    GROUP BY news_id;
-
-    -- Final display rank: dbo.fn_default_news_ids computes a sequential ROW_NUMBER() OVER (ORDER BY
-    -- ORD ASC, news_stamp DESC) here, not the raw dedup group number -- group 1 and group 2 can each
-    -- contribute 2 rows, so "ord <= 2" alone would wrongly mark 4 items as leads instead of 2.
-    CREATE TEMPORARY TABLE tmp_default_top AS
-    SELECT d.news_id, d.ord,
-           ROW_NUMBER() OVER (ORDER BY d.ord ASC, n.news_stamp DESC) AS rn
-    FROM tmp_default_dedup d
-    JOIN news n ON n.news_id = d.news_id
-    ORDER BY d.ord ASC, n.news_stamp DESC
-    LIMIT 5;
-
-    SELECT JSON_OBJECT(
-        'news_id', n.news_id,
-        'date', DATE_FORMAT(n.news_stamp, '%Y-%m-%d'),
-        'country', n.country,
-        'flag', IF(n.country IS NULL OR n.country = '', 'empty.gif', CONCAT(n.country, '.png')),
-        'title', n.news_title,
-        'author', n.news_author,
-        'author_link', n.news_author_link,
-        'source', n.news_source,
-        'source_link', n.news_source_link,
-        'credit', n.news_photo_author0,
-        'photo_alt', n.news_photo_alt0,
-        'paragraph0', n.news_paragraph0,
-        'paragraph1', n.news_paragraph1,
-        'lake_id', n.lake_id,
-        'fish1_id', n.fish1_id,
-        'fish2_id', n.fish2_id,
-        'fish3_id', n.fish3_id,
-        'photo', IF(t.rn <= 2 AND LENGTH(n.news_photo0) > 100, TO_BASE64(n.news_photo0), NULL),
-        'with_photo', IF(t.rn <= 2, TRUE, FALSE)
-    ) AS doc
-    FROM tmp_default_top t
-    JOIN news n ON n.news_id = t.news_id
-    ORDER BY t.rn ASC;
-
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp1;
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp2;
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp3;
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp4;
-    DROP TEMPORARY TABLE IF EXISTS tmp_grp5;
-    DROP TEMPORARY TABLE IF EXISTS tmp_default_dedup;
-    DROP TEMPORARY TABLE IF EXISTS tmp_default_top;
+    SELECT doc FROM v_news_default_doc ORDER BY rn LIMIT 5;
 END //
 
 DELIMITER ;
