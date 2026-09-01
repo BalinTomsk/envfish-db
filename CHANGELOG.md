@@ -2,6 +2,38 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-08-31: **`news.has_photo0` cached flag + fix for a live-only performance bug in
+  `sp_news_list_json`/`sp_news_default`.** Deploying the entry below to production surfaced a real
+  bug: both procedures hung indefinitely on the live Winhost host (never on the local test DB, which
+  has the same schema but far fewer rows) because they referenced `news_photo0`/`news_photo1` in a
+  query that materializes multiple rows (a temp table or a window function) — even a bare
+  `IS NOT NULL` check, with no `LENGTH()` or base64. Root-caused live via `SHOW FULL PROCESSLIST`
+  (isolated to the exact statement, `State: executing`, not a lock wait) and confirmed by bisecting
+  three independent rewrites. Fixed by adding `news.has_photo0` (`script01_createTable.sql`), a
+  cached `news_photo0 IS NOT NULL` flag maintained by two `BEFORE INSERT`/`BEFORE UPDATE` triggers
+  (`TR_news_has_photo0_ins`/`upd`, single-row writes only — the proven-safe case) — same pattern as
+  `dbo.lake.isFish` in `mssql/`. See `CLAUDE.md` → "Cached flags on `news`" and the `⚠️` warning
+  directly above it for the full writeup and the do/don't rules for touching these BLOB columns
+  going forward. Both procedures now read `has_photo0` instead of `news_photo0` for anything
+  scanning more than one row; `sp_news_doc_get` and the final per-item join in `sp_news_default`
+  were never affected (single-row reads only). The one-time backfill (~4,825 rows, cursor-based,
+  row-by-row by primary key) and the column/trigger/proc deploys are all live on production as of
+  this date; verified post-fix: `sp_news_list_json`/`sp_news_default` now return in 1-3s (previously
+  90s+ / never returned) and the flag matches `news_photo0 IS NOT NULL` on every sampled row.
+- 2026-08-31: **`mysql/script02_Proc.sql` gains `sp_news_doc_get`, `sp_news_list_json`,
+  `sp_news_default`** — backs `docapi`'s `MySqlNewsDocumentRepository`/`MySqlNewsQueryRepository`
+  (`efj-backend/service/docapi`), moving `GET /api/v1/news/{id}`, `/news/list`, and `/news/default`
+  from SQL Server to the same Winhost MySQL `news` table `News.aspx` already reads. Each mirrors its
+  SQL Server counterpart's contract (`dbo.fn_news_doc`, `dbo.fn_news_list` incl. the non-CA-country
+  padded-with-CA-news-to-100 behaviour, `dbo.fn_default_news_ids`+`dbo.fn_default_news_json`
+  combined into one call) but returns raw `fish1_id`/`fish2_id`/`fish3_id`/`lake_id` GUIDs unresolved
+  and (for `sp_news_default`) one shared JSON shape per item instead of two — this MySQL database has
+  no `lake`/`fish` tables to join against. `sp_news_list_json`'s CA-padding and `sp_news_default`'s
+  5-group home-page selection each use their own chain of temporary tables (never reading the table
+  currently being inserted into, since MySQL rejects `INSERT INTO t SELECT ... FROM (subquery on t)`).
+  `docapi`'s writes (`POST`/`PUT`) and `/news/search`/`/news/export`/`/news/import` are unchanged —
+  still SQL Server. **Applied to the live Winhost database 2026-08-31** — see the entry above this
+  one for a live-only bug this surfaced and its fix.
 - 2026-08-31: **New `mysql/script02_Proc.sql`** — `sp_news_list_for_grid`, `sp_news_latest_id_with_photo`,
   `sp_news_get_by_id`, `sp_news_count`. `fishfind-frontend`'s `MySqlNewsHelper.cs` (added 2026-08-31
   alongside News.aspx's MySQL migration) had been querying the `news` table directly with inline

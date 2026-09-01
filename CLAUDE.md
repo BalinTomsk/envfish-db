@@ -277,10 +277,12 @@ GO
 
 Guidance below is specific to `mysql/` and does not override the `mssql/` sections above — SQL
 Server via `mssql/` remains the primary database for the app. MySQL currently backs **one table**
-(`news`, migrated 2026-08-31) that a single frontend page (`News.aspx` in `fishfind-frontend`)
-reads and searches; everything else still runs on `mssql/`. Unlike `mssql/`, this MySQL database
-is **not** distributed / peer-to-peer replicated — it is one flat remote schema hosted on Winhost
-(`my06.winhost.com`).
+(`news`, migrated 2026-08-31) read by `News.aspx` (`fishfind-frontend`, via `MySqlNewsHelper`) and
+by three `docapi` read endpoints (`GET /api/v1/news/{id}`, `/news/list`, `/news/default`, via
+`MySqlNewsDocumentRepository`/`MySqlNewsQueryRepository` — see `efj-backend/service/docapi/CLAUDE.md`
+→ "MySQL backing for news reads"); everything else still runs on `mssql/`. Unlike `mssql/`, this
+MySQL database is **not** distributed / peer-to-peer replicated — it is one flat remote schema
+hosted on Winhost (`my06.winhost.com`).
 
 ### Golden rule: same schema-source discipline as `mssql/`
 
@@ -290,9 +292,12 @@ DDL directly to the live database without a matching, up-to-date script in this 
 
 - `script01_createTable.sql` — tables, PKs, indexes (exists today — currently just `news`)
 - `script02_Funct.sql` — functions (create when first needed)
-- `script02_Proc.sql` — stored procedures (exists today — `sp_news_list_for_grid`,
-  `sp_news_latest_id_with_photo`, `sp_news_get_by_id`, `sp_news_count`, all called from
-  `MySqlNewsHelper.cs`; nothing in that helper hits the `news` table directly any more)
+- `script02_Proc.sql` — stored procedures. `sp_news_list_for_grid`, `sp_news_latest_id_with_photo`,
+  `sp_news_get_by_id`, `sp_news_count` are called from `MySqlNewsHelper.cs` (nothing in that helper
+  hits the `news` table directly any more). `sp_news_doc_get`, `sp_news_list_json`, `sp_news_default`
+  are called from `docapi`'s `MySqlNewsDocumentRepository`/`MySqlNewsQueryRepository` (same rule —
+  see `efj-backend/service/docapi/CLAUDE.md` → "MySQL backing for news reads" for the JSON shapes and
+  the CA-padding/home-page-assembly logic each mirrors from `mssql/`).
 - `script08_Data.sql` — seed/reference data (create when first needed)
 
 `mysql/generate_db_script_ffi2.cmd` + `mysql/dbcreator.cmd` (wired together by `mysql/build.cmd
@@ -350,6 +355,48 @@ deployed:
 **Verify against the live shape again (`DESCRIBE news;` / `SHOW CREATE TABLE news;`) before
 writing new MySQL DDL against `news`** — there is still no automated schema-diff check for
 `mysql/`, so drift like this can reappear silently whenever the live table is changed by hand.
+
+### ⚠️ `news_photo0`/`news_photo1`/`news_photo2` (LONGBLOB) are dangerous at scale on live Winhost
+
+**Never reference a `news` photo BLOB column in any query whose execution plan must materialize
+more than one row** — a temp table (`CREATE TEMPORARY TABLE` + `INSERT ... SELECT`), a window
+function, or anything else that buffers multiple rows. Confirmed live 2026-08-31: a bare
+`news_photo0 IS NOT NULL` (no `LENGTH()`, no base64) in such a query hangs indefinitely on the live
+Winhost host — reproduced identically across an `INSERT INTO temp_table SELECT` rewrite, a
+temp-table-free window-function rewrite, and a plain multi-row `UPDATE ... WHERE news_photo0 IS
+NOT NULL` (even with a `LIMIT`, once matching rows become sparse enough that the scan has to check
+many candidates). Isolated via `SHOW FULL PROCESSLIST` to the exact statement (`State: executing`,
+not a lock wait), so it's a genuine execution-time pathology on this host, not contention. **A
+single-row lookup by primary key is unaffected** — `sp_news_doc_get` and `sp_news_default`'s final
+per-item join read `news_photo0` directly and are fast, because they only ever touch one row.
+
+### Cached flags on `news` (`has_photo0`)
+
+`news.has_photo0` is a **derived cache** of `news_photo0 IS NOT NULL`, added 2026-08-31 for exactly
+the reason above — the list/home-page queries need to know "does this row have a photo" across
+*every* row, and touching the real column at that scale hangs. Same pattern as
+[`dbo.lake.isFish`](#cached-flags-on-dbolake-isfish--nofish) (MSSQL), adapted for MySQL:
+
+- **Only two `BEFORE INSERT`/`BEFORE UPDATE` triggers on `news` itself may write it**
+  (`TR_news_has_photo0_ins`/`TR_news_has_photo0_upd`, `script01_createTable.sql`) — each sets
+  `NEW.has_photo0` from `NEW.news_photo0` for the one row being written, the proven-safe single-row
+  case. Never set it from a proc or app code.
+- Added via `ALGORITHM=INSTANT` (MySQL 8.0.12+, InnoDB) — metadata-only, no table rebuild, no
+  per-row blob read during the `ALTER` itself. Deliberately **not** a
+  `GENERATED ALWAYS AS (news_photo0 IS NOT NULL) STORED` column: a stored generated column forces
+  `ALGORITHM=COPY` (a full table rebuild reading every row's blob) for the `ALTER`, and a `VIRTUAL`
+  one is computed at read time — still touching the blob per row on every list query, defeating the
+  point.
+- **Backfilling or re-deriving this at scale must go row-by-row by primary key**, never via a bulk
+  `UPDATE ... WHERE news_photo0 IS NOT NULL` (see the warning above — confirmed to hang once the
+  match set is large/sparse). The one-time 2026-08-31 backfill used a transient cursor-based
+  procedure that iterated by `id` range (not by the flag, which never changes for a genuinely
+  photo-less row and would loop forever re-selecting it) and issued one single-row
+  `UPDATE news SET has_photo0 = (news_photo0 IS NOT NULL) WHERE news_id = ...` per row; it was
+  dropped from both databases once the backfill was confirmed complete (transient tooling doesn't
+  stay in the repo, same rule as `script20_Migration.sql` one-off backfills).
+- `sp_news_list_json` and `sp_news_default`'s group-selection queries (`envfish-db/mysql/script02_Proc.sql`)
+  read `has_photo0`, never `news_photo0`, for anything that scans more than one row.
 
 ## Changelog
 
