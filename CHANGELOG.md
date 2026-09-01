@@ -2,6 +2,67 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-01: **MySQL unit tests restructured to one procedure per test; news read-procedure queries
+  extracted into views (`mysql/script01_createView.sql`, new).** `unit_test@NewsMySQL.sql` previously
+  used one flat script with a `SAVEPOINT`/`ROLLBACK TO` per test, which violates the per-test
+  isolation rule (see `CLAUDE.md` → "Structure MySQL unit tests"): the mysql CLI has no `TRY/CATCH`,
+  so **one unexpected SQL error aborted the whole file and silently skipped every test after it**.
+  Each of the 18 tests is now its own `CREATE PROCEDURE` with its own `EXIT HANDLER FOR SQLEXCEPTION`
+  + transaction + `ROLLBACK`, `CALL`ed in sequence and dropped at the end.
+  Tests 10-18 are **new**, covering the two bugs found during the 2026-08-31 rollout that previously
+  had no committed regression test: the `has_photo0` trigger behaviour (insert/update, both
+  directions, incl. overriding an explicitly-wrong value) and `sp_news_default`'s "exactly 2 leads by
+  final display rank" rule. **Both were verified to actually catch their bug** by re-introducing the
+  old broken definitions — the lead-rank bug reproduces as `TEST 17 FAIL: expected exactly 2 leads,
+  got 4`, and dropping the triggers fails tests 10/12/15.
+  Because MySQL cannot capture a procedure's result set from calling SQL (`INSERT INTO t CALL proc()`
+  is a syntax error), the read procedures' unparameterized query logic moved into views
+  (`v_news_list_rows`, and the `v_news_default_*` chain) so the tests can assert on the exact same
+  SQL the procedures run; `sp_news_default` is now a one-line wrapper and no longer needs its 7-temp-
+  table chain. A view **cannot** read a session variable (`ERROR 1351`), so genuinely parameterized
+  logic — `sp_news_doc_get`'s id lookup, `sp_news_list_json`'s country filter + CA padding — stays
+  inline in the procedures. `generate_db_script_ffi2.cmd` now includes the new view script.
+  Verified identical output to the pre-refactor procedures against the 150-row local dataset (CA=22,
+  UK=27 incl. padding, 2 photo leads + 3 compact). **Deployed to production 2026-09-01** (views
+  first, timed individually before swapping the procedures — `v_news_list_rows` 1.1s over the full
+  4,824-row scan, `v_news_default_doc` 1.1s, both well clear of the BLOB hazard). Post-deploy on
+  prod: `sp_news_list_json` 0.6-0.8s (all-countries, CA, UK, NZ), `sp_news_default` 4.1s (down from
+  6.3s pre-refactor), `sp_news_doc_get` 0.8s. Padding contract re-verified against real prod
+  distribution: UK (363 own rows, ≥100) correctly gets **no** padding, NZ (79 own) is padded with 21
+  CA rows to exactly 100.
+
+- 2026-08-31: **`news.has_photo0` cached flag + fix for a live-only performance bug in
+  `sp_news_list_json`/`sp_news_default`.** Deploying the entry below to production surfaced a real
+  bug: both procedures hung indefinitely on the live Winhost host (never on the local test DB, which
+  has the same schema but far fewer rows) because they referenced `news_photo0`/`news_photo1` in a
+  query that materializes multiple rows (a temp table or a window function) — even a bare
+  `IS NOT NULL` check, with no `LENGTH()` or base64. Root-caused live via `SHOW FULL PROCESSLIST`
+  (isolated to the exact statement, `State: executing`, not a lock wait) and confirmed by bisecting
+  three independent rewrites. Fixed by adding `news.has_photo0` (`script01_createTable.sql`), a
+  cached `news_photo0 IS NOT NULL` flag maintained by two `BEFORE INSERT`/`BEFORE UPDATE` triggers
+  (`TR_news_has_photo0_ins`/`upd`, single-row writes only — the proven-safe case) — same pattern as
+  `dbo.lake.isFish` in `mssql/`. See `CLAUDE.md` → "Cached flags on `news`" and the `⚠️` warning
+  directly above it for the full writeup and the do/don't rules for touching these BLOB columns
+  going forward. Both procedures now read `has_photo0` instead of `news_photo0` for anything
+  scanning more than one row; `sp_news_doc_get` and the final per-item join in `sp_news_default`
+  were never affected (single-row reads only). The one-time backfill (~4,825 rows, cursor-based,
+  row-by-row by primary key) and the column/trigger/proc deploys are all live on production as of
+  this date; verified post-fix: `sp_news_list_json`/`sp_news_default` now return in 1-3s (previously
+  90s+ / never returned) and the flag matches `news_photo0 IS NOT NULL` on every sampled row.
+- 2026-08-31: **`mysql/script02_Proc.sql` gains `sp_news_doc_get`, `sp_news_list_json`,
+  `sp_news_default`** — backs `docapi`'s `MySqlNewsDocumentRepository`/`MySqlNewsQueryRepository`
+  (`efj-backend/service/docapi`), moving `GET /api/v1/news/{id}`, `/news/list`, and `/news/default`
+  from SQL Server to the same Winhost MySQL `news` table `News.aspx` already reads. Each mirrors its
+  SQL Server counterpart's contract (`dbo.fn_news_doc`, `dbo.fn_news_list` incl. the non-CA-country
+  padded-with-CA-news-to-100 behaviour, `dbo.fn_default_news_ids`+`dbo.fn_default_news_json`
+  combined into one call) but returns raw `fish1_id`/`fish2_id`/`fish3_id`/`lake_id` GUIDs unresolved
+  and (for `sp_news_default`) one shared JSON shape per item instead of two — this MySQL database has
+  no `lake`/`fish` tables to join against. `sp_news_list_json`'s CA-padding and `sp_news_default`'s
+  5-group home-page selection each use their own chain of temporary tables (never reading the table
+  currently being inserted into, since MySQL rejects `INSERT INTO t SELECT ... FROM (subquery on t)`).
+  `docapi`'s writes (`POST`/`PUT`) and `/news/search`/`/news/export`/`/news/import` are unchanged —
+  still SQL Server. **Applied to the live Winhost database 2026-08-31** — see the entry above this
+  one for a live-only bug this surfaced and its fix.
 - 2026-08-31: **New `mysql/script02_Proc.sql`** — `sp_news_list_for_grid`, `sp_news_latest_id_with_photo`,
   `sp_news_get_by_id`, `sp_news_count`. `fishfind-frontend`'s `MySqlNewsHelper.cs` (added 2026-08-31
   alongside News.aspx's MySQL migration) had been querying the `news` table directly with inline

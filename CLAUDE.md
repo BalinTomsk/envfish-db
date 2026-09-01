@@ -277,10 +277,12 @@ GO
 
 Guidance below is specific to `mysql/` and does not override the `mssql/` sections above — SQL
 Server via `mssql/` remains the primary database for the app. MySQL currently backs **one table**
-(`news`, migrated 2026-08-31) that a single frontend page (`News.aspx` in `fishfind-frontend`)
-reads and searches; everything else still runs on `mssql/`. Unlike `mssql/`, this MySQL database
-is **not** distributed / peer-to-peer replicated — it is one flat remote schema hosted on Winhost
-(`my06.winhost.com`).
+(`news`, migrated 2026-08-31) read by `News.aspx` (`fishfind-frontend`, via `MySqlNewsHelper`) and
+by three `docapi` read endpoints (`GET /api/v1/news/{id}`, `/news/list`, `/news/default`, via
+`MySqlNewsDocumentRepository`/`MySqlNewsQueryRepository` — see `efj-backend/service/docapi/CLAUDE.md`
+→ "MySQL backing for news reads"); everything else still runs on `mssql/`. Unlike `mssql/`, this
+MySQL database is **not** distributed / peer-to-peer replicated — it is one flat remote schema
+hosted on Winhost (`my06.winhost.com`).
 
 ### Golden rule: same schema-source discipline as `mssql/`
 
@@ -289,23 +291,80 @@ DDL directly to the live database without a matching, up-to-date script in this 
 `mssql/`'s naming convention as new object types are needed:
 
 - `script01_createTable.sql` — tables, PKs, indexes (exists today — currently just `news`)
+- `script01_createView.sql` — views (exists today — `v_news_list_rows` + the `v_news_default_*`
+  chain backing `script02_Proc.sql`'s read procedures; see "Testing MySQL procedures" below for why
+  that logic lives in views rather than inline)
 - `script02_Funct.sql` — functions (create when first needed)
-- `script02_Proc.sql` — stored procedures (exists today — `sp_news_list_for_grid`,
-  `sp_news_latest_id_with_photo`, `sp_news_get_by_id`, `sp_news_count`, all called from
-  `MySqlNewsHelper.cs`; nothing in that helper hits the `news` table directly any more)
+- `script02_Proc.sql` — stored procedures. `sp_news_list_for_grid`, `sp_news_latest_id_with_photo`,
+  `sp_news_get_by_id`, `sp_news_count` are called from `MySqlNewsHelper.cs` (nothing in that helper
+  hits the `news` table directly any more). `sp_news_doc_get`, `sp_news_list_json`, `sp_news_default`
+  are called from `docapi`'s `MySqlNewsDocumentRepository`/`MySqlNewsQueryRepository` (same rule —
+  see `efj-backend/service/docapi/CLAUDE.md` → "MySQL backing for news reads" for the JSON shapes and
+  the CA-padding/home-page-assembly logic each mirrors from `mssql/`).
 - `script08_Data.sql` — seed/reference data (create when first needed)
 
 `mysql/generate_db_script_ffi2.cmd` + `mysql/dbcreator.cmd` (wired together by `mysql/build.cmd
 <host> <user> <database>`) concatenate the scriptNN files into `mysql/ffi2.sql` and apply it with
-the `mysql` CLI, mirroring the mssql build — but there is still **no automated unit-test harness**
-(no `mysql/UNIT_TESTS`). The scriptNN files remain the single source of truth for what should be
-live; `ffi2.sql` is generated and deleted by `build.cmd`, same golden rule as `mssql/ffi2.sql`.
+the `mysql` CLI, mirroring the mssql build. **When you add a new `scriptNN_*.sql`, add it to
+`generate_db_script_ffi2.cmd`'s `copy` line too**, in dependency order — otherwise it is silently
+missing from every fresh build and from the unit-test database. The scriptNN files remain the single
+source of truth for what should be live; `ffi2.sql` is generated and deleted by `build.cmd`, same
+golden rule as `mssql/ffi2.sql`.
 
 ### Test-first still applies — adapted for MySQL
 
 The [test-first rule](#-read-this-first--non-negotiable) at the top of this file is not
-SQL-Server-specific — apply the same discipline to MySQL. Until a `mysql/UNIT_TESTS` harness
-exists:
+SQL-Server-specific — apply the same discipline to MySQL. There **is** a `mysql/UNIT_TESTS` harness
+now (`autorun.bat`, same shape as `mssql/`'s: generate `ffi2.sql` → build a throwaway database →
+run every `unit_test@*.sql` → `averify.py` → `cleaned.txt`), so write the failing test there first,
+exactly as in `mssql/`. Its `config.ini` points at a local MySQL server, has **no `[mail]` section**
+and never emails — exit code + `cleaned.txt` is the whole contract.
+
+### Structure MySQL unit tests — one procedure per test
+
+**Every test must be its own `CREATE PROCEDURE`, with its own `EXIT HANDLER FOR SQLEXCEPTION`, its
+own transaction, and a `ROLLBACK` at the end** — then a flat list of `CALL`s runs them, and a final
+block of `DROP PROCEDURE`s leaves the database as `ffi2.sql` produced it. This is the MySQL
+equivalent of the mssql per-test `BEGIN TRAN` + `TRY/CATCH` + `ROLLBACK TRAN` pattern (see
+[Structure unit tests](#structure-unit-tests)), and it is **not optional**: the mysql CLI in batch
+mode has no `TRY/CATCH`, so without a per-test handler **one unexpected SQL error aborts the entire
+script and silently skips every test after it** — a whole file can go dark while still looking like
+a short clean run. The per-test handler turns that into one `FAIL` line and lets the rest continue.
+See `mysql/UNIT_TESTS/unit_test@NewsMySQL.sql` for a worked example with 18 tests in this shape.
+The same `TEST n PASS:` / `TEST n FAIL:` wording and sequential numbering rules as `mssql/` apply.
+
+### Testing MySQL procedures — put the query in a view
+
+**MySQL cannot capture a stored procedure's result set from calling SQL** — `INSERT INTO t CALL
+proc()` is a syntax error and there is no cursor-over-`CALL`, so a procedure that returns rows is
+otherwise impossible to assert on from a plain `SELECT`-based test. Therefore: **put a read
+procedure's query in a view (`script01_createView.sql`) and make the procedure a thin wrapper over
+it**, so the test can assert against the exact same SQL the procedure runs.
+
+Two constraints when doing this:
+- **A view cannot take a parameter or read a session variable** (`ERROR 1351: View's SELECT contains
+  a variable or parameter`). Genuinely parameterized logic must stay inline in the procedure — split
+  it so the *unparameterized* row source is a view (e.g. `v_news_list_rows`) and only the
+  caller-dependent predicates stay in the procedure (e.g. `sp_news_list_json`'s country filter and
+  CA padding).
+- **Views are not exempt from the BLOB-at-scale hazard** below — a view composing `UNION ALL` /
+  `GROUP BY` / a window function / `LIMIT` is materialized by MySQL's TEMPTABLE algorithm, the same
+  category of operation as an explicit temp table. Keep `news_photo0`/`1`/`2` out of them except in
+  a final few-row join.
+
+**JSON assertion gotchas** (verified on MySQL 8.0.46 — both silently produce a passing-but-meaningless
+test if you get them wrong):
+- `JSON_EXTRACT(doc,'$.x')` over an `IF(...)` yields a JSON **INTEGER** `1`/`0`, not a JSON boolean —
+  compare to `1`/`0`; `= TRUE` matches nothing.
+- A **JSON null is not a SQL NULL**: `JSON_EXTRACT(doc,'$.photo') IS NOT NULL` is TRUE even when the
+  value is JSON `null`. Use `JSON_TYPE(...) = 'NULL'` / `<> 'NULL'`.
+
+**Always confirm a regression test actually catches its bug**: re-introduce the old broken
+definition, watch the test FAIL, then restore the fix and watch it PASS. Both 2026-08-31 news bugs
+were verified this way (the lead-rank bug reproduces as `TEST 17 FAIL: expected exactly 2 leads, got
+4`; dropping the `has_photo0` triggers fails tests 10/12/15).
+
+When touching the **live** database rather than the test harness:
 
 1. **Reproduce the bug with a query first** — confirm it fails against the current live schema.
 2. **Only then apply the fix.**
@@ -350,6 +409,48 @@ deployed:
 **Verify against the live shape again (`DESCRIBE news;` / `SHOW CREATE TABLE news;`) before
 writing new MySQL DDL against `news`** — there is still no automated schema-diff check for
 `mysql/`, so drift like this can reappear silently whenever the live table is changed by hand.
+
+### ⚠️ `news_photo0`/`news_photo1`/`news_photo2` (LONGBLOB) are dangerous at scale on live Winhost
+
+**Never reference a `news` photo BLOB column in any query whose execution plan must materialize
+more than one row** — a temp table (`CREATE TEMPORARY TABLE` + `INSERT ... SELECT`), a window
+function, or anything else that buffers multiple rows. Confirmed live 2026-08-31: a bare
+`news_photo0 IS NOT NULL` (no `LENGTH()`, no base64) in such a query hangs indefinitely on the live
+Winhost host — reproduced identically across an `INSERT INTO temp_table SELECT` rewrite, a
+temp-table-free window-function rewrite, and a plain multi-row `UPDATE ... WHERE news_photo0 IS
+NOT NULL` (even with a `LIMIT`, once matching rows become sparse enough that the scan has to check
+many candidates). Isolated via `SHOW FULL PROCESSLIST` to the exact statement (`State: executing`,
+not a lock wait), so it's a genuine execution-time pathology on this host, not contention. **A
+single-row lookup by primary key is unaffected** — `sp_news_doc_get` and `sp_news_default`'s final
+per-item join read `news_photo0` directly and are fast, because they only ever touch one row.
+
+### Cached flags on `news` (`has_photo0`)
+
+`news.has_photo0` is a **derived cache** of `news_photo0 IS NOT NULL`, added 2026-08-31 for exactly
+the reason above — the list/home-page queries need to know "does this row have a photo" across
+*every* row, and touching the real column at that scale hangs. Same pattern as
+[`dbo.lake.isFish`](#cached-flags-on-dbolake-isfish--nofish) (MSSQL), adapted for MySQL:
+
+- **Only two `BEFORE INSERT`/`BEFORE UPDATE` triggers on `news` itself may write it**
+  (`TR_news_has_photo0_ins`/`TR_news_has_photo0_upd`, `script01_createTable.sql`) — each sets
+  `NEW.has_photo0` from `NEW.news_photo0` for the one row being written, the proven-safe single-row
+  case. Never set it from a proc or app code.
+- Added via `ALGORITHM=INSTANT` (MySQL 8.0.12+, InnoDB) — metadata-only, no table rebuild, no
+  per-row blob read during the `ALTER` itself. Deliberately **not** a
+  `GENERATED ALWAYS AS (news_photo0 IS NOT NULL) STORED` column: a stored generated column forces
+  `ALGORITHM=COPY` (a full table rebuild reading every row's blob) for the `ALTER`, and a `VIRTUAL`
+  one is computed at read time — still touching the blob per row on every list query, defeating the
+  point.
+- **Backfilling or re-deriving this at scale must go row-by-row by primary key**, never via a bulk
+  `UPDATE ... WHERE news_photo0 IS NOT NULL` (see the warning above — confirmed to hang once the
+  match set is large/sparse). The one-time 2026-08-31 backfill used a transient cursor-based
+  procedure that iterated by `id` range (not by the flag, which never changes for a genuinely
+  photo-less row and would loop forever re-selecting it) and issued one single-row
+  `UPDATE news SET has_photo0 = (news_photo0 IS NOT NULL) WHERE news_id = ...` per row; it was
+  dropped from both databases once the backfill was confirmed complete (transient tooling doesn't
+  stay in the repo, same rule as `script20_Migration.sql` one-off backfills).
+- `sp_news_list_json` and `sp_news_default`'s group-selection queries (`envfish-db/mysql/script02_Proc.sql`)
+  read `has_photo0`, never `news_photo0`, for anything that scans more than one row.
 
 ## Changelog
 
