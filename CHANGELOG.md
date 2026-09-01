@@ -2,7 +2,16 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
-- 2026-08-25: **New `dbo.sp_lake_description_update(@lake_id, @patch)` — JSON merge-patch of the
+- 2026-08-31: **New `mysql/script02_Proc.sql`** — `sp_news_list_for_grid`, `sp_news_latest_id_with_photo`,
+  `sp_news_get_by_id`, `sp_news_count`. `fishfind-frontend`'s `MySqlNewsHelper.cs` (added 2026-08-31
+  alongside News.aspx's MySQL migration) had been querying the `news` table directly with inline
+  `SELECT`/`COUNT(*)` — a violation of this file's "no direct call to database table" rule. Each
+  procedure reproduces the original inline query's exact filters (published-only, `country = @x OR
+  country IS NULL`, title/paragraph `LIKE` search) and, for the photo-lookup proc, the original
+  candidate-scan-then-point-lookup workaround for the ORDER BY + BLOB connection-abort bug. Verified
+  locally against a throwaway MySQL 8 database built from `script0.sql` + `script01_createTable.sql`
+  + `script02_Proc.sql`; not yet applied to the live Winhost database (requires the same deploy
+  permission as any other prod DB change). **New `dbo.sp_lake_description_update(@lake_id, @patch)` — JSON merge-patch of the
   `Editor/LakeEditor.aspx` "General" tab's editable fields.** (`script02_Proc.sql`.) Backs the new
   docapi `PATCH /api/v1/river/description/{guid}`. `@patch` is a JSON object; only keys actually
   present are touched (`JSON_PATH_EXISTS` per column) — a caller can change one field without

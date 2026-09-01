@@ -290,7 +290,9 @@ DDL directly to the live database without a matching, up-to-date script in this 
 
 - `script01_createTable.sql` — tables, PKs, indexes (exists today — currently just `news`)
 - `script02_Funct.sql` — functions (create when first needed)
-- `script02_Proc.sql` — stored procedures (create when first needed)
+- `script02_Proc.sql` — stored procedures (exists today — `sp_news_list_for_grid`,
+  `sp_news_latest_id_with_photo`, `sp_news_get_by_id`, `sp_news_count`, all called from
+  `MySqlNewsHelper.cs`; nothing in that helper hits the `news` table directly any more)
 - `script08_Data.sql` — seed/reference data (create when first needed)
 
 `mysql/generate_db_script_ffi2.cmd` + `mysql/dbcreator.cmd` (wired together by `mysql/build.cmd
