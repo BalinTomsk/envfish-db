@@ -23,9 +23,13 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   logic — `sp_news_doc_get`'s id lookup, `sp_news_list_json`'s country filter + CA padding — stays
   inline in the procedures. `generate_db_script_ffi2.cmd` now includes the new view script.
   Verified identical output to the pre-refactor procedures against the 150-row local dataset (CA=22,
-  UK=27 incl. padding, 2 photo leads + 3 compact). **Repo now differs from production**, which still
-  runs the pre-refactor procedures and has no views — deploying this refactor is a separate,
-  permission-gated step.
+  UK=27 incl. padding, 2 photo leads + 3 compact). **Deployed to production 2026-09-01** (views
+  first, timed individually before swapping the procedures — `v_news_list_rows` 1.1s over the full
+  4,824-row scan, `v_news_default_doc` 1.1s, both well clear of the BLOB hazard). Post-deploy on
+  prod: `sp_news_list_json` 0.6-0.8s (all-countries, CA, UK, NZ), `sp_news_default` 4.1s (down from
+  6.3s pre-refactor), `sp_news_doc_get` 0.8s. Padding contract re-verified against real prod
+  distribution: UK (363 own rows, ≥100) correctly gets **no** padding, NZ (79 own) is padded with 21
+  CA rows to exactly 100.
 
 - 2026-08-31: **`news.has_photo0` cached flag + fix for a live-only performance bug in
   `sp_news_list_json`/`sp_news_default`.** Deploying the entry below to production surfaced a real
