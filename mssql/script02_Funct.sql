@@ -6628,3 +6628,64 @@ SELECT v.fish_id, v.fish_name
       AND ( v.fish_Type & 1 ) = 1     -- sport fish
       AND z.fish_max_length > 10      -- cm
 GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- fn_user_api_key_list : the live (not deleted) REST-API keys of one user, newest first.
+-- Called by Account/Profile.aspx (fishfind-frontend, LoadApiKey) to render the "API access"
+-- section - the key itself, when it was issued, when it expires, and whether it is currently
+-- disabled or already past its expiry. Deleted keys are history and are never returned;
+-- sp_user_api_key_issue keeps at most one live key per user, so this normally yields 0 or 1 row.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_api_key_list' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_user_api_key_list
+GO
+CREATE FUNCTION dbo.fn_user_api_key_list( @userid uniqueidentifier )
+  RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN
+SELECT k.user_api_key_id                                                AS key_id,
+       k.user_api_key_secret                                            AS api_key,
+       k.user_api_key_created                                           AS created_utc,
+       k.user_api_key_expires_utc                                       AS expires_utc,
+       k.user_api_key_disabled                                          AS disabled_utc,
+       CAST(CASE WHEN k.user_api_key_disabled IS NULL THEN 0 ELSE 1 END AS BIT) AS is_disabled,
+       CAST(CASE WHEN k.user_api_key_expires_utc <= SYSUTCDATETIME() THEN 1 ELSE 0 END AS BIT) AS is_expired
+    FROM dbo.user_api_key k
+    WHERE k.user_api_key_userid  = @userid
+      AND k.user_api_key_deleted IS NULL
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- fn_user_api_key_user : resolve a REST-API key to its owner - the single authentication entry
+-- point for any service that accepts a Fish Find API key. Returns Users.id, or NULL when the key
+-- is unknown OR has been revoked in any way, so a key the user disabled or deleted on
+-- Account/Profile.aspx stops authenticating from that moment on:
+--   - key disabled (user_api_key_disabled set)  -> NULL
+--   - key deleted / replaced (user_api_key_deleted set, e.g. by re-issuing) -> NULL
+--   - key past its 90-day expiry (user_api_key_expires_utc, PERSISTED off user_api_key_created) -> NULL
+--   - owner soft-deleted or suspended/banned    -> NULL
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_api_key_user' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_user_api_key_user
+GO
+CREATE FUNCTION dbo.fn_user_api_key_user( @api_key uniqueidentifier )
+  RETURNS uniqueidentifier
+WITH SCHEMABINDING
+AS
+BEGIN
+    DECLARE @userid uniqueidentifier;
+
+    SELECT @userid = u.id
+        FROM dbo.user_api_key k
+        JOIN dbo.Users u ON u.id = k.user_api_key_userid
+        WHERE k.user_api_key_secret   = @api_key
+          AND k.user_api_key_deleted  IS NULL
+          AND k.user_api_key_disabled IS NULL
+          AND k.user_api_key_expires_utc > SYSUTCDATETIME()
+          AND u.deleted = 0
+          AND ISNULL(u.suspended, 0) = 0;
+
+    RETURN @userid;
+END
+GO

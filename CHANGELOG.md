@@ -2,6 +2,32 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-01: **New `dbo.user_api_key` table + `sp_user_api_key_issue` / `_disable` / `_delete` and
+  `fn_user_api_key_list` / `fn_user_api_key_user`, plus a fixed 90-day auto-expiry** - the personal
+  REST-API key behind the new "API access" section of `Account/Profile.aspx` (fishfind-frontend). One
+  live key per user; the row carries two v7 GUIDs from `dbo.sp_NewGuidV7` - `user_api_key_id` (row
+  identity, safe to echo in page state) and `user_api_key_secret` (the key value handed to the user,
+  never used as a row reference). Revocation is the point of the disabled/deleted/expiry columns and
+  all three are honoured by `fn_user_api_key_user`, the single resolver a REST service authenticates
+  with: `user_api_key_disabled` (reversible), `user_api_key_deleted` (permanent; the row is kept so a
+  secret is never re-issued, and issuing a new key soft-deletes the previous one in the same
+  transaction), and `user_api_key_expires_utc` - a `PERSISTED` computed column
+  (`DATEADD(DAY, 90, user_api_key_created)`, no per-key duration) that expires every key automatically,
+  independent of whether it was ever disabled. The resolver also refuses a key whose owner is
+  suspended or soft-deleted. Both write procs are scoped by `@userid` as well as `@key_id`, so a
+  tampered key id can only hit the caller's own key. Not in `merge_table` (same as `Users` /
+  `user_message`). Covered by `mssql/UNIT_TESTS/unit_test@UserApiKey.sql` (11 tests: issue/v7 shape,
+  resolve, disable revokes, enable restores, delete revokes permanently, re-issue revokes the old key,
+  owner scoping, suspended/deleted owner, `no_user`/`suspended` statuses, expiry math is exactly 90
+  days, an expired-but-never-disabled key stops resolving) - all PASS.
+  **Deployed to production** (`s31.winhost.com / DB_111487_fish`) via a transactional apply-script
+  with a self-check before commit. An earlier same-day deploy attempt had reported success but the
+  objects were never actually created on prod (confirmed missing by a follow-up read-only check); the
+  base objects and the expiry addition were both (re-)applied and this time verified present. Full
+  lifecycle - issue, resolve, disable-revokes, backdated-key-expires, delete - re-run directly against
+  the live production database inside a transaction that is always rolled back, confirming the
+  deployed objects behave identically to the local unit tests with zero trace left in real data.
+
 - 2026-09-01: **MySQL unit tests restructured to one procedure per test; news read-procedure queries
   extracted into views (`mysql/script01_createView.sql`, new).** `unit_test@NewsMySQL.sql` previously
   used one flat script with a `SAVEPOINT`/`ROLLBACK TO` per test, which violates the per-test
