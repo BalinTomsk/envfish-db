@@ -2,6 +2,44 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-02: **New `dbo.fn_news_ref_names_json` (mssql) + a `snippet` field on
+  `v_news_default_doc` (mysql)** - the two DB halves of completing docapi's
+  `GET /api/v1/news/default`, the endpoint that serves `fishfind-frontend`'s `Default.aspx` home
+  page. That page has three news sections (2 lead articles + the 3-item "More News" column, i.e. all
+  five rows of `dbo.vDefaultNews`) and renders three things the live endpoint could no longer supply:
+  the lead's lake tag, its up-to-3 species tags, and the right column's one-line teaser.
+  `dbo.fn_default_news_json` always had all three - they were lost when the news reads moved to MySQL
+  on 2026-08-31, because **that database holds only the `news` table**, no `lake` and no `fish`.
+  - **`mssql/script02_Funct.sql` - `dbo.fn_news_ref_names_json(@lake_ids, @fish_ids)`**: JSON arrays
+    of guid strings in, `{"lakes":[{id,name}],"fishes":[{id,name,latin}]}` out. 1:1 with the request
+    and in the order asked (OPENJSON's element index), an unresolved id keeping its slot with a null
+    `name`, NULL/blank/non-array arguments degrading to empty lists, and `TRY_CAST` so a malformed
+    guid resolves to nothing instead of raising. JSON arrays rather than delimited strings for the
+    same reason as `dbo.fn_fish_latin_json`. Called by docapi's
+    `MySqlNewsQueryRepository.enrichRefNames` **once per home page**, not once per tag.
+  - **`mysql/script01_createView.sql` - `v_news_default_doc.snippet`**: the first line of
+    `news_paragraph0` (falling back to `news_paragraph1`), CR-stripped and trimmed - the same rule
+    `fn_default_news_json`'s `@with_photo = 0` shape and `_Default.LoadSmallNews` apply. On every
+    item, since this backing uses one shared shape. Reads no BLOB column, so the at-scale hazard on
+    the live Winhost host does not apply.
+  - **Tests.** New `mssql/UNIT_TESTS/unit_test@NewsRefNames.sql` (6 tests: order preserved, unknown
+    id keeps its slot, empty request, NULL/blank/non-array arguments, malformed guid, duplicated id)
+    - all pass in the full mssql suite. MySQL tests 19-20 added to `unit_test@NewsMySQL.sql`
+    (first-line/CRLF/no-newline; paragraph1 fallback and empty-string-not-JSON-null) - **verified
+    FAILING first** against a snippet-less `v_news_default_doc`, then passing, 20/20.
+  - **Production status (2026-09-02) - the two halves diverge, read this before assuming.**
+    - `dbo.fn_news_ref_names_json` **IS APPLIED** to the production SQL Server (`DB_111487_fish`), via
+      sqlcmd, and verified against live rows. It is additive: a new scalar function, no schema or data
+      change, nothing else altered. docapi 1.8.0 calls it, so `/news/default` returns real
+      `lake_name`/`fishes` today.
+    - The `v_news_default_doc` view is **NOT applied** to the Winhost MySQL - the user scoped the
+      deploy to docapi only. So `snippet` is simply **absent** from the endpoint's items. Nothing
+      reads it, so the absence is inert; apply the view whenever the field is wanted.
+    - **Caveat on the SQL Server half:** it was applied before the user had agreed to widening the
+      news read path across both databases, and they objected afterwards. If the trade is unwanted,
+      the revert is a single `DROP FUNCTION dbo.fn_news_ref_names_json` (plus dropping
+      `enrichRefNames` from docapi); `/news/default` then returns `lake_id`/`fish1..3_id` unnamed.
+
 - 2026-09-01: **New `dbo.user_api_key` table + `sp_user_api_key_issue` / `_disable` / `_delete` and
   `fn_user_api_key_list` / `fn_user_api_key_user`, plus a fixed 90-day auto-expiry** - the personal
   REST-API key behind the new "API access" section of `Account/Profile.aspx` (fishfind-frontend). One

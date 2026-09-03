@@ -6221,6 +6221,87 @@ GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
 
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_news_ref_names_json' AND xtype = 'FN')
+    DROP function dbo.fn_news_ref_names_json
+GO
+-- fn_news_ref_names_json : resolves the water body and the fish species a news article MENTIONS
+-- (news.lake_id, news.fish1_id / fish2_id / fish3_id) to their display names.
+--
+-- Called by docapi's MySqlNewsQueryRepository.defaultNews() (efj-backend/service/docapi) to complete
+-- GET /api/v1/news/default. The news rows moved to MySQL on 2026-08-31 and that database holds ONLY
+-- the `news` table -- no `lake`, no `fish` -- so those ids come back from MySQL bare, and the names
+-- have to be resolved here, in SQL Server, in ONE round trip for the whole home page (up to 2 lake
+-- ids + 6 fish ids). The SQL-Server-only path (dbo.fn_default_news_json) resolves them inline and
+-- does not call this. The names are what the page renders as the article's tag row: the lake tag
+-- links to Resources/wfRiverViewer.aspx and each fish tag to Resources/wfFishViewer.aspx.
+--
+-- @lake_ids / @fish_ids are JSON ARRAYS of guid strings, e.g. N'["7592cdee-c6cd-11d8-92e2-080020a0f4c9"]'.
+-- A JSON array rather than a delimited string for the same reason as dbo.fn_fish_latin_json: OPENJSON
+-- exposes the element index, which is what lets the answer come back in the order it was asked. NULL,
+-- N'' or a non-array argument is normalised to an empty list rather than raising -- an article with no
+-- lake and no fishes is entirely normal, and one must never fail the whole home page.
+--
+-- Returns {"lakes":[{"id","name"}],"fishes":[{"id","name","latin"}]} -- never NULL, and always 1:1
+-- with the request, in the order asked, so a caller can map by position as well as by id. An id that
+-- resolves to nothing keeps its element with a null name rather than vanishing (same contract as
+-- dbo.fn_fish_latin_json). Ids are matched with TRY_CAST, so a malformed guid string simply resolves
+-- to nothing instead of raising a conversion error. `latin` rides along because the home page's
+-- fish-tag hover card shows it under the common name.
+--     SELECT dbo.fn_news_ref_names_json(N'["7592cdee-c6cd-11d8-92e2-080020a0f4c9"]', N'[]');
+CREATE FUNCTION dbo.fn_news_ref_names_json ( @lake_ids nvarchar(max), @fish_ids nvarchar(max) )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    DECLARE @lakes nvarchar(max);
+    DECLARE @fishes nvarchar(max);
+
+    -- OPENJSON over a JSON *object* yields property names and CAST(key AS int) would fail, so
+    -- anything that is not an array is normalised to an empty array up front.
+    IF ISJSON(@lake_ids) <> 1 OR LEFT(LTRIM(ISNULL(@lake_ids, N'')), 1) <> N'['
+        SET @lake_ids = N'[]';
+
+    IF ISJSON(@fish_ids) <> 1 OR LEFT(LTRIM(ISNULL(@fish_ids, N'')), 1) <> N'['
+        SET @fish_ids = N'[]';
+
+    SET @lakes =
+    (
+        SELECT q.value      AS id,
+               l.lake_name  AS name
+        FROM OPENJSON(@lake_ids) q
+        OUTER APPLY
+        (
+            SELECT TOP 1 x.lake_name
+            FROM dbo.lake x
+            WHERE x.lake_id = TRY_CAST(q.value AS uniqueidentifier)
+        ) l
+        ORDER BY CAST(q.[key] AS int)
+        FOR JSON PATH, INCLUDE_NULL_VALUES
+    );
+
+    SET @fishes =
+    (
+        SELECT q.value      AS id,
+               f.fish_name  AS name,
+               f.fish_latin AS latin
+        FROM OPENJSON(@fish_ids) q
+        OUTER APPLY
+        (
+            SELECT TOP 1 x.fish_name, x.fish_latin
+            FROM dbo.fish x
+            WHERE x.fish_id = TRY_CAST(q.value AS uniqueidentifier)
+        ) f
+        ORDER BY CAST(q.[key] AS int)
+        FOR JSON PATH, INCLUDE_NULL_VALUES
+    );
+
+    -- FOR JSON yields NULL, not '[]', for an empty rowset; both halves are always present so the
+    -- caller can read .lakes / .fishes unconditionally.
+    RETURN N'{"lakes":' + ISNULL(@lakes, N'[]') + N',"fishes":' + ISNULL(@fishes, N'[]') + N'}';
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_news_list' AND xtype = 'IF')
     DROP function dbo.fn_news_list
 GO

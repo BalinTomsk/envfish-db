@@ -133,6 +133,16 @@ SELECT
         'fish1_id', n.fish1_id,
         'fish2_id', n.fish2_id,
         'fish3_id', n.fish3_id,
+        -- The right column renders a one-line teaser, not the whole paragraph: the first line of
+        -- news_paragraph0, falling back to news_paragraph1 when paragraph0 is blank. Mirrors
+        -- dbo.fn_default_news_json's @with_photo = 0 shape (and _Default.LoadSmallNews, which does
+        -- the same split in C#). CR is stripped first so a CRLF article does not leave a trailing
+        -- \r on the snippet; a body with no newline at all yields the whole (trimmed) text.
+        -- Emitted for EVERY item, not just the right column, because this is one shared shape --
+        -- a lead simply ignores it in favour of paragraph0/paragraph1.
+        'snippet', TRIM(SUBSTRING_INDEX(
+            REPLACE(COALESCE(NULLIF(n.news_paragraph0, ''), n.news_paragraph1, ''), '\r', ''),
+            '\n', 1)),
         'photo', IF(r.rn <= 2 AND LENGTH(n.news_photo0) > 100, TO_BASE64(n.news_photo0), NULL),
         'with_photo', IF(r.rn <= 2, TRUE, FALSE)
     ) AS doc

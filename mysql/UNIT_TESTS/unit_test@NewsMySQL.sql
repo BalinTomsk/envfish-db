@@ -524,6 +524,91 @@ BEGIN
     ROLLBACK;
 END //
 
+-- ----------------------------------------------------------------
+-- TEST 19: v_news_default_doc.snippet is the FIRST LINE of news_paragraph0, CR-stripped and
+-- trimmed -- the one-line teaser Default.aspx's right column shows (mirrors
+-- dbo.fn_default_news_json's @with_photo = 0 shape and _Default.LoadSmallNews). A CRLF body must
+-- not leave a trailing CR on the snippet, and a body with no newline at all yields the whole text.
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_19_default_snippet_first_line //
+CREATE PROCEDURE test_19_default_snippet_first_line()
+BEGIN
+    DECLARE v_crlf TEXT;
+    DECLARE v_oneline TEXT;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 19 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    INSERT INTO news (news_id, news_title, news_publish, country, news_paragraph0, news_stamp)
+    VALUES ('80808080-8080-8080-8080-808080808081', 'Snippet CRLF', 1, 'CA',
+            CONCAT('  First line of the teaser.', '
+
+', 'Second line must not appear.'),
+            '2026-08-01 00:00:00');
+    INSERT INTO news (news_id, news_title, news_publish, country, news_paragraph0, news_stamp)
+    VALUES ('80808080-8080-8080-8080-808080808082', 'Snippet one line', 1, 'CA',
+            'Only one line here.', '2026-07-01 00:00:00');
+
+    SELECT JSON_UNQUOTE(JSON_EXTRACT(doc, '$.snippet')) INTO v_crlf FROM v_news_default_doc
+        WHERE JSON_UNQUOTE(JSON_EXTRACT(doc, '$.news_id')) = '80808080-8080-8080-8080-808080808081';
+    SELECT JSON_UNQUOTE(JSON_EXTRACT(doc, '$.snippet')) INTO v_oneline FROM v_news_default_doc
+        WHERE JSON_UNQUOTE(JSON_EXTRACT(doc, '$.news_id')) = '80808080-8080-8080-8080-808080808082';
+
+    SELECT CASE WHEN v_crlf = 'First line of the teaser.' AND v_oneline = 'Only one line here.'
+                THEN 'TEST 19 PASS: snippet is the trimmed, CR-stripped first line of news_paragraph0'
+                ELSE CONCAT('TEST 19 FAIL: crlf=[', IFNULL(v_crlf, '<null>'), '] oneline=[', IFNULL(v_oneline, '<null>'), ']') END AS message;
+    ROLLBACK;
+END //
+
+-- ----------------------------------------------------------------
+-- TEST 20: snippet falls back to news_paragraph1 when news_paragraph0 is blank or NULL (the same
+-- fallback _Default.LoadSmallNews applies), and an article with neither paragraph yields an empty
+-- string rather than JSON null -- the right column always has something well-typed to render.
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_20_default_snippet_fallback //
+CREATE PROCEDURE test_20_default_snippet_fallback()
+BEGIN
+    DECLARE v_blank TEXT;
+    DECLARE v_null TEXT;
+    DECLARE v_none TEXT;
+    DECLARE v_none_type VARCHAR(16);
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 20 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    INSERT INTO news (news_id, news_title, news_publish, country, news_paragraph0, news_paragraph1, news_stamp)
+    VALUES ('80808080-8080-8080-8080-808080808083', 'Snippet blank p0', 1, 'CA',
+            '', 'Body from paragraph one.', '2026-08-01 00:00:00');
+    INSERT INTO news (news_id, news_title, news_publish, country, news_paragraph1, news_stamp)
+    VALUES ('80808080-8080-8080-8080-808080808084', 'Snippet null p0', 1, 'CA',
+            'Fallback when paragraph zero is null.', '2026-07-01 00:00:00');
+    INSERT INTO news (news_id, news_title, news_publish, country, news_stamp)
+    VALUES ('80808080-8080-8080-8080-808080808085', 'Snippet no body', 1, 'CA', '2026-06-01 00:00:00');
+
+    SELECT JSON_UNQUOTE(JSON_EXTRACT(doc, '$.snippet')) INTO v_blank FROM v_news_default_doc
+        WHERE JSON_UNQUOTE(JSON_EXTRACT(doc, '$.news_id')) = '80808080-8080-8080-8080-808080808083';
+    SELECT JSON_UNQUOTE(JSON_EXTRACT(doc, '$.snippet')) INTO v_null FROM v_news_default_doc
+        WHERE JSON_UNQUOTE(JSON_EXTRACT(doc, '$.news_id')) = '80808080-8080-8080-8080-808080808084';
+    -- a JSON null is NOT a SQL NULL -- compare JSON_TYPE, see the header's JSON gotchas.
+    SELECT JSON_UNQUOTE(JSON_EXTRACT(doc, '$.snippet')), JSON_TYPE(JSON_EXTRACT(doc, '$.snippet'))
+      INTO v_none, v_none_type FROM v_news_default_doc
+        WHERE JSON_UNQUOTE(JSON_EXTRACT(doc, '$.news_id')) = '80808080-8080-8080-8080-808080808085';
+
+    SELECT CASE WHEN v_blank = 'Body from paragraph one.'
+                 AND v_null = 'Fallback when paragraph zero is null.'
+                 AND v_none = '' AND v_none_type = 'STRING'
+                THEN 'TEST 20 PASS: snippet falls back to news_paragraph1, and is an empty string when there is no body'
+                ELSE CONCAT('TEST 20 FAIL: blank=[', IFNULL(v_blank, '<null>'), '] null=[', IFNULL(v_null, '<null>'),
+                            '] none=[', IFNULL(v_none, '<null>'), '/', IFNULL(v_none_type, '<null>'), ']') END AS message;
+    ROLLBACK;
+END //
+
 DELIMITER ;
 
 -- ==================================================================
@@ -548,6 +633,8 @@ CALL test_15_list_rows_has_photo_from_flag();
 CALL test_16_list_rows_shape_and_date_format();
 CALL test_17_default_exactly_two_leads();
 CALL test_18_default_photo_only_in_leads();
+CALL test_19_default_snippet_first_line();
+CALL test_20_default_snippet_fallback();
 
 -- Clean up the test procedures themselves so the throwaway database ends in the same shape
 -- ffi2.sql produced (no lasting state change -- the same rule each test's ROLLBACK follows).
@@ -569,3 +656,5 @@ DROP PROCEDURE IF EXISTS test_15_list_rows_has_photo_from_flag;
 DROP PROCEDURE IF EXISTS test_16_list_rows_shape_and_date_format;
 DROP PROCEDURE IF EXISTS test_17_default_exactly_two_leads;
 DROP PROCEDURE IF EXISTS test_18_default_photo_only_in_leads;
+DROP PROCEDURE IF EXISTS test_19_default_snippet_first_line;
+DROP PROCEDURE IF EXISTS test_20_default_snippet_fallback;
