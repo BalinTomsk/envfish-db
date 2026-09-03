@@ -2,6 +2,29 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-03: **`dbo.fn_news_ref_names_json` DROPPED from the production SQL Server** (user's call - it
+  widened the news read path across both databases, and the agreed scope was "news from MySQL"). The
+  object still exists in `mssql/script02_Funct.sql`, so a fresh build recreates it; production and the
+  schema source now DIVERGE on this one function until that is reconciled.
+  - **Consequence, verified live rather than assumed.** docapi 1.8.1 still calls it, and its
+    `enrichRefNames` was built to degrade rather than fail. Dropping the function was the first real
+    production exercise of that path, so it was tested properly: the cached page kept serving names
+    (the cache had not expired), so docapi was restarted to force a cold assembly. Result - every
+    endpoint still `200`, `lake_name` now `null`, `fishes` now `[]`, and everything else (titles,
+    ids, both base64 photos, `/news/more`'s snippets) unchanged.
+  - The WARN fired **exactly once**, which is the expected count: the lookup runs only on a cache
+    miss, not per request. Root cause is recorded in the trace as SQL Server **4121**, "Cannot find
+    either column ... or the user-defined function".
+  - **The shared `sqlBreaker` did NOT trip** - `/fish/search` and `/news/list` stayed `200`
+    throughout. Worth stating because that breaker is shared across `/fish`, `/river` and
+    `/region/regulation`, and one failure per cache fill is far below its threshold.
+  - **Reconciled the same day:** the function is removed from `mssql/script02_Funct.sql` (81 lines,
+    exactly what was added), `mssql/UNIT_TESTS/unit_test@NewsRefNames.sql` is deleted, and docapi
+    1.8.2 drops `enrichRefNames`/`resolveRefNames` so nothing calls the dropped object any more.
+    Production and the schema source agree again, and `sp_news_default`'s comment no longer claims
+    docapi resolves the names. `mssql/ffi2.sql` still mentions it but is a **generated, untracked**
+    artifact — it is rebuilt from the scriptNN sources on the next `autorun.bat`.
+
 - 2026-09-02: **New `dbo.fn_news_ref_names_json` (mssql) + a `snippet` field on
   `v_news_default_doc` (mysql)** - the two DB halves of completing docapi's
   `GET /api/v1/news/default`, the endpoint that serves `fishfind-frontend`'s `Default.aspx` home

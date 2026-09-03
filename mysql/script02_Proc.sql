@@ -253,8 +253,10 @@ END //
 -- Unlike fn_default_news_json's two distinct shapes (full lead doc vs compact right-column doc),
 -- every item here uses ONE shape (the sp_news_doc_get fields plus 'snippet', the right column's
 -- one-line teaser; no lake/fish name resolution -- same single-table-DB reason as sp_news_doc_get,
--- and docapi fills those names in from SQL Server via dbo.fn_news_ref_names_json) with
--- 'with_photo' marking the top 2 by FINAL
+-- so the mentioned lake_id/fish1..3_id come back as bare guids and the CALLER resolves the names if
+-- it wants them. A SQL Server lookup for that briefly existed (dbo.fn_news_ref_names_json, docapi
+-- 1.8.0-1.8.1) and was dropped on 2026-09-03: it made the news read span both databases, which the
+-- move to MySQL existed to avoid) with 'with_photo' marking the top 2 by FINAL
 -- DISPLAY RANK (rn <= 2, a ROW_NUMBER() OVER (ORDER BY ord ASC, news_stamp DESC) computed after
 -- dedup, in v_news_default_ranked) -- not the raw dedup group number, since groups 1 and 2 can each
 -- contribute 2 rows and "group number <= 2" would wrongly mark all 4 of those as leads. Only the

@@ -295,8 +295,10 @@ DDL directly to the live database without a matching, up-to-date script in this 
   chain backing `script02_Proc.sql`'s read procedures; see "Testing MySQL procedures" below for why
   that logic lives in views rather than inline). **`v_news_default_doc` deliberately carries only
   `news`-table fields**: the home page's lake and fish *names* cannot be resolved here (no `lake`,
-  no `fish` table), so it emits `lake_id`/`fish1..3_id` bare and docapi fills the names in from SQL
-  Server via `dbo.fn_news_ref_names_json` — see `efj-backend/service/docapi/CLAUDE.md`
+  no `fish` table), so it emits `lake_id`/`fish1..3_id` bare and **the caller resolves the names if
+  it wants them**. docapi briefly did that resolution itself through a SQL Server function
+  (`dbo.fn_news_ref_names_json`, 2026-09-02 → dropped 2026-09-03) — do not reintroduce it without a
+  decision: it makes a MySQL-backed read depend on SQL Server, which is what this move avoided
 - `script02_Funct.sql` — functions (create when first needed)
 - `script02_Proc.sql` — stored procedures. `sp_news_list_for_grid`, `sp_news_latest_id_with_photo`,
   `sp_news_get_by_id`, `sp_news_count` are called from `MySqlNewsHelper.cs` (nothing in that helper
