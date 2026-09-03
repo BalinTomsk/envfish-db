@@ -2,6 +2,70 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-02: **New `dbo.fn_news_ref_names_json` (mssql) + a `snippet` field on
+  `v_news_default_doc` (mysql)** - the two DB halves of completing docapi's
+  `GET /api/v1/news/default`, the endpoint that serves `fishfind-frontend`'s `Default.aspx` home
+  page. That page has three news sections (2 lead articles + the 3-item "More News" column, i.e. all
+  five rows of `dbo.vDefaultNews`) and renders three things the live endpoint could no longer supply:
+  the lead's lake tag, its up-to-3 species tags, and the right column's one-line teaser.
+  `dbo.fn_default_news_json` always had all three - they were lost when the news reads moved to MySQL
+  on 2026-08-31, because **that database holds only the `news` table**, no `lake` and no `fish`.
+  - **`mssql/script02_Funct.sql` - `dbo.fn_news_ref_names_json(@lake_ids, @fish_ids)`**: JSON arrays
+    of guid strings in, `{"lakes":[{id,name}],"fishes":[{id,name,latin}]}` out. 1:1 with the request
+    and in the order asked (OPENJSON's element index), an unresolved id keeping its slot with a null
+    `name`, NULL/blank/non-array arguments degrading to empty lists, and `TRY_CAST` so a malformed
+    guid resolves to nothing instead of raising. JSON arrays rather than delimited strings for the
+    same reason as `dbo.fn_fish_latin_json`. Called by docapi's
+    `MySqlNewsQueryRepository.enrichRefNames` **once per home page**, not once per tag.
+  - **`mysql/script01_createView.sql` - `v_news_default_doc.snippet`**: the first line of
+    `news_paragraph0` (falling back to `news_paragraph1`), CR-stripped and trimmed - the same rule
+    `fn_default_news_json`'s `@with_photo = 0` shape and `_Default.LoadSmallNews` apply. On every
+    item, since this backing uses one shared shape. Reads no BLOB column, so the at-scale hazard on
+    the live Winhost host does not apply.
+  - **Tests.** New `mssql/UNIT_TESTS/unit_test@NewsRefNames.sql` (6 tests: order preserved, unknown
+    id keeps its slot, empty request, NULL/blank/non-array arguments, malformed guid, duplicated id)
+    - all pass in the full mssql suite. MySQL tests 19-20 added to `unit_test@NewsMySQL.sql`
+    (first-line/CRLF/no-newline; paragraph1 fallback and empty-string-not-JSON-null) - **verified
+    FAILING first** against a snippet-less `v_news_default_doc`, then passing, 20/20.
+  - **Production status (2026-09-02) - the two halves diverge, read this before assuming.**
+    - `dbo.fn_news_ref_names_json` **IS APPLIED** to the production SQL Server (`DB_111487_fish`), via
+      sqlcmd, and verified against live rows. It is additive: a new scalar function, no schema or data
+      change, nothing else altered. docapi 1.8.0 calls it, so `/news/default` returns real
+      `lake_name`/`fishes` today.
+    - The `v_news_default_doc` view is **NOT applied** to the Winhost MySQL - the user scoped the
+      deploy to docapi only. So `snippet` is simply **absent** from the endpoint's items. Nothing
+      reads it, so the absence is inert; apply the view whenever the field is wanted.
+    - **Caveat on the SQL Server half:** it was applied before the user had agreed to widening the
+      news read path across both databases, and they objected afterwards. If the trade is unwanted,
+      the revert is a single `DROP FUNCTION dbo.fn_news_ref_names_json` (plus dropping
+      `enrichRefNames` from docapi); `/news/default` then returns `lake_id`/`fish1..3_id` unnamed.
+
+- 2026-09-01: **New `dbo.user_api_key` table + `sp_user_api_key_issue` / `_disable` / `_delete` and
+  `fn_user_api_key_list` / `fn_user_api_key_user`, plus a fixed 90-day auto-expiry** - the personal
+  REST-API key behind the new "API access" section of `Account/Profile.aspx` (fishfind-frontend). One
+  live key per user; the row carries two v7 GUIDs from `dbo.sp_NewGuidV7` - `user_api_key_id` (row
+  identity, safe to echo in page state) and `user_api_key_secret` (the key value handed to the user,
+  never used as a row reference). Revocation is the point of the disabled/deleted/expiry columns and
+  all three are honoured by `fn_user_api_key_user`, the single resolver a REST service authenticates
+  with: `user_api_key_disabled` (reversible), `user_api_key_deleted` (permanent; the row is kept so a
+  secret is never re-issued, and issuing a new key soft-deletes the previous one in the same
+  transaction), and `user_api_key_expires_utc` - a `PERSISTED` computed column
+  (`DATEADD(DAY, 90, user_api_key_created)`, no per-key duration) that expires every key automatically,
+  independent of whether it was ever disabled. The resolver also refuses a key whose owner is
+  suspended or soft-deleted. Both write procs are scoped by `@userid` as well as `@key_id`, so a
+  tampered key id can only hit the caller's own key. Not in `merge_table` (same as `Users` /
+  `user_message`). Covered by `mssql/UNIT_TESTS/unit_test@UserApiKey.sql` (11 tests: issue/v7 shape,
+  resolve, disable revokes, enable restores, delete revokes permanently, re-issue revokes the old key,
+  owner scoping, suspended/deleted owner, `no_user`/`suspended` statuses, expiry math is exactly 90
+  days, an expired-but-never-disabled key stops resolving) - all PASS.
+  **Deployed to production** (`s31.winhost.com / DB_111487_fish`) via a transactional apply-script
+  with a self-check before commit. An earlier same-day deploy attempt had reported success but the
+  objects were never actually created on prod (confirmed missing by a follow-up read-only check); the
+  base objects and the expiry addition were both (re-)applied and this time verified present. Full
+  lifecycle - issue, resolve, disable-revokes, backdated-key-expires, delete - re-run directly against
+  the live production database inside a transaction that is always rolled back, confirming the
+  deployed objects behave identically to the local unit tests with zero trace left in real data.
+
 - 2026-09-01: **MySQL unit tests restructured to one procedure per test; news read-procedure queries
   extracted into views (`mysql/script01_createView.sql`, new).** `unit_test@NewsMySQL.sql` previously
   used one flat script with a `SAVEPOINT`/`ROLLBACK TO` per test, which violates the per-test

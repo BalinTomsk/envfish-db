@@ -3191,3 +3191,79 @@ IF NOT EXISTS (SELECT * FROM sys.foreign_keys WHERE name = 'FK_fish_region_top_f
     ALTER TABLE dbo.fish_region_top ADD CONSTRAINT FK_fish_region_top_fish
         FOREIGN KEY (fish_id) REFERENCES dbo.fish (fish_id) ON DELETE SET NULL;
 GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- user_api_key : the personal REST-API key a signed-in user issues for themselves on
+-- Account/Profile.aspx ("API access" section, fishfind-frontend). One live key per user; the page
+-- issues / disables / re-enables / deletes it through dbo.sp_user_api_key_* and reads it back with
+-- dbo.fn_user_api_key_list (script02_Proc.sql / script02_Funct.sql). A REST caller presents the key
+-- and is resolved to its owner by dbo.fn_user_api_key_user.
+--
+-- Two v7 GUIDs per row, deliberately NOT one:
+--   user_api_key_id     - the row identity. Safe to echo in page state / postbacks / logs.
+--   user_api_key_secret - THE key value handed to the user. Never used as a row reference.
+-- Both are minted by dbo.sp_NewGuidV7 (peer-to-peer replication reasoning, see database/CLAUDE.md).
+--
+-- Revocation is the whole point of the disabled/deleted stamps, and both are honoured by
+-- fn_user_api_key_user, so a disabled or deleted key stops authenticating immediately:
+--   user_api_key_disabled - reversible ("Disable" / "Enable" on the page).
+--   user_api_key_deleted  - permanent. The row is KEPT (history + the secret can never be
+--                           re-issued); issuing a new key soft-deletes the previous one.
+-- Not registered in merge_table -- same as Users / user_message, this is not part of the
+-- peer-to-peer merge set.
+IF OBJECT_ID('dbo.user_api_key', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.user_api_key
+    (
+        user_api_key_id       UNIQUEIDENTIFIER NOT NULL
+            CONSTRAINT PK_user_api_key PRIMARY KEY,
+        user_api_key_userid   UNIQUEIDENTIFIER NOT NULL,   -- Users.id (the key's owner)
+        user_api_key_secret   UNIQUEIDENTIFIER NOT NULL,   -- the key value the REST caller presents
+        user_api_key_created  DATETIME2        NOT NULL
+            CONSTRAINT DF_user_api_key_created DEFAULT SYSUTCDATETIME(),
+        user_api_key_disabled DATETIME2        NULL,       -- non-NULL => revoked, reversible
+        user_api_key_deleted  DATETIME2        NULL,       -- non-NULL => revoked, permanent
+        CONSTRAINT FK_user_api_key_users FOREIGN KEY (user_api_key_userid)
+            REFERENCES dbo.Users (id) ON DELETE CASCADE
+    );
+
+    -- A secret is globally unique and is never re-issued, deleted rows included.
+    CREATE UNIQUE INDEX UX_user_api_key_secret ON dbo.user_api_key (user_api_key_secret);
+
+    -- "the live key(s) of this user", newest first (fn_user_api_key_list).
+    CREATE INDEX IX_user_api_key_user
+        ON dbo.user_api_key (user_api_key_userid, user_api_key_created DESC);
+END
+GO
+
+-- Upgrade an existing user_api_key table in place (idempotent; no-op on a fresh build, which never
+-- happens here since the column is added right below the CREATE above -- kept as its own guarded
+-- ALTER, matching this file's convention, so re-running this script against the table as it was
+-- first shipped -- before expiry existed -- adds the column without dropping/recreating anything).
+-- Fixed 90-day lifetime from issuance, PERSISTED so IX_user_api_key_user / fn_user_api_key_user can
+-- filter on it directly. Every key gets the same, current formula -- there is no per-key duration.
+IF COL_LENGTH('dbo.user_api_key', 'user_api_key_expires_utc') IS NULL
+    ALTER TABLE dbo.user_api_key ADD user_api_key_expires_utc
+        AS DATEADD(DAY, 90, user_api_key_created) PERSISTED;
+GO
+
+-------------------------------------------------------------------------------------------------------
+-- dbo.day_keys: Daily rotating credentials for cproxy (reverse proxy) authentication.
+-- Schema: stamp (ISO date) as PRIMARY KEY, guid as credential value, created_utc as audit timestamp.
+-- Used by cproxy reverse proxy for rotating daily authentication (DigitalOcean droplet fronting docapi).
+-- Data fills go in script08_Data.sql (365 daily keys for ~10-year rotation).
+-------------------------------------------------------------------------------------------------------
+
+IF OBJECT_ID('dbo.day_keys', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.day_keys
+    (
+        [stamp] DATE NOT NULL,
+        [guid] NVARCHAR(36) NOT NULL,
+        [created_utc] DATETIME2 NOT NULL
+            CONSTRAINT DF_day_keys_created DEFAULT GETUTCDATE(),
+        CONSTRAINT PK_day_keys PRIMARY KEY CLUSTERED ([stamp])
+    );
+END
+GO

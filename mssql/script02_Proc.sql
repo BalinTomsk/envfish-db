@@ -5602,3 +5602,119 @@ BEGIN
     END
 END
 GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- sp_user_api_key_issue : issue (or re-issue) the personal REST-API key of one user, for the
+-- "API access" section of Account/Profile.aspx (fishfind-frontend, btnKeyIssue_Click).
+-- At most ONE live key per user: any key the user already had is soft-deleted in the same
+-- transaction, so re-issuing immediately revokes the previous one (fn_user_api_key_user stops
+-- resolving it). Both GUIDs are v7, minted here by dbo.sp_NewGuidV7 - the caller never supplies
+-- the secret. Returns one row shaped like dbo.fn_user_api_key_list plus a status column:
+--   'issued'    - key created; the row carries it
+--   'no_user'   - unknown or soft-deleted account
+--   'suspended' - the account is suspended/banned
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_api_key_issue' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_api_key_issue
+GO
+CREATE PROCEDURE dbo.sp_user_api_key_issue
+    @userid UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE id = @userid AND deleted = 0)
+    BEGIN
+        SELECT 'no_user' AS status, CAST(NULL AS UNIQUEIDENTIFIER) AS key_id,
+               CAST(NULL AS UNIQUEIDENTIFIER) AS api_key, CAST(NULL AS DATETIME2) AS created_utc,
+               CAST(NULL AS DATETIME2) AS expires_utc, CAST(NULL AS DATETIME2) AS disabled_utc,
+               CAST(0 AS BIT) AS is_disabled, CAST(0 AS BIT) AS is_expired;
+        RETURN;
+    END
+
+    IF EXISTS (SELECT 1 FROM dbo.Users WHERE id = @userid AND ISNULL(suspended, 0) <> 0)
+    BEGIN
+        SELECT 'suspended' AS status, CAST(NULL AS UNIQUEIDENTIFIER) AS key_id,
+               CAST(NULL AS UNIQUEIDENTIFIER) AS api_key, CAST(NULL AS DATETIME2) AS created_utc,
+               CAST(NULL AS DATETIME2) AS expires_utc, CAST(NULL AS DATETIME2) AS disabled_utc,
+               CAST(0 AS BIT) AS is_disabled, CAST(0 AS BIT) AS is_expired;
+        RETURN;
+    END
+
+    DECLARE @id     UNIQUEIDENTIFIER;
+    DECLARE @secret UNIQUEIDENTIFIER;
+    EXEC dbo.sp_NewGuidV7 @id     OUTPUT;
+    EXEC dbo.sp_NewGuidV7 @secret OUTPUT;
+
+    DECLARE @now DATETIME2 = SYSUTCDATETIME();
+
+    BEGIN TRAN;
+        -- Revoke whatever the user held before: the old secret is kept on file (never re-issued)
+        -- but stops authenticating the moment this commits.
+        UPDATE dbo.user_api_key
+            SET user_api_key_deleted = @now
+            WHERE user_api_key_userid  = @userid
+              AND user_api_key_deleted IS NULL;
+
+        INSERT INTO dbo.user_api_key (user_api_key_id, user_api_key_userid, user_api_key_secret, user_api_key_created)
+        VALUES (@id, @userid, @secret, @now);
+    COMMIT;
+
+    SELECT 'issued' AS status, k.key_id, k.api_key, k.created_utc, k.expires_utc,
+           k.disabled_utc, k.is_disabled, k.is_expired
+        FROM dbo.fn_user_api_key_list(@userid) k
+        WHERE k.key_id = @id;
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- sp_user_api_key_disable : turn one REST-API key off (@disabled = 1) or back on (@disabled = 0),
+-- for Account/Profile.aspx btnKeyDisable_Click. A disabled key keeps its value but stops
+-- authenticating (fn_user_api_key_user returns NULL for it) until it is enabled again.
+-- Scoped by @userid as well as @key_id, so a tampered key id can only ever hit your own key.
+-- Idempotent, and a deleted key can no longer be toggled.
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_api_key_disable' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_api_key_disable
+GO
+CREATE PROCEDURE dbo.sp_user_api_key_disable
+    @userid   UNIQUEIDENTIFIER,
+    @key_id   UNIQUEIDENTIFIER,
+    @disabled BIT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.user_api_key
+        SET user_api_key_disabled = CASE WHEN @disabled = 1
+                                         THEN ISNULL(user_api_key_disabled, SYSUTCDATETIME())
+                                         ELSE NULL END
+        WHERE user_api_key_id      = @key_id
+          AND user_api_key_userid  = @userid
+          AND user_api_key_deleted IS NULL;
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- sp_user_api_key_delete : permanently revoke one REST-API key, for Account/Profile.aspx
+-- btnKeyDelete_Click. Soft delete: the row is KEPT (history, and the secret must never be handed
+-- out again) but fn_user_api_key_list stops returning it and fn_user_api_key_user stops resolving
+-- it. Scoped by @userid, same reasoning as sp_user_api_key_disable. Idempotent.
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_api_key_delete' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_api_key_delete
+GO
+CREATE PROCEDURE dbo.sp_user_api_key_delete
+    @userid UNIQUEIDENTIFIER,
+    @key_id UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.user_api_key
+        SET user_api_key_deleted = SYSUTCDATETIME()
+        WHERE user_api_key_id      = @key_id
+          AND user_api_key_userid  = @userid
+          AND user_api_key_deleted IS NULL;
+END
+GO
