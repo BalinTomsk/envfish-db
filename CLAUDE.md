@@ -109,6 +109,63 @@ per `(provider, providerUserId)` and FKs to `Users.id`; `Users.authType` is `'Lo
   name. (Until 2026-06-13 Google was special-cased to keep the email as `userName`.)
 - Cover any new provider in `mssql/UNIT_TESTS/unit_test@OAuthLogin.sql`.
 
+## Per-user prime allocation (`Users.prime` / `Users_Prime`)
+
+Every account holds one prime in `dbo.Users.prime` and 365 in `dbo.Users_Prime` (one per
+`day_year`, 1..365). Both are single global gap-free sequences — each prime is issued exactly once,
+which is what `UK_Users_prime` and `UK_Users_Prime` enforce.
+
+**The database does not generate primes.** `FishTracker.PrimeGenerator`
+(`fishfind-frontend/aspnet/Models/PrimeGenerator.cs`, a segmented sieve) does, and
+`FishTracker.UserPrimeAllocator` passes the results in. The T-SQL generator that used to live here
+(`dbo.fn_prime_next_list`) was written, measured and removed the same day: trial division inside a
+multi-statement TVF cost **~500 ms per registration** once ~1000 accounts existed and grew with the
+primes, capping registration at ~156/minute. The C# sieve does the same work in **0.167 ms**. Do not
+reintroduce prime generation into SQL.
+
+Three objects, all in the normal script files:
+- **`dbo.UserPrimeList`** (`script01_createTable.sql`) — table type carrying the 365
+  `(day_year, prime)` pairs in one round trip. **Column order matters**: a TVP binds positionally
+  from the client's `DataTable`, not by name.
+- **`dbo.sp_user_prime_bounds`** — where each sequence ends, seed floors applied here so that policy
+  lives in one place (1000000 → first `Users.prime` is 1000003; 97 → first `Users_Prime` block is
+  101..2687, which is what production actually holds). `MAX()` returns **0, not NULL**, once a row
+  holds the `Users.prime` default, so an explicit floor is required — `ISNULL` alone is wrong.
+- **`dbo.sp_user_prime_assign`** — stores the supplied primes. Covered by
+  `UNIT_TESTS/unit_test@UsersPrime.sql` (10 tests).
+
+Three design points that are easy to get wrong, all learned the hard way:
+
+- **No locking, on purpose.** An earlier version took `UPDLOCK, HOLDLOCK` on the `MAX(prime)` read to
+  stop two registrations picking the same prime. That serialised **every** registration in the
+  system and measured **0.86x** throughput across 4 concurrent sessions — worse than running them
+  one at a time. Uniqueness is enforced by the indexes instead, and a duplicate key (2601/2627) is a
+  normal, retryable outcome the app handles. Don't add a lock back.
+- **`SAVE TRANSACTION`, not `ROLLBACK`.** The `Users.prime` UPDATE runs before the `Users_Prime`
+  INSERT, so a duplicate day prime would otherwise leave an account holding a prime it was never
+  issued — and the caller's retry then *skips* re-assigning it, because of the "already has a prime"
+  guard. `ROLLBACK` does not unwind a nested `BEGIN TRANSACTION` (only the outermost), so when a
+  caller already has a transaction open the proc marks a savepoint and unwinds to that. Rolling back
+  a caller's transaction also drops `@@TRANCOUNT` below its entry value, which SQL Server reports as
+  **error 266**.
+- **`UK_Users_prime` is FILTERED on `prime <> 0`.** `prime` defaults to 0, so unfiltered, the first
+  row holding the default owns the only `0` the table will ever accept and **the next account
+  creation fails on the index**. This was a live bug, not a hypothetical one. The row legitimately
+  exists at 0 for a moment before the app allocates. Same idiom as `UK_Users_Email`'s
+  `WHERE deleted = 0`. **Creating it requires `SET QUOTED_IDENTIFIER ON`** (`sqlcmd -I`) or it fails
+  with Msg 1934 — the build scripts set it, a hand-run session may not.
+
+**Known limit:** allocation contention. Measured end to end — 4,727/min at one session, 968/min at
+4, 741/min at 8 with ~6% of accounts left unallocated. Retrying converts a collision into latency
+but every session still reads the same bounds. The fix is server-side atomic reservation: a
+precomputed `dbo.Prime` catalogue (filled in bulk by C#) plus an ordinal counter bumped in a single
+atomic `UPDATE`, prototyped at **3.9 ms/registration**. Not built.
+
+**Replication caveat, unresolved:** `Users` is peer-to-peer replicated, and "next prime after the
+current max" is computed per node. Two nodes registering concurrently will pick the same prime and
+collide on `UK_Users_prime` when the rows replicate. Node-striped allocation (as `UsersId`'s
+`identity(1,128)` already does) would fix it.
+
 ## Cached flags on `dbo.lake` (`isFish` / `noFish`)
 
 `dbo.lake.isFish` is a **derived cache** of "this water body has ≥ 1 `lake_fish` row", not a fact anyone
