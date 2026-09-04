@@ -1691,6 +1691,7 @@ CREATE TABLE Users
     agent      varchar(128) NULL,
     host       varchar(1024) NULL,
     country    char(2) NULL,
+    prime      bigint NOT NULL,
     authType            varchar(16) not null,  -- 'Local' | 'OAuth'. External-login details live in UserExternalLogin.
     deleted             bit NOT NULL,          -- 1 = soft-deleted (self/admin). Row is KEPT for history; its
                                                -- email/external-login identity is freed so the person can sign
@@ -1702,6 +1703,17 @@ GO
 ALTER TABLE Users ADD CONSTRAINT PK_Users PRIMARY KEY CLUSTERED (id) 
 GO
 ALTER TABLE Users add constraint df_USer_Id default NEWSEQUENTIALID() for [id]
+GO
+ALTER TABLE Users add constraint df_USer_prime default 0 for prime
+GO
+-- Filtered on prime <> 0, the same way UK_Users_Email below is filtered on deleted = 0: 0 is the
+-- "not allocated yet" default, so it has to be legal on more than one row at a time. A Users row
+-- always exists briefly holding 0 before dbo.sp_user_prime_assign issues its prime (the two are in
+-- one transaction, but the row is written first -- FK_Users_Prime requires it), and the other insert
+-- paths (spAddUser, spCreateUser, seed data, test fixtures) never set one at all. Unfiltered, the
+-- first such row would own the only 0 the table can hold and every later account creation would
+-- fail on this index. Primes actually issued are still unique, which is the invariant that matters.
+CREATE UNIQUE NONCLUSTERED INDEX UK_Users_prime ON Users(prime) WHERE prime <> 0
 GO
 ALTER TABLE Users add constraint df_USer_stamp default getutcdate() for stamp
 GO
@@ -1724,10 +1736,94 @@ GO
 ALTER TABLE users ADD CONSTRAINT CH_users_psw CHECK (DATALENGTH(psw) >= 6);
 GO
 ---------------------------------------------------------------------------------------------------------------------------------------------
-INSERT INTO Users (userName, psw, titul, firstName, lastName, email, postal, subs, question, answer, cell, access)
-          VALUES  ('Lepsik', HashBytes('MD5', 'vertex*solt'), 'Mr.', 'Lepsik'
-                   , 'Baralgeen', 'LBaralgeen@gmail.com', 'N2M5L4', 1, 'preved', HashBytes('MD5', 'medved+zuker'), 12266005162, 255)
+CREATE TABLE Users_Prime
+(
+    user_id  uniqueidentifier NOT NULL,
+    prime    bigint NOT NULL,
+    day_year int NOT NULL
+);
 GO
+
+ALTER TABLE Users_Prime ADD CONSTRAINT PK_Users_Prime PRIMARY KEY CLUSTERED (user_id, day_year) 
+GO
+CREATE UNIQUE NONCLUSTERED INDEX UK_Users_Prime ON Users_Prime(prime);
+GO
+ALTER TABLE Users_Prime ADD CONSTRAINT df_Users_Prime DEFAULT 0 FOR day_year
+GO
+ALTER TABLE Users_Prime ADD CONSTRAINT CH_Users_Prime_day CHECK (day_year > 0 AND day_year < 366);
+GO
+ALTER TABLE Users_Prime ADD CONSTRAINT FK_Users_Prime FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
+GO
+-- Carries the 365 day/prime pairs from the app to dbo.sp_user_prime_assign in one round trip.
+-- The primes are computed by FishTracker.PrimeGenerator (aspnet/Models/PrimeGenerator.cs) and passed
+-- as a SqlDbType.Structured parameter by FishTracker.UserPrimeAllocator -- the database no longer
+-- generates them (see the note where dbo.fn_prime_next_list was removed in script02_Funct.sql).
+-- Column ORDER matters: a table-valued parameter is bound positionally from the client's DataTable.
+IF TYPE_ID('dbo.UserPrimeList') IS NULL
+    CREATE TYPE dbo.UserPrimeList AS TABLE
+    (
+        day_year int    NOT NULL PRIMARY KEY,
+        prime    bigint NOT NULL
+    )
+GO
+---------------------------------------------------------------------------------------------------------------------------------------------
+-- UsersSyncOutbox : transactional outbox feeding the RabbitMQ users-sync pipeline
+-- (fishfind-frontend dispatcher -> queue fishfind.account.events -> cproxy SQLite mirror). Populated
+-- only by TR_Users_SyncOutbox below -- never insert into it from a proc or app code. This table is
+-- node-local bookkeeping, not replicated business data: it must be excluded from peer-to-peer
+-- replication (same reason the trigger is NOT FOR REPLICATION), or every node would re-dispatch
+-- every other node's writes.
+CREATE TABLE UsersSyncOutbox
+(
+    outbox_id      bigint IDENTITY(1,1) NOT NULL,
+    action         varchar(10)          NOT NULL,   -- 'created' | 'updated'
+    id             uniqueidentifier     NOT NULL,   -- Users.id
+    UsersId        bigint               NOT NULL,
+    userName       varchar(64)          NOT NULL,
+    email          varchar(128)         NOT NULL,
+    lastVisit      datetime2            NOT NULL,
+    access         int                  NOT NULL,
+    suspended      bit                  NULL,
+    authType       varchar(16)          NOT NULL,
+    deleted        bit                  NOT NULL,
+    deletedUtc     datetime2            NULL,
+    created_utc    datetime2            NOT NULL,
+    dispatched_utc datetime2            NULL
+)
+GO
+ALTER TABLE UsersSyncOutbox ADD CONSTRAINT PK_UsersSyncOutbox PRIMARY KEY CLUSTERED (outbox_id)
+GO
+ALTER TABLE UsersSyncOutbox ADD CONSTRAINT df_UsersSyncOutbox_created_utc DEFAULT SYSUTCDATETIME() FOR created_utc
+GO
+-- Filtered index: the dispatcher only ever scans undispatched rows, which is a small tail of the table.
+CREATE INDEX IX_UsersSyncOutbox_undispatched ON UsersSyncOutbox(outbox_id) WHERE dispatched_utc IS NULL
+GO
+---------------------------------------------------------------------------------------------------------------------------------------------
+IF OBJECT_ID('TR_Users_SyncOutbox') IS NOT NULL DROP TRIGGER TR_Users_SyncOutbox
+GO
+-- TR_Users_SyncOutbox : snapshots every direct write to Users into UsersSyncOutbox, including manual
+-- admin UPDATEs to access/suspended/deleted (there is no app code path for those today) -- not just
+-- the app's own INSERT/UPDATE paths (registration, spOAuthLoginOrCreateUser). This is what makes the
+-- users-sync event stream complete rather than best-effort. Distinguishes create vs update by whether
+-- the affected id already existed in the `deleted` pseudo-table (the trigger-scope one, unrelated to
+-- the Users.deleted column referenced via i.deleted below). NOT FOR REPLICATION: Users is peer-to-peer
+-- replicated, and this must fire only for writes local to this node -- a replicated row landing on a
+-- peer node must not re-enter the outbox there.
+CREATE TRIGGER TR_Users_SyncOutbox ON dbo.Users
+AFTER INSERT, UPDATE
+NOT FOR REPLICATION
+AS
+SET NOCOUNT ON
+BEGIN
+    INSERT INTO dbo.UsersSyncOutbox
+        (action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc)
+    SELECT
+          CASE WHEN EXISTS (SELECT 1 FROM deleted d WHERE d.id = i.id) THEN 'updated' ELSE 'created' END
+        , i.id, i.UsersId, i.userName, i.email, i.lastVisit, i.access, i.suspended, i.authType, i.deleted, i.deletedUtc
+    FROM INSERTED i
+END
+GO
+---------------------------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------
 --  External OAuth/OIDC logins: ONE row per provider account linked to a Users row.
 --  Single table for ALL providers — add Outlook/Apple later as new 'provider'
