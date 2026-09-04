@@ -2,6 +2,97 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-04: **Per-user prime allocation wired into registration, with the primes generated in C#**
+  — `dbo.Users.prime` and the 365 `dbo.Users_Prime` rows are now filled in on every account-creation
+  path, instead of the new columns sitting unpopulated. Both sequences are global and gap-free
+  (`Users.prime` continues from the highest prime already issued, `Users_Prime` likewise), which is
+  what the two UNIQUE indexes require. The database stores and enforces uniqueness; **the primes
+  themselves are computed by `FishTracker.PrimeGenerator` in `fishfind-frontend`** — see that repo's
+  changelog for the C# half and the measurements. **Built and tested locally; NOT applied to
+  production.**
+  - **Prime generation lives in C#, not here.** `dbo.fn_prime_next_list` was written, measured, and
+    **removed the same day**: trial division inside a multi-statement TVF cost **~500 ms per
+    registration at ~1000 accounts** and grew with the primes, capping registration at ~156/minute.
+    `FishTracker.PrimeGenerator` (a segmented sieve, `fishfind-frontend/aspnet/Models/`) does the
+    same work in **0.167 ms** and stays flat as the sequence grows. `script02_Funct.sql` keeps only
+    an idempotent `DROP` so any database that received the function loses it.
+  - **`mssql/script01_createTable.sql` — new `dbo.UserPrimeList` table type**: carries the 365
+    `(day_year, prime)` pairs from the app in one round trip. Column order matters — a TVP is bound
+    positionally from the client's `DataTable`.
+  - **`mssql/script02_Proc.sql` — new `dbo.sp_user_prime_bounds`**: returns where each sequence
+    currently ends (a backwards seek on each unique index, O(1)), with the seed floors — 1000000 for
+    `Users.prime`, 97 for `Users_Prime` — applied here so that policy stays in one place. `MAX()`
+    returns 0, not NULL, once a row holds the `Users.prime` default, so an explicit floor is needed.
+  - **`dbo.sp_user_prime_assign` rewritten** to `(@userid, @userPrime, @dayPrimes)` — it stores what
+    C# generated and no longer computes anything. **The `UPDLOCK, HOLDLOCK` is gone**: it serialised
+    every registration in the system, measuring **0.86x** throughput across 4 concurrent sessions,
+    i.e. worse than running them one at a time. Uniqueness is now enforced only by `UK_Users_prime` /
+    `UK_Users_Prime`, and a duplicate-key error is a normal, retryable outcome the caller handles.
+  - **Atomicity via `SAVE TRANSACTION`.** The `Users.prime` UPDATE happens before the `Users_Prime`
+    INSERT, so a duplicate day prime used to leave the account holding a prime it was never issued —
+    and the retry then skipped re-assigning it, because of the "already has a prime" guard. `ROLLBACK`
+    does not unwind a nested `BEGIN TRANSACTION`, only the outermost, so when a caller already has a
+    transaction open the procedure marks a savepoint and unwinds to that instead. **Found by
+    `unit_test@UsersPrime.sql` TESTs 8 and 9, which failed on the first run against the new proc.**
+  - **Both registration procs are back to storing only the account.** `dbo.spSaveUser` and
+    `dbo.spOAuthLoginOrCreateUser` no longer allocate primes (and no longer need the transaction
+    wrappers that went with it) — `FishTracker.UserPrimeAllocator` does it immediately after each
+    returns. The row therefore exists briefly with `prime = 0`, which the filtered index permits.
+  - **`UK_Users_prime` is now filtered — `WHERE prime <> 0`** (the same idiom as `UK_Users_Email`'s
+    `WHERE deleted = 0` just below it). As written the index was unfiltered, and `prime` defaults to
+    `0`: the first row to hold the default owned the only `0` the table would ever accept, so **the
+    next account created by any path failed on the index** before its own prime could be allocated.
+    That was not hypothetical — it broke the build immediately (the seeded superadmin held `0`) and
+    it is still reachable from `spAddUser`, `spCreateUser`, seed data and test fixtures, none of
+    which set a prime. Primes actually issued are still unique, which is the invariant that matters.
+  - **Seeded superadmin removed** — the `INSERT INTO Users` for `'Lepsik'` (access 255) is gone from
+    `script01_createTable.sql`, so a fresh build starts with an **empty `dbo.Users`** and the first
+    account created through either registration path takes the head of both sequences
+    (`Users.prime = 1000003`, `Users_Prime` 101 … 2687). Nothing referenced that row — no proc, view,
+    function or unit test — and dropping it also empties `UsersSyncOutbox` at build time, which
+    `unit_test@UsersSyncOutbox.sql` TEST 3 is sensitive to (it reads an unfiltered batch of 2 and so
+    depends on how many build-time rows sit ahead of its fixtures).
+  - **Removed a duplicate `dbo.spSaveUser`.** `script02_Proc.sql` held two byte-identical copies;
+    because the scriptNN files are concatenated and run top-to-bottom, the second silently replaced
+    the first, so any edit to the documented definition was discarded on every build. One definition
+    now, next to the other account procs.
+  - **`mssql/UNIT_TESTS/unit_test@UsersPrime.sql` — 10 tests, all PASS.** Covers the bounds procedure
+    (seed floors, live maxima), the assign procedure (stores the supplied values verbatim,
+    idempotency, the FK guard), and — because the app's retry loop depends on it — that a duplicate
+    day prime and a duplicate `Users.prime` are both **rejected** with 2601/2627, that several
+    accounts may hold `prime = 0` at once, and that `spSaveUser` now leaves allocation to the app.
+    The tests deliberately feed the procedure **non-prime** values: the database's contract is
+    "store what you were given and keep it unique", and using real primes would hide a failure to
+    enforce that. (`unit_test@UsersPrimeAssign.sql`, the split-off half from the earlier T-SQL
+    design, is deleted along with the generator it tested.)
+  - Full suite: **558 PASS**. The only failures are the 2 long-standing ones in
+    `unit_test@FishCodeLatinJson.sql`, unrelated to this change (that file references neither `Users`
+    nor `prime`).
+  - **Known limit — allocation contention.** Generation is solved; competing for the end of the
+    sequence is not. End to end: **1 session 4,727/min (0 failures) · 4 sessions 968/min (1 of 400
+    accounts left unallocated) · 8 sessions 741/min (26 of 400)**. Retrying turns a collision into
+    latency, but every session still reads the same bounds. The structural fix is server-side atomic
+    reservation: a precomputed `dbo.Prime` catalogue (filled in bulk by C#) plus an ordinal counter
+    bumped in a single atomic `UPDATE`, so a block is reserved without anyone generating or
+    colliding. Prototyped against the same data at **3.9 ms/registration (~15,400/min)**. Not built.
+  - **DEPLOYED TO PRODUCTION 2026-09-04** (`s31.winhost.com` / `DB_111487_fish`), verified by
+    re-reading the live schema: `dbo.UserPrimeList` present, `sp_user_prime_bounds` and
+    `sp_user_prime_assign` both created 11:28:06, and `Users.UK_Users_prime` rebuilt as
+    **filtered — `([prime]<>(0))`**. `Users_Prime.UK_Users_Prime` deliberately left unfiltered.
+    Existing data untouched (2 users, max prime 1000033; 730 `Users_Prime` rows, max 5741).
+    `dbo.spSaveUser` and `dbo.spOAuthLoginOrCreateUser` were **not** redeployed — their only changes
+    in this work are comments and whitespace, so the live definitions were already correct.
+    - **The filtered index fixed a live bug**, not just a future one: with it unfiltered and
+      `prime` defaulting to 0, the next registration would have succeeded and the one after it
+      would have failed outright on the unique index.
+    - **`SET QUOTED_IDENTIFIER ON` is required** to create the filtered index (`sqlcmd -I`) — the
+      build scripts set it, a hand-run session may not, and it fails with Msg 1934 without it.
+    - Applied via a transient `mssql/deploy_2026-09-04_user_primes.sql` + `mssql/apply_deploy.ps1`,
+      both to be deleted once the end-to-end check is done.
+  - **Still to verify in production:** no account has been created since the deploy, so the
+    allocation path is live but unexercised. The first new registration should take
+    `Users.prime = 1000037` and `Users_Prime` 5743 … 9011.
+
 - 2026-09-03: **`dbo.fn_news_ref_names_json` DROPPED from the production SQL Server** (user's call - it
   widened the news read path across both databases, and the agreed scope was "news from MySQL"). The
   object still exists in `mssql/script02_Funct.sql`, so a fresh build recreates it; production and the

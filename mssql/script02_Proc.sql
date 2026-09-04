@@ -45,25 +45,160 @@ BEGIN
 END
 GO
 -------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_prime_bounds' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_prime_bounds
+GO
+/******
+ * dbo.sp_user_prime_bounds : where the two prime sequences currently end.
+ *
+ * The app calls this first, generates the primes it needs above these bounds in C#
+ * (FishTracker.PrimeGenerator), then writes them back through dbo.sp_user_prime_assign.
+ * Both reads are a backwards seek to the end of a unique index (UK_Users_prime, UK_Users_Prime),
+ * not a scan, so this stays O(1) as the tables grow.
+ *
+ * The seed floors live here rather than in C# so the "where does the sequence start" policy stays
+ * in one place: MAX() returns 0 (not NULL) as soon as any row holds the Users.prime default, so an
+ * explicit floor is needed, not just ISNULL.
+ *
+ * Called from: FishTracker.UserPrimeAllocator (aspnet/Database/UserPrimeAllocator.cs).
+ *
+ * OUTPUT PARAMETERS:
+ *    @afterUserPrime bigint - generate the Users.prime value strictly above this
+ *    @afterDayPrime  bigint - generate the 365 Users_Prime values strictly above this
+ *
+ *  Usage:
+        DECLARE @u bigint, @d bigint;
+        EXEC dbo.sp_user_prime_bounds @u OUTPUT, @d OUTPUT;
+ */
+CREATE PROCEDURE dbo.sp_user_prime_bounds
+      @afterUserPrime bigint OUTPUT
+    , @afterDayPrime  bigint OUTPUT
+AS
+SET NOCOUNT ON
+BEGIN
+    SELECT @afterUserPrime = ISNULL(MAX(prime), 0) FROM dbo.Users;
+    IF @afterUserPrime < 1000000 SET @afterUserPrime = 1000000;   -- seed: first account gets 1000003
+
+    SELECT @afterDayPrime = ISNULL(MAX(prime), 0) FROM dbo.Users_Prime;
+    IF @afterDayPrime < 97 SET @afterDayPrime = 97;               -- seed: first account gets 101..2687
+END
+GO
+-------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_prime_assign' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_prime_assign
+GO
+/******
+ * dbo.sp_user_prime_assign : store the primes C# generated for a newly registered account.
+ *
+ *   1. dbo.Users.prime  <- @userPrime
+ *   2. dbo.Users_Prime  <- one row per @dayPrimes entry (day_year 1..365)
+ *
+ * This procedure does NOT generate primes -- FishTracker.PrimeGenerator does, and
+ * FishTracker.UserPrimeAllocator passes the results in. The database's job is to store them and to
+ * enforce the invariant that actually matters: UK_Users_prime and UK_Users_Prime are UNIQUE, so a
+ * prime is issued to exactly one row, ever.
+ *
+ * There is deliberately NO locking here. Two registrations that read the same bounds will generate
+ * the same primes and the second INSERT fails on the unique index (error 2601/2627); the caller
+ * re-reads dbo.sp_user_prime_bounds and retries. That is why the earlier UPDLOCK/HOLDLOCK is gone --
+ * it serialised every registration in the system (measured: 0.86x throughput on 4 concurrent
+ * sessions, i.e. worse than running them one at a time).
+ *
+ * Errors are re-THROWn, never swallowed, so a failed allocation reaches the retry loop instead of
+ * silently leaving the account without primes.
+ *
+ * Re-callable for the same user -- each half is skipped once done -- so a retried registration or a
+ * backfill pass over pre-existing accounts neither burns primes nor violates PK_Users_Prime.
+ * FK_Users_Prime references Users.id, so an unknown @userid is ignored rather than failed.
+ *
+ * Called from: FishTracker.UserPrimeAllocator (aspnet/Database/UserPrimeAllocator.cs), which runs on
+ * every path that creates a dbo.Users row -- Account/Register.aspx (local) and OAuthUserMapper
+ * (every OAuth / magic-link provider on Account/Login.aspx).
+ *
+ * INPUT PARAMETERS:
+ *    @userid     uniqueidentifier   - dbo.Users.id of the account to allocate for
+ *    @userPrime  bigint             - the prime for Users.prime
+ *    @dayPrimes  dbo.UserPrimeList  - the 365 (day_year, prime) pairs
+ *
+ *  Usage:
+        DECLARE @p dbo.UserPrimeList;
+        INSERT INTO @p (day_year, prime) VALUES (1, 101), (2, 103);
+        EXEC dbo.sp_user_prime_assign 'BA497981-7F23-40A2-8B59-641DBE36F442', 1000037, @p;
+ */
+CREATE PROCEDURE dbo.sp_user_prime_assign
+      @userid    uniqueidentifier
+    , @userPrime bigint
+    , @dayPrimes dbo.UserPrimeList READONLY
+AS
+SET NOCOUNT ON
+-- Both declared before TRY so CATCH can still read them.
+DECLARE @ownTran bit = 0;      -- 1 when this procedure opened the transaction itself
+DECLARE @saved   bit = 0;      -- 1 when it marked a savepoint inside a caller's transaction
+BEGIN TRY
+    IF @userid IS NULL RETURN;
+    IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE id = @userid) RETURN;   -- FK_Users_Prime guard
+
+    -- The two writes below must be all-or-nothing: the Users.prime UPDATE happens first, so if the
+    -- Users_Prime INSERT then hits a duplicate prime, an un-rolled-back UPDATE would leave the
+    -- account holding a prime it was never actually issued -- and the caller's retry would skip
+    -- re-assigning it (the "already has a prime" guard). ROLLBACK does not unwind a nested
+    -- BEGIN TRANSACTION, only the outermost one, so when a caller already has a transaction open we
+    -- mark a SAVEPOINT and unwind to that instead of touching the caller's work.
+    IF @@TRANCOUNT = 0
+    BEGIN
+        BEGIN TRANSACTION;
+        SET @ownTran = 1;
+    END
+    ELSE
+    BEGIN
+        SAVE TRANSACTION user_prime_assign;
+        SET @saved = 1;
+    END
+
+    IF @userPrime > 0 AND NOT EXISTS (SELECT 1 FROM dbo.Users WHERE id = @userid AND prime > 0)
+        UPDATE dbo.Users SET prime = @userPrime WHERE id = @userid;
+
+    IF EXISTS (SELECT 1 FROM @dayPrimes) AND NOT EXISTS (SELECT 1 FROM dbo.Users_Prime WHERE user_id = @userid)
+        INSERT INTO dbo.Users_Prime (user_id, day_year, prime)
+            SELECT @userid, d.day_year, d.prime FROM @dayPrimes d;
+
+    IF @ownTran = 1 COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @ownTran = 1 AND @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+    ELSE IF @saved = 1 AND XACT_STATE() = 1
+        ROLLBACK TRANSACTION user_prime_assign;   -- only our own writes; XACT_STATE() = -1 means
+                                                  -- the transaction is doomed and cannot be
+                                                  -- partially unwound, so leave it to the caller
+    THROW;
+END CATCH;
+GO
+-------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'spSaveUser' AND type = 'P')
     DROP PROCEDURE dbo.spSaveUser
 GO
 /*
     Register new User Account
+
+    Primes are NOT allocated here. FishTracker.UserPrimeAllocator (aspnet/Database/) calls
+    dbo.sp_user_prime_bounds -> generates in C# -> dbo.sp_user_prime_assign, immediately after this
+    procedure returns. The row therefore exists briefly with prime = 0, which is legal because
+    UK_Users_prime is filtered on prime <> 0.
 */
 create PROCEDURE dbo.spSaveUser @ipaddr varchar(32), @agent varchar(128)
     , @addr varchar(32), @host varchar(255), @user varchar(255), @email varchar(255), @country char(2)
     , @postal varchar(16), @fname nvarchar(64), @lname nvarchar(64), @psw varchar(128)
 AS
 SET NOCOUNT ON
-BEGIN TRY  
-    INSERT INTO Users (userName, email, ipaddr, agent, addr, host, country, postal, firstName, lastName, psw, question, answer) 
+BEGIN TRY
+    INSERT INTO Users (userName, email, ipaddr, agent, addr, host, country, postal, firstName, lastName, psw, question, answer)
         VALUES (@user, @email, @ipaddr, @agent, @addr, @host, @country, @postal, @fname, @lname, HashBytes('MD5', @psw + '*solt'), 'dog', 0x0024);
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
          , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
-END CATCH;   
+END CATCH;
 GO
 
 /*
@@ -234,6 +369,9 @@ BEGIN TRY
         ELSE
             SET @userName = @email;
 
+        -- Primes are NOT allocated here -- FishTracker.UserPrimeAllocator does it from
+        -- OAuthUserMapper as soon as this returns @isNewUser = 1. The row exists briefly with
+        -- prime = 0, which UK_Users_prime (filtered on prime <> 0) allows.
         INSERT INTO dbo.Users
         (
               ID
@@ -289,7 +427,7 @@ BEGIN CATCH
         , ERROR_LINE()      AS ErrorLine
         , ERROR_MESSAGE()   AS ErrorMessage;
 END CATCH
-GO 
+GO
 -------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'spSaveSession' AND type = 'P')
@@ -1344,24 +1482,10 @@ BEGIN CATCH
 END CATCH;     
 GO
 ---------------------------------------------------------------------------------------------------------------------------------------------
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'spSaveUser' AND xtype = 'P')
-    DROP PROCEDURE dbo.spSaveUser
-GO
-
-create PROCEDURE spSaveUser @ipaddr varchar(32), @agent varchar(128)
-    , @addr varchar(32), @host varchar(255), @user varchar(255), @email varchar(255), @country char(2)
-    , @postal varchar(16), @fname nvarchar(64), @lname nvarchar(64), @psw varchar(128)
-AS
-SET NOCOUNT ON
-BEGIN TRY  
-    INSERT INTO Users (userName, email, ipaddr, agent, addr, host, country, postal, firstName, lastName, psw, question, answer) 
-        VALUES (@user, @email, @ipaddr, @agent, @addr, @host, @country, @postal, @fname, @lname, HashBytes('MD5', @psw + '*solt'), 'dog', 0x0024);
-END TRY
-BEGIN CATCH
-    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
-         , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
-END CATCH;   
-GO
+-- (A second, byte-identical copy of dbo.spSaveUser used to sit here. Because this script is
+-- concatenated and executed top-to-bottom, it silently replaced the documented definition above,
+-- so any edit made there was thrown away on every build. Removed 2026-09-04 -- the single
+-- definition now lives next to spTestUser / spOAuthLoginOrCreateUser with the other account procs.)
 ---------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_add_fish_image' AND xtype = 'P')
     DROP PROCEDURE dbo.sp_add_fish_image
