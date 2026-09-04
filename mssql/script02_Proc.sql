@@ -4819,6 +4819,65 @@ GO
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_users_sync_outbox_take' AND type = 'P')
+    DROP PROCEDURE dbo.sp_users_sync_outbox_take
+GO
+-- sp_users_sync_outbox_take : called by the fishfind-frontend RabbitMQ users-sync dispatcher
+-- (aspnet/tools/Run-UsersSyncDispatch.ps1) to read the oldest undispatched dbo.UsersSyncOutbox
+-- rows. The caller must ack each row (sp_users_sync_outbox_ack) only after it has been durably
+-- published to RabbitMQ; a row left unacked is simply re-read next run -- harmless, because the
+-- cproxy consumer dedups by the outbox_id-derived eventId.
+CREATE OR ALTER PROCEDURE dbo.sp_users_sync_outbox_take
+    @batchSize INT = 25
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT TOP (@batchSize)
+          outbox_id, action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc, created_utc
+    FROM dbo.UsersSyncOutbox
+    WHERE dispatched_utc IS NULL
+    ORDER BY outbox_id;
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_users_sync_outbox_ack' AND type = 'P')
+    DROP PROCEDURE dbo.sp_users_sync_outbox_ack
+GO
+-- sp_users_sync_outbox_ack : marks one dbo.UsersSyncOutbox row dispatched after the fishfind-frontend
+-- dispatcher confirms RabbitMQ accepted the publish ({"routed":true}). Idempotent -- acking an
+-- already-dispatched or unknown outbox_id updates zero rows rather than erroring.
+CREATE OR ALTER PROCEDURE dbo.sp_users_sync_outbox_ack
+    @outbox_id BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE dbo.UsersSyncOutbox SET dispatched_utc = SYSUTCDATETIME()
+    WHERE outbox_id = @outbox_id AND dispatched_utc IS NULL;
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_users_sync_outbox_purge' AND type = 'P')
+    DROP PROCEDURE dbo.sp_users_sync_outbox_purge
+GO
+-- sp_users_sync_outbox_purge : deletes dispatched dbo.UsersSyncOutbox rows older than @olderThanDays
+-- so the outbox stays bounded. Never deletes an undispatched row, however old.
+CREATE OR ALTER PROCEDURE dbo.sp_users_sync_outbox_purge
+    @olderThanDays INT = 7
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM dbo.UsersSyncOutbox
+    WHERE dispatched_utc IS NOT NULL
+      AND dispatched_utc < DATEADD(DAY, -@olderThanDays, SYSUTCDATETIME());
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_add_catch_pending_fish' AND type = 'P')
     DROP PROCEDURE dbo.sp_add_catch_pending_fish
 GO

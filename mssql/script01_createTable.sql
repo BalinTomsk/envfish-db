@@ -1724,6 +1724,63 @@ GO
 ALTER TABLE users ADD CONSTRAINT CH_users_psw CHECK (DATALENGTH(psw) >= 6);
 GO
 ---------------------------------------------------------------------------------------------------------------------------------------------
+-- UsersSyncOutbox : transactional outbox feeding the RabbitMQ users-sync pipeline
+-- (fishfind-frontend dispatcher -> queue fishfind.account.events -> cproxy SQLite mirror). Populated
+-- only by TR_Users_SyncOutbox below -- never insert into it from a proc or app code. This table is
+-- node-local bookkeeping, not replicated business data: it must be excluded from peer-to-peer
+-- replication (same reason the trigger is NOT FOR REPLICATION), or every node would re-dispatch
+-- every other node's writes.
+CREATE TABLE UsersSyncOutbox
+(
+    outbox_id      bigint IDENTITY(1,1) NOT NULL,
+    action         varchar(10)          NOT NULL,   -- 'created' | 'updated'
+    id             uniqueidentifier     NOT NULL,   -- Users.id
+    UsersId        bigint               NOT NULL,
+    userName       varchar(64)          NOT NULL,
+    email          varchar(128)         NOT NULL,
+    lastVisit      datetime2            NOT NULL,
+    access         int                  NOT NULL,
+    suspended      bit                  NULL,
+    authType       varchar(16)          NOT NULL,
+    deleted        bit                  NOT NULL,
+    deletedUtc     datetime2            NULL,
+    created_utc    datetime2            NOT NULL,
+    dispatched_utc datetime2            NULL
+)
+GO
+ALTER TABLE UsersSyncOutbox ADD CONSTRAINT PK_UsersSyncOutbox PRIMARY KEY CLUSTERED (outbox_id)
+GO
+ALTER TABLE UsersSyncOutbox ADD CONSTRAINT df_UsersSyncOutbox_created_utc DEFAULT SYSUTCDATETIME() FOR created_utc
+GO
+-- Filtered index: the dispatcher only ever scans undispatched rows, which is a small tail of the table.
+CREATE INDEX IX_UsersSyncOutbox_undispatched ON UsersSyncOutbox(outbox_id) WHERE dispatched_utc IS NULL
+GO
+---------------------------------------------------------------------------------------------------------------------------------------------
+IF OBJECT_ID('TR_Users_SyncOutbox') IS NOT NULL DROP TRIGGER TR_Users_SyncOutbox
+GO
+-- TR_Users_SyncOutbox : snapshots every direct write to Users into UsersSyncOutbox, including manual
+-- admin UPDATEs to access/suspended/deleted (there is no app code path for those today) -- not just
+-- the app's own INSERT/UPDATE paths (registration, spOAuthLoginOrCreateUser). This is what makes the
+-- users-sync event stream complete rather than best-effort. Distinguishes create vs update by whether
+-- the affected id already existed in the `deleted` pseudo-table (the trigger-scope one, unrelated to
+-- the Users.deleted column referenced via i.deleted below). NOT FOR REPLICATION: Users is peer-to-peer
+-- replicated, and this must fire only for writes local to this node -- a replicated row landing on a
+-- peer node must not re-enter the outbox there.
+CREATE TRIGGER TR_Users_SyncOutbox ON dbo.Users
+AFTER INSERT, UPDATE
+NOT FOR REPLICATION
+AS
+SET NOCOUNT ON
+BEGIN
+    INSERT INTO dbo.UsersSyncOutbox
+        (action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc)
+    SELECT
+          CASE WHEN EXISTS (SELECT 1 FROM deleted d WHERE d.id = i.id) THEN 'updated' ELSE 'created' END
+        , i.id, i.UsersId, i.userName, i.email, i.lastVisit, i.access, i.suspended, i.authType, i.deleted, i.deletedUtc
+    FROM INSERTED i
+END
+GO
+---------------------------------------------------------------------------------------------------------------------------------------------
 INSERT INTO Users (userName, psw, titul, firstName, lastName, email, postal, subs, question, answer, cell, access)
           VALUES  ('Lepsik', HashBytes('MD5', 'vertex*solt'), 'Mr.', 'Lepsik'
                    , 'Baralgeen', 'LBaralgeen@gmail.com', 'N2M5L4', 1, 'preved', HashBytes('MD5', 'medved+zuker'), 12266005162, 255)
