@@ -1716,7 +1716,11 @@ GO
 -- fail on this index. Primes actually issued are still unique, which is the invariant that matters.
 CREATE UNIQUE NONCLUSTERED INDEX UK_Users_prime ON Users(prime) WHERE prime <> 0
 GO
-ALTER TABLE Users add CONSTRAINT df_Users_prime_expired  DEFAULT (DATEADD(YEAR, 1, SYSUTCDATETIME()))
+-- The FOR clause is not optional: without it this is not a DEFAULT constraint at all and SQL Server
+-- fails the batch with "Incorrect syntax for definition of the 'TABLE' constraint" (Msg 1750), which
+-- aborts dbcreator.cmd and takes EVERY unit test in this repo down with it -- the whole database
+-- image stops building, not just this table.
+ALTER TABLE Users add CONSTRAINT df_Users_prime_expired  DEFAULT (DATEADD(YEAR, 1, SYSUTCDATETIME())) FOR prime_expired
 GO
 ALTER TABLE Users add constraint df_USer_stamp default getutcdate() for stamp
 GO
@@ -1790,6 +1794,10 @@ CREATE TABLE UsersSyncOutbox
     authType       varchar(16)          NOT NULL,
     deleted        bit                  NOT NULL,
     deletedUtc     datetime2            NULL,
+    prime          bigint               NOT NULL,   -- Users.prime; 0 = not allocated yet (same convention as Users)
+    prime_expired  date                 NULL,       -- Users.prime_expired. NULL only on rows written before
+                                                    -- these two columns existed (the ALTER on a live outbox
+                                                    -- cannot invent a snapshot); the trigger always supplies it.
     created_utc    datetime2            NOT NULL,
     dispatched_utc datetime2            NULL
 )
@@ -1797,6 +1805,8 @@ GO
 ALTER TABLE UsersSyncOutbox ADD CONSTRAINT PK_UsersSyncOutbox PRIMARY KEY CLUSTERED (outbox_id)
 GO
 ALTER TABLE UsersSyncOutbox ADD CONSTRAINT df_UsersSyncOutbox_created_utc DEFAULT SYSUTCDATETIME() FOR created_utc
+GO
+ALTER TABLE UsersSyncOutbox ADD CONSTRAINT df_UsersSyncOutbox_prime DEFAULT 0 FOR prime
 GO
 -- Filtered index: the dispatcher only ever scans undispatched rows, which is a small tail of the table.
 CREATE INDEX IX_UsersSyncOutbox_undispatched ON UsersSyncOutbox(outbox_id) WHERE dispatched_utc IS NULL
@@ -1812,6 +1822,14 @@ GO
 -- the Users.deleted column referenced via i.deleted below). NOT FOR REPLICATION: Users is peer-to-peer
 -- replicated, and this must fire only for writes local to this node -- a replicated row landing on a
 -- peer node must not re-enter the outbox there.
+--
+-- prime/prime_expired ride along for free BECAUSE this is a trigger rather than an app-code hook: a new
+-- account is INSERTed holding prime = 0 (the row must exist before dbo.sp_user_prime_assign can point
+-- Users_Prime at it), so its 'created' row snapshots 0, and the subsequent
+-- `UPDATE dbo.Users SET prime = @userPrime` inside sp_user_prime_assign fires this trigger again and
+-- emits an 'updated' row carrying the real prime. Two rows per registration is correct, not a bug --
+-- cproxy upserts onto Users.id, so it simply lands on 0 and then on the allocated prime. The same holds
+-- for a manual `UPDATE dbo.Users SET prime_expired = ...` when a prime is rotated.
 CREATE TRIGGER TR_Users_SyncOutbox ON dbo.Users
 AFTER INSERT, UPDATE
 NOT FOR REPLICATION
@@ -1819,10 +1837,11 @@ AS
 SET NOCOUNT ON
 BEGIN
     INSERT INTO dbo.UsersSyncOutbox
-        (action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc)
+        (action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc, prime, prime_expired)
     SELECT
           CASE WHEN EXISTS (SELECT 1 FROM deleted d WHERE d.id = i.id) THEN 'updated' ELSE 'created' END
         , i.id, i.UsersId, i.userName, i.email, i.lastVisit, i.access, i.suspended, i.authType, i.deleted, i.deletedUtc
+        , i.prime, i.prime_expired
     FROM INSERTED i
 END
 GO

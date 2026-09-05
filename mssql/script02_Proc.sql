@@ -4957,7 +4957,8 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SELECT TOP (@batchSize)
-          outbox_id, action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc, created_utc
+          outbox_id, action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc
+        , prime, prime_expired, created_utc
     FROM dbo.UsersSyncOutbox
     WHERE dispatched_utc IS NULL
     ORDER BY outbox_id;
