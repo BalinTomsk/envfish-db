@@ -1691,7 +1691,8 @@ CREATE TABLE Users
     agent      varchar(128) NULL,
     host       varchar(1024) NULL,
     country    char(2) NULL,
-    prime      bigint NOT NULL,
+    prime      bigint NOT NULL,                -- used in access security
+    prime_expired date NOT NULL,               -- prime is expired and must be changed after date  
     authType            varchar(16) not null,  -- 'Local' | 'OAuth'. External-login details live in UserExternalLogin.
     deleted             bit NOT NULL,          -- 1 = soft-deleted (self/admin). Row is KEPT for history; its
                                                -- email/external-login identity is freed so the person can sign
@@ -1714,6 +1715,8 @@ GO
 -- first such row would own the only 0 the table can hold and every later account creation would
 -- fail on this index. Primes actually issued are still unique, which is the invariant that matters.
 CREATE UNIQUE NONCLUSTERED INDEX UK_Users_prime ON Users(prime) WHERE prime <> 0
+GO
+ALTER TABLE Users add CONSTRAINT df_Users_prime_expired  DEFAULT (DATEADD(YEAR, 1, SYSUTCDATETIME()))
 GO
 ALTER TABLE Users add constraint df_USer_stamp default getutcdate() for stamp
 GO
