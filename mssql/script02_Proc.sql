@@ -5003,6 +5003,71 @@ GO
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_prime_sync_outbox_take' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_prime_sync_outbox_take
+GO
+-- sp_user_prime_sync_outbox_take : the dbo.Users_Prime counterpart of sp_users_sync_outbox_take,
+-- called by the same dispatcher (aspnet/tools/Run-UsersSyncDispatch.ps1) to read the oldest
+-- undispatched dbo.UserPrimeSyncOutbox rows. Same ack contract: a row must be acked
+-- (sp_user_prime_sync_outbox_ack) only once durably published, and a row left unacked is simply
+-- re-read next run -- harmless, because cproxy dedups on the outbox_id-derived eventId.
+--
+-- @batchSize defaults LOWER than the users-sync take (5 vs 25) on purpose: each row here carries a
+-- ~10 KB JSON array of 365 primes rather than a single flat user snapshot, so a batch of 25 would be
+-- a quarter-megabyte of payload held in the dispatcher at once for no benefit.
+CREATE OR ALTER PROCEDURE dbo.sp_user_prime_sync_outbox_take
+    @batchSize INT = 5
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT TOP (@batchSize)
+          outbox_id, action, user_id, day_count, primes, created_utc
+    FROM dbo.UserPrimeSyncOutbox
+    WHERE dispatched_utc IS NULL
+    ORDER BY outbox_id;
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_prime_sync_outbox_ack' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_prime_sync_outbox_ack
+GO
+-- sp_user_prime_sync_outbox_ack : marks one dbo.UserPrimeSyncOutbox row dispatched after the
+-- dispatcher confirms RabbitMQ accepted the publish ({"routed":true}). Idempotent -- acking an
+-- already-dispatched or unknown outbox_id updates zero rows rather than erroring.
+CREATE OR ALTER PROCEDURE dbo.sp_user_prime_sync_outbox_ack
+    @outbox_id BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE dbo.UserPrimeSyncOutbox SET dispatched_utc = SYSUTCDATETIME()
+    WHERE outbox_id = @outbox_id AND dispatched_utc IS NULL;
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_prime_sync_outbox_purge' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_prime_sync_outbox_purge
+GO
+-- sp_user_prime_sync_outbox_purge : deletes dispatched dbo.UserPrimeSyncOutbox rows older than
+-- @olderThanDays so the outbox stays bounded. Never deletes an undispatched row, however old.
+-- Worth running at least as often as the users-sync purge: these rows are ~10 KB each rather than a
+-- few hundred bytes, so the same row count costs far more space.
+CREATE OR ALTER PROCEDURE dbo.sp_user_prime_sync_outbox_purge
+    @olderThanDays INT = 7
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM dbo.UserPrimeSyncOutbox
+    WHERE dispatched_utc IS NOT NULL
+      AND dispatched_utc < DATEADD(DAY, -@olderThanDays, SYSUTCDATETIME());
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_add_catch_pending_fish' AND type = 'P')
     DROP PROCEDURE dbo.sp_add_catch_pending_fish
 GO
