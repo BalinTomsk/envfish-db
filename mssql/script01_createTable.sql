@@ -1846,6 +1846,91 @@ BEGIN
 END
 GO
 ---------------------------------------------------------------------------------------------------------------------------------------------
+-- UserPrimeSyncOutbox : the dbo.Users_Prime half of the users-sync pipeline, alongside
+-- dbo.UsersSyncOutbox above. Same contract (dispatcher -> queue fishfind.account.events -> cproxy
+-- SQLite mirror), same rules: populated ONLY by TR_Users_Prime_SyncOutbox below, node-local
+-- bookkeeping, excluded from peer-to-peer replication.
+--
+-- ONE ROW PER USER PER STATEMENT, not one per prime. dbo.sp_user_prime_assign writes all 365 day
+-- primes in a single INSERT ... SELECT, and a T-SQL trigger is statement-level, so the trigger sees
+-- all 365 rows in one INSERTED and aggregates them into a single outbox row carrying a JSON array.
+-- Row-per-prime would put 365 messages on the queue for every registration -- at the measured
+-- 4,727 registrations/min that is ~1.7M messages/min, which is why the payload is batched here
+-- rather than in the dispatcher.
+CREATE TABLE UserPrimeSyncOutbox
+(
+    outbox_id      bigint IDENTITY(1,1) NOT NULL,
+    action         varchar(10)          NOT NULL,   -- 'created' | 'deleted'
+    user_id        uniqueidentifier     NOT NULL,   -- Users_Prime.user_id -> Users.id
+    day_count      int                  NOT NULL,   -- number of pairs in `primes`; 365 for a full allocation
+    -- [{"day":1,"prime":101},...] ordered by day_year. nvarchar(max) because 365 pairs is ~10 KB,
+    -- past the 8000-byte limit of nvarchar(4000).
+    primes         nvarchar(max)        NOT NULL,
+    created_utc    datetime2            NOT NULL,
+    dispatched_utc datetime2            NULL
+)
+GO
+ALTER TABLE UserPrimeSyncOutbox ADD CONSTRAINT PK_UserPrimeSyncOutbox PRIMARY KEY CLUSTERED (outbox_id)
+GO
+ALTER TABLE UserPrimeSyncOutbox ADD CONSTRAINT df_UserPrimeSyncOutbox_created_utc DEFAULT SYSUTCDATETIME() FOR created_utc
+GO
+ALTER TABLE UserPrimeSyncOutbox ADD CONSTRAINT CH_UserPrimeSyncOutbox_action CHECK (action IN ('created', 'deleted'))
+GO
+-- Filtered index: the dispatcher only ever scans undispatched rows, a small tail of the table.
+CREATE INDEX IX_UserPrimeSyncOutbox_undispatched ON UserPrimeSyncOutbox(outbox_id) WHERE dispatched_utc IS NULL
+GO
+---------------------------------------------------------------------------------------------------------------------------------------------
+IF OBJECT_ID('TR_Users_Prime_SyncOutbox') IS NOT NULL DROP TRIGGER TR_Users_Prime_SyncOutbox
+GO
+-- TR_Users_Prime_SyncOutbox : snapshots allocation and revocation of the 365 per-day primes into
+-- dbo.UserPrimeSyncOutbox. NOT FOR REPLICATION for the same reason as TR_Users_SyncOutbox -- a
+-- replicated row landing on a peer node must not re-enter that node's outbox.
+--
+-- INSERT and DELETE only, deliberately -- there is no UPDATE arm because dbo.Users_Prime is
+-- write-once per account: sp_user_prime_assign INSERTs the 365 rows under a
+-- `NOT EXISTS (... WHERE user_id = @userid)` guard and never rewrites them, so an UPDATE arm would
+-- be dead code. A prime is re-issued by deleting the account's rows and re-running the assign, which
+-- this trigger reports as a 'deleted' followed by a 'created'.
+--
+-- The DELETE arm matters more than it looks: FK_Users_Prime is ON DELETE CASCADE, so hard-deleting a
+-- dbo.Users row silently drops that account's 365 primes. Cascading deletes DO fire the child
+-- table's AFTER trigger, so the revocation reaches cproxy and the mirror does not keep serving primes
+-- for an account that no longer holds them. (Note TR_Users_SyncOutbox has no DELETE arm, so the
+-- parent Users row's disappearance is itself unmirrored -- these primes are the part that matters,
+-- since they are the access-security value.)
+--
+-- Both pseudo-tables are grouped by user_id so a multi-account statement (a backfill pass over
+-- several users, a cascade from a multi-row Users delete) emits one row per affected account rather
+-- than one giant mixed payload. On a pure INSERT the `deleted` pseudo-table is empty and the second
+-- statement writes nothing, and vice versa.
+CREATE TRIGGER TR_Users_Prime_SyncOutbox ON dbo.Users_Prime
+AFTER INSERT, DELETE
+NOT FOR REPLICATION
+AS
+SET NOCOUNT ON
+BEGIN
+    INSERT INTO dbo.UserPrimeSyncOutbox (action, user_id, day_count, primes)
+    SELECT 'created', i.user_id, COUNT(*)
+         , (SELECT p.day_year AS [day], p.prime AS [prime]
+              FROM INSERTED p
+             WHERE p.user_id = i.user_id
+             ORDER BY p.day_year
+               FOR JSON PATH)
+      FROM INSERTED i
+     GROUP BY i.user_id;
+
+    INSERT INTO dbo.UserPrimeSyncOutbox (action, user_id, day_count, primes)
+    SELECT 'deleted', d.user_id, COUNT(*)
+         , (SELECT p.day_year AS [day], p.prime AS [prime]
+              FROM deleted p
+             WHERE p.user_id = d.user_id
+             ORDER BY p.day_year
+               FOR JSON PATH)
+      FROM deleted d
+     GROUP BY d.user_id;
+END
+GO
+---------------------------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------
 --  External OAuth/OIDC logins: ONE row per provider account linked to a Users row.
 --  Single table for ALL providers — add Outlook/Apple later as new 'provider'
