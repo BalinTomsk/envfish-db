@@ -127,3 +127,28 @@ GO
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- ONE-OFF BACKFILL (2026-09-09) -- dbo.Users_Prime -> dbo.UserPrimeSyncOutbox for accounts that
+-- predate TR_Users_Prime_SyncOutbox.
+--
+-- TRANSIENT: per envfish-db/CLAUDE.md, a one-off backfill in this file is removed once it has been
+-- run against the target database. Delete this block after it has been applied everywhere it is
+-- needed. dbo.sp_user_prime_sync_backfill itself lives in script02_Proc.sql and STAYS -- it is a
+-- reusable repair tool, this is just the invocation.
+--
+-- Background: the trigger was created 2026-09-08, so every account allocated before that got its
+-- 365 primes with no outbox row, and a trigger does not fire retroactively. The whole pipeline
+-- (trigger -> outbox -> dispatcher -> RabbitMQ -> cproxy SQLite mirror) had therefore delivered
+-- zero primes, which is what blocked CPROXY_JWT_REQUIRE_USER on the gateway.
+--
+-- Safe to leave running on a fresh build: on a new database dbo.Users_Prime is empty, so this
+-- enqueues nothing. Safe to re-run: the proc skips any account that already has a 'created' row.
+DECLARE @enqueued int;
+EXEC dbo.sp_user_prime_sync_backfill @enqueued = @enqueued OUTPUT;
+PRINT 'user-prime sync backfill: enqueued ' + CAST(ISNULL(@enqueued, 0) AS varchar(10)) + ' outbox row(s)';
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------

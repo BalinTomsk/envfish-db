@@ -2,6 +2,46 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-09: **`dbo.sp_user_prime_sync_backfill` — the `Users_Prime` sync stream had delivered
+  nothing, ever. APPLIED TO PROD.** Every piece of the pipeline existed and worked
+  (`TR_Users_Prime_SyncOutbox` → `dbo.UserPrimeSyncOutbox` → dispatcher → RabbitMQ → cproxy's SQLite
+  mirror), yet `dbo.UserPrimeSyncOutbox` held **0 rows** and cproxy's `user_prime_sync` table held
+  **0 rows**, against 1095 real rows in `dbo.Users_Prime`.
+
+  **Cause:** the trigger was created 2026-09-08 07:20 and every existing account was allocated
+  before that. A trigger does not fire retroactively, so the stream would only ever have emitted for
+  a *newly registered* account — the three existing ones were invisible to it permanently. This is
+  what blocked `CPROXY_JWT_REQUIRE_USER` on the gateway: a JWT's `user` claim is checked against
+  that mirror, and an empty mirror fails every check closed.
+
+  - **New proc `dbo.sp_user_prime_sync_backfill`** (`script02_Proc.sql`) enqueues a `'created'`
+    outbox row for any account whose primes exist but were never captured. It emits **exactly** the
+    shape the trigger emits — one row per account, `day_count`, and a `[{"day":N,"prime":M},…]`
+    array ordered by `day_year` — so neither the dispatcher nor cproxy needed a change to consume
+    it. `@user_id` repairs one account; `NULL` scans all. Returns `@enqueued`.
+  - **Idempotent by design, which is the whole safety story:** an account is skipped if it already
+    has *any* `'created'` row, dispatched or not. Re-running enqueues nothing, so it is safe to run
+    twice, safe alongside the live trigger, and safe to leave deployed. Proven on prod, not just in
+    tests: first run enqueued 3, immediate second run enqueued 0.
+  - **One-off invocation in `script20_Migration.sql`** per this file's rule for live-DB backfills.
+    **Transient — delete that block once it has been applied everywhere.** The proc itself stays; it
+    is a reusable repair tool.
+  - **Tests (test-first, as required).** `unit_test@UserPrimeSyncOutbox.sql` gains TEST 8/9/10:
+    a pre-trigger account is enqueued with all 365 primes; a second run enqueues nothing; an
+    already-covered account is skipped by a whole-table run. **Verified failing first** — all three
+    reported `Could not find stored procedure 'dbo.sp_user_prime_sync_backfill'` before the proc
+    existed. 570 PASS afterwards, with only the 3 **pre-existing** `fn_fish_code_latin_json`
+    failures, confirmed identical (same lines, same numbers) against a HEAD baseline run.
+  - **A trap worth copying:** the three tests initially printed **PASS while failing**. After the
+    `CATCH` swallows an error every variable is NULL, and `NULL <> 1` is UNKNOWN, so a bare
+    inequality falls through to the ELSE. The assertions now check `IS NULL` first, as the template
+    in `CLAUDE.md` does. Any test whose assertion omits that guard is lying when it matters most.
+  - **Result on prod:** 3 accounts enqueued → dispatched by the `FishFind-UsersSync-Dispatch`
+    scheduled task → cproxy's mirror now holds **1095 `user_prime_sync` rows across 3 accounts**,
+    and derives the same `Users.prime × Users_Prime.prime` product the frontend puts in a JWT
+    (admin, day_year 252: `4783157839`, matching the minted token exactly). `CPROXY_JWT_REQUIRE_USER`
+    is now unblocked — still **off**, pending a decision.
+
 - 2026-09-04: **Per-user prime allocation wired into registration, with the primes generated in C#**
   — `dbo.Users.prime` and the 365 `dbo.Users_Prime` rows are now filled in on every account-creation
   path, instead of the new columns sitting unpopulated. Both sequences are global and gap-free
