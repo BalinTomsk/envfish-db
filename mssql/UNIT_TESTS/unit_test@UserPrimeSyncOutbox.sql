@@ -33,6 +33,10 @@ GO
   TEST 6 - a multi-account INSERT emits one row PER USER, not one merged row
   TEST 7 - a prime beyond 2^31 survives into the JSON payload intact (bigint, not int -- a
            truncated prime is a WRONG credential, not an approximate number)
+  TEST 8 - dbo.sp_user_prime_sync_backfill enqueues a 'created' row for an account whose primes
+           predate the trigger (the live gap -- see the test's own comment)
+  TEST 9 - the backfill is idempotent: a second run enqueues nothing
+  TEST 10 - an account the trigger already covered is skipped by a whole-table backfill run
 */
 
 -- ============================================================================
@@ -317,4 +321,154 @@ ELSE
     print 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: a prime beyond 2^31 reached the JSON payload intact'
 
 ROLLBACK TRAN UPO_Test07
+GO
+
+-- ============================================================================
+-- TEST 8: backfill enqueues a 'created' row for an account whose primes predate
+--         the trigger. This is the live production gap: TR_Users_Prime_SyncOutbox
+--         was created 2026-09-08, every existing account was allocated before it,
+--         and a trigger does not fire retroactively -- so dbo.UserPrimeSyncOutbox
+--         stayed empty and cproxy's mirror never received a single prime.
+-- ============================================================================
+BEGIN TRAN UPO_Test08
+    declare @test_name sysname = N'UPO_Test08 [sp_user_prime_sync_backfill] : pre-trigger account is enqueued'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Cnt int, @Action varchar(10), @DayCount int, @ArrCount int, @LastPrime bigint, @Enqueued int;
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+DECLARE @U8 uniqueidentifier = NEWID();
+INSERT INTO dbo.Users (id, userName, psw, firstName, lastName, email, question, answer, authType, deleted)
+VALUES (@U8, N'upo_user_t8', 0x00000000000000000000000000000000, N'F', N'L', N'upo8@test', N'q', 0x00000000000000000000000000000000, N'Local', 0);
+
+INSERT INTO dbo.Users_Prime (user_id, day_year, prime)
+SELECT @U8, n.day_year, 9080000000 + n.day_year
+FROM (SELECT TOP 365 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS day_year FROM sys.all_objects) n;
+
+-- Simulate a pre-trigger allocation: drop the row the trigger just wrote, leaving
+-- Users_Prime populated but the outbox empty -- exactly the production state.
+DELETE FROM dbo.UserPrimeSyncOutbox WHERE user_id = @U8;
+
+EXEC dbo.sp_user_prime_sync_backfill @user_id = @U8, @enqueued = @Enqueued OUTPUT;
+
+SELECT @Cnt = COUNT(*) FROM dbo.UserPrimeSyncOutbox WHERE user_id = @U8;
+SELECT @Action = action, @DayCount = day_count, @ArrCount = (SELECT COUNT(*) FROM OPENJSON(primes))
+     , @LastPrime = CAST(JSON_VALUE(primes, '$[364].prime') AS bigint)
+  FROM dbo.UserPrimeSyncOutbox WHERE user_id = @U8;
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE() AS ErrorState
+         , @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- NULL is checked FIRST and explicitly: if the EXEC above throws, CATCH swallows it and every
+-- variable stays NULL, and `NULL <> 1` is UNKNOWN -- so a bare inequality would fall through to
+-- the ELSE and print PASS for a test that never ran. (Observed exactly that before the proc
+-- existed.) Same guard as the template in envfish-db/CLAUDE.md.
+IF @Enqueued IS NULL OR @Cnt IS NULL OR @Action IS NULL OR @DayCount IS NULL OR @ArrCount IS NULL OR @LastPrime IS NULL
+   OR @Enqueued <> 1 OR @Cnt <> 1 OR @Action <> 'created' OR @DayCount <> 365 OR @ArrCount <> 365 OR @LastPrime <> 9080000365
+   RAISERROR ('TEST 8 FAIL [%dms]: enqueued=%d rows=%d day_count=%d json=%d last=%I64d (expected 1/1/365/365/9080000365)', 16, -1, @ElapsedMs, @Enqueued, @Cnt, @DayCount, @ArrCount, @LastPrime)
+ELSE
+    print 'TEST 8 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: backfill enqueued one created row carrying all 365 primes'
+
+ROLLBACK TRAN UPO_Test08
+GO
+
+-- ============================================================================
+-- TEST 9: the backfill is IDEMPOTENT -- a second run enqueues nothing. This is
+--         what makes it safe to re-run against prod, and safe to leave in place
+--         while the trigger handles new accounts: an account that already has a
+--         'created' row must never be emitted twice, or the mirror would process
+--         a duplicate 365-prime payload.
+-- ============================================================================
+BEGIN TRAN UPO_Test09
+    declare @test_name sysname = N'UPO_Test09 [sp_user_prime_sync_backfill] : re-running enqueues nothing'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @First int, @Second int, @Rows int;
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+DECLARE @U9 uniqueidentifier = NEWID();
+INSERT INTO dbo.Users (id, userName, psw, firstName, lastName, email, question, answer, authType, deleted)
+VALUES (@U9, N'upo_user_t9', 0x00000000000000000000000000000000, N'F', N'L', N'upo9@test', N'q', 0x00000000000000000000000000000000, N'Local', 0);
+
+INSERT INTO dbo.Users_Prime (user_id, day_year, prime)
+SELECT @U9, n.day_year, 9090000000 + n.day_year
+FROM (SELECT TOP 365 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS day_year FROM sys.all_objects) n;
+
+DELETE FROM dbo.UserPrimeSyncOutbox WHERE user_id = @U9;
+
+EXEC dbo.sp_user_prime_sync_backfill @user_id = @U9, @enqueued = @First  OUTPUT;
+EXEC dbo.sp_user_prime_sync_backfill @user_id = @U9, @enqueued = @Second OUTPUT;
+
+SELECT @Rows = COUNT(*) FROM dbo.UserPrimeSyncOutbox WHERE user_id = @U9;
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE() AS ErrorState
+         , @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF @First IS NULL OR @Second IS NULL OR @Rows IS NULL      -- see the NULL note on TEST 8
+   OR @First <> 1 OR @Second <> 0 OR @Rows <> 1
+   RAISERROR ('TEST 9 FAIL [%dms]: first=%d second=%d rows=%d (expected 1 / 0 / 1)', 16, -1, @ElapsedMs, @First, @Second, @Rows)
+ELSE
+    print 'TEST 9 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: a second backfill run enqueued nothing and left one row'
+
+ROLLBACK TRAN UPO_Test09
+GO
+
+-- ============================================================================
+-- TEST 10: an account the trigger ALREADY covered is skipped, and a whole-table
+--          run (@user_id = NULL) picks up only the uncovered one. Proves the
+--          backfill cannot double-emit for accounts registered normally.
+-- ============================================================================
+BEGIN TRAN UPO_Test10
+    declare @test_name sysname = N'UPO_Test10 [sp_user_prime_sync_backfill] : covered account skipped, uncovered picked up'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @RowsCovered int, @RowsGap int, @Enqueued int;
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- A: allocated normally, trigger row left in place (the "already covered" case).
+DECLARE @UA uniqueidentifier = NEWID();
+INSERT INTO dbo.Users (id, userName, psw, firstName, lastName, email, question, answer, authType, deleted)
+VALUES (@UA, N'upo_user_t10a', 0x00000000000000000000000000000000, N'F', N'L', N'upo10a@test', N'q', 0x00000000000000000000000000000000, N'Local', 0);
+INSERT INTO dbo.Users_Prime (user_id, day_year, prime)
+SELECT @UA, n.day_year, 9100000000 + n.day_year
+FROM (SELECT TOP 365 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS day_year FROM sys.all_objects) n;
+
+-- B: the pre-trigger case again -- primes present, outbox row removed.
+DECLARE @UB uniqueidentifier = NEWID();
+INSERT INTO dbo.Users (id, userName, psw, firstName, lastName, email, question, answer, authType, deleted)
+VALUES (@UB, N'upo_user_t10b', 0x00000000000000000000000000000000, N'F', N'L', N'upo10b@test', N'q', 0x00000000000000000000000000000000, N'Local', 0);
+INSERT INTO dbo.Users_Prime (user_id, day_year, prime)
+SELECT @UB, n.day_year, 9110000000 + n.day_year
+FROM (SELECT TOP 365 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS day_year FROM sys.all_objects) n;
+DELETE FROM dbo.UserPrimeSyncOutbox WHERE user_id = @UB;
+
+EXEC dbo.sp_user_prime_sync_backfill @enqueued = @Enqueued OUTPUT;   -- whole table
+
+SELECT @RowsCovered = COUNT(*) FROM dbo.UserPrimeSyncOutbox WHERE user_id = @UA;
+SELECT @RowsGap     = COUNT(*) FROM dbo.UserPrimeSyncOutbox WHERE user_id = @UB;
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE() AS ErrorState
+         , @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- @Enqueued is checked as >= 1, not = 1: a whole-table run also legitimately picks up any other
+-- uncovered account already present in the test database, which is not this test's business.
+IF @RowsCovered IS NULL OR @RowsGap IS NULL OR @Enqueued IS NULL   -- see the NULL note on TEST 8
+   OR @RowsCovered <> 1 OR @RowsGap <> 1 OR @Enqueued < 1
+   RAISERROR ('TEST 10 FAIL [%dms]: covered=%d gap=%d enqueued=%d (expected 1 / 1 / >=1)', 16, -1, @ElapsedMs, @RowsCovered, @RowsGap, @Enqueued)
+ELSE
+    print 'TEST 10 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: covered account untouched, uncovered account enqueued once'
+
+ROLLBACK TRAN UPO_Test10
 GO

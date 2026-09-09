@@ -5068,6 +5068,66 @@ GO
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_prime_sync_backfill' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_prime_sync_backfill
+GO
+-- sp_user_prime_sync_backfill : enqueues a 'created' dbo.UserPrimeSyncOutbox row for every account
+-- whose dbo.Users_Prime allocation exists but was never captured by TR_Users_Prime_SyncOutbox.
+--
+-- WHY THIS EXISTS. The trigger was created 2026-09-08. Every account allocated before that -- which
+-- on prod was all of them -- got its 365 primes without an outbox row, and a trigger does not fire
+-- retroactively. The result was a fully built pipeline (trigger -> outbox -> dispatcher -> RabbitMQ
+-- -> cproxy SQLite mirror) that had delivered exactly zero primes: dbo.UserPrimeSyncOutbox was
+-- empty and cproxy's user_prime_sync table had 0 rows, which is why the gateway could not turn on
+-- CPROXY_JWT_REQUIRE_USER (every JWT `user` claim would fail against an empty mirror).
+--
+-- It emits rows in EXACTLY the shape the trigger emits -- one row per account, day_count = the
+-- number of pairs, primes = a [{"day":N,"prime":M},...] JSON array ordered by day_year -- so the
+-- dispatcher and cproxy cannot tell a backfilled row from a triggered one, and neither needed a
+-- change to consume it.
+--
+-- IDEMPOTENT, and that is the whole safety story. An account is skipped when it already has ANY
+-- 'created' row in the outbox, dispatched or not: dispatched means the mirror already has those
+-- primes, undispatched means it is about to. Re-running therefore enqueues nothing, so this is safe
+-- to run twice, safe to run while the trigger is live, and safe to leave deployed. Without that
+-- guard a second run would put a duplicate ~10 KB payload on the queue for every account.
+--
+-- @user_id NULL (the default) scans every account; pass one to repair a single account. @enqueued
+-- returns how many outbox rows were written, which is what an operator checks against the number of
+-- accounts they expected.
+--
+-- Called by: operators / one-off migration (script20_Migration.sql). Not called by application code
+-- -- normal registrations are covered by TR_Users_Prime_SyncOutbox and need nothing from here.
+CREATE OR ALTER PROCEDURE dbo.sp_user_prime_sync_backfill
+    @user_id  uniqueidentifier = NULL,
+    @enqueued int              = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO dbo.UserPrimeSyncOutbox (action, user_id, day_count, primes)
+    SELECT 'created', p.user_id, COUNT(*)
+         , (SELECT q.day_year AS [day], q.prime AS [prime]
+              FROM dbo.Users_Prime q
+             WHERE q.user_id = p.user_id
+             ORDER BY q.day_year
+               FOR JSON PATH)
+      FROM dbo.Users_Prime p
+     WHERE (@user_id IS NULL OR p.user_id = @user_id)
+       AND NOT EXISTS (SELECT 1
+                         FROM dbo.UserPrimeSyncOutbox o
+                        WHERE o.user_id = p.user_id
+                          AND o.action  = 'created')
+     GROUP BY p.user_id;
+
+    SET @enqueued = @@ROWCOUNT;
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_add_catch_pending_fish' AND type = 'P')
     DROP PROCEDURE dbo.sp_add_catch_pending_fish
 GO
