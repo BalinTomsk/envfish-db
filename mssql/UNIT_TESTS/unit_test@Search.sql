@@ -21,6 +21,7 @@ GO
   TEST 12 - find: River Lake
   TEST 13 - find: Lac gold
   TEST 14 - lake with 2 photos in lake_image is NOT duplicated (vw_lake join regression)
+  TEST 15 - find lake by CGNDM (secondary CGNDB-style id, Editor/LakeEditor.aspx)
 */
 SET NOCOUNT ON;
 
@@ -30,7 +31,7 @@ DECLARE @FixtureNames TABLE (n sysname);
 INSERT INTO @FixtureNames (n) VALUES
     (N'test lake'), (N'test river'), (N'Lac test'), (N'test Lac'), (N'test Lake'), (N'Lake test'),
     (N'Single Lake'), (N'Great Double Lake'), (N'Ha! Ha! Lake'), (N'River Lake'), (N'Lac gold'),
-    (N'Test Multi Photo Lake');
+    (N'Test Multi Photo Lake'), (N'Test CGNDM Lake');
 
 BEGIN TRY
     BEGIN TRANSACTION;
@@ -202,6 +203,17 @@ BEGIN TRY
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R14 = 1 PRINT 'TEST 14 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: lake with 2 photos returned exactly once (not duplicated)';
     ELSE PRINT 'TEST 14 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 1, got ' + CAST(@R14 AS varchar);
+
+    SET @tStart = SYSUTCDATETIME();
+    DELETE t FROM Tributaries t JOIN lake l ON l.lake_id IN (t.lake_id, t.Main_Lake_id) JOIN @FixtureNames f ON f.n = l.lake_name;
+    DELETE l FROM lake l JOIN @FixtureNames f ON f.n = l.lake_name;
+    INSERT INTO lake (lake_name, locType, CGNDM) VALUES (N'Test CGNDM Lake', 1, 'CGNDM');
+    DECLARE @Tbl15 TABLE (lake_name sysname, locType int);
+    INSERT INTO @Tbl15 (lake_name, locType) SELECT lake_name, locType FROM dbo.SearchLakeList(N'CGNDM');
+    DECLARE @R15 int = (SELECT COUNT(*) FROM @Tbl15 WHERE lake_name = N'Test CGNDM Lake');
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @R15 = 1 PRINT 'TEST 15 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: found lake by CGNDM';
+    ELSE PRINT 'TEST 15 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 1, got ' + CAST(@R15 AS varchar);
 
     ROLLBACK TRANSACTION;
 

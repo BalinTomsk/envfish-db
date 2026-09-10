@@ -35,6 +35,7 @@ GO
   TEST 24 - fn_lake_edit is_fish reflects the ACTUAL lake_fish rows, not the cached lake.isFish flag
   TEST 25 - assigning a fish clears lake.noFish (a water body with fish cannot be "no fish")
   TEST 26 - deleting the last assigned fish resets lake.isFish back to 0
+  TEST 27 - CGNDM round-trips
 */
 SET NOCOUNT ON;
 
@@ -290,6 +291,15 @@ BEGIN TRY
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @RstIsFish = 0 PRINT 'TEST 26 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: deleting the last fish resets isFish';
     ELSE PRINT 'TEST 26 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 0, got ' + ISNULL(CAST(@RstIsFish AS varchar), 'NULL');
+
+    SET @tStart = SYSUTCDATETIME();
+    INSERT INTO lake (locType, lake_name, CGNDM) VALUES (1, N'TestLakeCGNDM', 'CGNDM');
+    SET @LakeId = (SELECT lake_id FROM lake WHERE lake_name = N'TestLakeCGNDM');
+    SET @Doc = dbo.fn_lake_edit(@LakeId);
+    DECLARE @RstCgndm char(5) = (SELECT T.C.value('@CGNDM', 'char(5)') FROM @Doc.nodes('/root/lake') T(C));
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @RstCgndm = 'CGNDM' PRINT 'TEST 27 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: CGNDM round-trips';
+    ELSE PRINT 'TEST 27 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: got ' + ISNULL(@RstCgndm, 'NULL');
 
     ROLLBACK TRANSACTION;
 

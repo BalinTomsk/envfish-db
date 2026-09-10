@@ -1509,7 +1509,7 @@ begin
     IF NOT EXISTS (SELECT * FROM @resultid)    
     BEGIN
         insert into @resultid (lake_id, irank)
-           select DISTINCT lake_id, 0 from dbo.lake l where @search = CGNDB
+           select DISTINCT lake_id, 0 from dbo.lake l where @search IN (CGNDB, CGNDM)
 
         IF NOT EXISTS (SELECT * FROM @resultid)    
         BEGIN
@@ -3502,7 +3502,7 @@ BEGIN
         -- the cached flag has drifted on a legacy row
         , CASE WHEN EXISTS (SELECT 1 FROM dbo.lake_fish lf WHERE lf.lake_id = l.lake_id) THEN 1 ELSE 0 END AS isFish
         , l.noFish, l.isolated, l.is_fishing_prohibited, l.sid, l.drainage, l.discharge, l.watershield, l.basin
-        , l.surface, l.shoreline, l.lake_road_access, l.CGNDB, l.descript, l.fishing
+        , l.surface, l.shoreline, l.lake_road_access, l.CGNDB, l.CGNDM, l.descript, l.fishing
         , w.source_name, w.mouth_name, w.source_state, w.source_country, l.source, l.mouth, l.reviewed
       FROM dbo.lake l JOIN dbo.vw_lake w ON l.lake_id=w.lake_id WHERE w.lake_id = @lake_id
     )
@@ -3514,7 +3514,7 @@ BEGIN
     (
         SELECT * FROM
         (
-            SELECT lake_id, stamp, locType, depth, width, length, volume, surface, shoreline, CGNDB, source_state, source_country
+            SELECT lake_id, stamp, locType, depth, width, length, volume, surface, shoreline, CGNDB, CGNDM, source_state, source_country
                  , COALESCE(isfish, 0) AS is_fish, COALESCE(noFish, 0) AS no_fish, lake_road_access
                  , COALESCE(is_fishing_prohibited, 0) AS is_fishing_prohibited, COALESCE(reviewed, 0) AS reviewed
                  , isolated, link, basin, sid, drainage, discharge, watershield, fishing, source, mouth
@@ -5357,6 +5357,7 @@ BEGIN
             l.watershield                            AS watershield_km2,
             l.drainage                               AS drainage,
             l.CGNDB                                  AS cgndb,
+            l.CGNDM                                  AS cgndm,
             l.lake_road_access                       AS roadAccess,
             @mli                                     AS mli,
             CAST(COALESCE(l.is_fishing_prohibited, 0) AS bit) AS fishingProhibited,

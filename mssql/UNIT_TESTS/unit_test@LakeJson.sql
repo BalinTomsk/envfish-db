@@ -31,7 +31,7 @@ BEGIN TRAN TestLakeJson1
 DECLARE @tStart datetime2, @ElapsedMs int; DECLARE @ok int = 0;
 BEGIN TRY  SET NOCOUNT ON; SET @tStart = SYSUTCDATETIME();
 DECLARE @Lake uniqueidentifier = NEWID();
-INSERT INTO dbo.lake (lake_id, locType, lake_name, descript) VALUES (@Lake, 1, N'UT Lake Json', N'a description');
+INSERT INTO dbo.lake (lake_id, locType, lake_name, descript, CGNDM) VALUES (@Lake, 1, N'UT Lake Json', N'a description', 'UTCGM');
 DECLARE @pic varbinary(max) = 0xFFD8AA010203;
 INSERT INTO dbo.lake_image (lake_image_ownerid, lake_image_pic, lake_image_source, lake_image_author, lake_image_link, lake_image_hash, lake_image_stamp)
     VALUES (@Lake, @pic, N'a source', N'an author', N'http://example/x.jpg', HASHBYTES('MD5', @pic), '2026-01-01');
@@ -40,6 +40,7 @@ IF @json IS NOT NULL
    AND JSON_VALUE(@json, '$.lakeName')          = N'UT Lake Json'
    AND JSON_VALUE(@json, '$.guid')              = CONVERT(varchar(36), @Lake)
    AND JSON_VALUE(@json, '$.description')        = N'a description'
+   AND JSON_VALUE(@json, '$.cgndm')             = N'UTCGM'
    AND JSON_QUERY(@json, '$.images')            IS NOT NULL
    AND JSON_VALUE(@json, '$.images[0].author')  = N'an author'
    AND JSON_VALUE(@json, '$.images[1].id')      IS NULL
