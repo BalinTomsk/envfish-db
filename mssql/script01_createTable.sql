@@ -1688,6 +1688,14 @@ CREATE TABLE Users
     answer     binary(16) NOT NULL,
     cell       bigint,
     access     int NOT NULL,                     -- 255 superAdmin
+                                                 -- LOAD-BEARING OUTSIDE THIS DB: the cproxy gateway
+                                                 -- treats exactly 255 as admin (UserPrimeStore::is_admin,
+                                                 -- efc-proxy, since 0.12.0), reading it from its RabbitMQ
+                                                 -- mirror via TR_Users_SyncOutbox. Changing what 255
+                                                 -- means, or moving admin elsewhere, changes who may
+                                                 -- correct the gateway's clock. The portal decides admin
+                                                 -- by the AdminUserIds GUID list instead -- keep both
+                                                 -- admin accounts at 255 so the two agree.
     suspended  BIT,
     ipaddr     varchar(32) NULL,
     addr       varchar(255) NULL,
