@@ -17,14 +17,35 @@
 -- (/news/list was unaffected — it uses v_news_list_rows, which does exist. That asymmetry is what
 -- proved it was a missing object rather than a MySQL connectivity problem.)
 --
--- WHY IT COULD NOT BE APPLIED FROM THE APP
--- ---------------------------------------
+-- ⚠ THIS FILE CANNOT BE RUN AS `portos` — CONFIRMED TWICE, FROM TWO DIFFERENT HOSTS
+-- ---------------------------------------------------------------------------------
 -- The application's MySQL account (`portos`) holds:
 --     SELECT, DELETE, DROP, REFERENCES, INDEX, ALTER, LOCK TABLES, EXECUTE, SHOW VIEW,
 --     ALTER ROUTINE, TRIGGER
--- It has NO CREATE, CREATE VIEW or CREATE ROUTINE. So neither the view nor the procedure can be
--- created or repaired with any credential stored anywhere in this codebase — it needs the Winhost
--- panel (or a GRANT of CREATE VIEW to `portos`).
+-- It has NO CREATE, CREATE VIEW or CREATE ROUTINE. Attempted and refused:
+--     2026-09-09  ERROR 1142  CREATE VIEW command denied to user 'portos'@'<docapi-droplet>'
+--     2026-09-09  ERROR 1142  CREATE VIEW command denied to user 'portos'@'<workstation>'
+-- Two different source hosts, same refusal — so this is NOT a per-host grant gap that adding an IP
+-- would fix. `portos` lacks the privilege outright, and it is the only MySQL credential stored
+-- anywhere in this codebase (frontend secrets.config, efj-backend/secret/mysql.cred, and docapi's
+-- own env all resolve to it). Running this file as `portos` from anywhere will fail the same way.
+--
+-- Note the shape of that grant list: DROP and ALTER are present, CREATE is not. `portos` can
+-- destroy the sibling views (v_news_default_grp1..5, _ranked, _top, v_news_list_rows) but cannot
+-- recreate them. Do not experiment against them.
+--
+-- WHAT ACTUALLY UNBLOCKS THIS — one of:
+--   1. Run this file from the Winhost control panel's own DB tool, IF that tool connects as the
+--      database owner rather than as `portos`. (The sibling views exist, so something once had the
+--      privilege — most likely this.)
+--   2. Ask Winhost support to either:
+--         GRANT CREATE VIEW ON `mysql_111487_envfish`.* TO 'portos'@'%';
+--      or create the view for you by running the statement at the bottom of this file.
+--      Some shared hosts withhold CREATE VIEW deliberately, because a view carries a DEFINER.
+--
+-- THERE IS NO OUTAGE WAITING ON THIS. docapi 1.8.3 already serves all three endpoints correctly
+-- by inlining this view's body (see below). This file is cleanup toward the intended design, not a
+-- fix for anything currently broken — it can sit here indefinitely without harm.
 --
 -- INTERIM WORKAROUND CURRENTLY IN PRODUCTION (docapi 1.8.3)
 -- --------------------------------------------------------
