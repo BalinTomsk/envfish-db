@@ -36,6 +36,8 @@ GO
   TEST 25 - assigning a fish clears lake.noFish (a water body with fish cannot be "no fish")
   TEST 26 - deleting the last assigned fish resets lake.isFish back to 0
   TEST 27 - CGNDM round-trips
+  TEST 28 - secondary_id round-trips (the "Sec. GUID" box under GUID on Editor/LakeEditor.aspx)
+  TEST 29 - a duplicate secondary_id is rejected (UK_lake_secondary_id)
 */
 SET NOCOUNT ON;
 
@@ -300,6 +302,28 @@ BEGIN TRY
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @RstCgndm = 'CGNDM' PRINT 'TEST 27 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: CGNDM round-trips';
     ELSE PRINT 'TEST 27 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: got ' + ISNULL(@RstCgndm, 'NULL');
+
+    SET @tStart = SYSUTCDATETIME();
+    DECLARE @SecId uniqueidentifier = NEWID();
+    INSERT INTO lake (locType, lake_name, secondary_id) VALUES (1, N'TestLakeSecondaryId', @SecId);
+    SET @LakeId = (SELECT lake_id FROM lake WHERE lake_name = N'TestLakeSecondaryId');
+    SET @Doc = dbo.fn_lake_edit(@LakeId);
+    DECLARE @RstSecId uniqueidentifier = (SELECT T.C.value('@secondary_id', 'uniqueidentifier') FROM @Doc.nodes('/root/lake') T(C));
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @RstSecId = @SecId PRINT 'TEST 28 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: secondary_id round-trips';
+    ELSE PRINT 'TEST 28 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: got ' + ISNULL(CAST(@RstSecId AS varchar(36)), 'NULL');
+
+    SET @tStart = SYSUTCDATETIME();
+    DECLARE @DupRejected bit = 0;
+    BEGIN TRY
+        INSERT INTO lake (locType, lake_name, secondary_id) VALUES (1, N'TestLakeSecondaryIdDup', @SecId);
+    END TRY
+    BEGIN CATCH
+        IF ERROR_NUMBER() IN (2601, 2627) SET @DupRejected = 1;
+    END CATCH;
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @DupRejected = 1 PRINT 'TEST 29 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: duplicate secondary_id rejected by UK_lake_secondary_id';
+    ELSE PRINT 'TEST 29 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: duplicate secondary_id was accepted';
 
     ROLLBACK TRANSACTION;
 

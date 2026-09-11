@@ -1503,8 +1503,12 @@ begin
 	IF TRY_CONVERT(UNIQUEIDENTIFIER, dbo.fn_CvtHexToGuid( @search )) IS NOT NULL
 		SET @search = dbo.fn_CvtHexToGuid( @search )
 
+	-- a GUID matches the lake's own id OR its secondary_id (edited under GUID on Editor/LakeEditor.aspx)
 	IF TRY_CONVERT(UNIQUEIDENTIFIER, @search ) IS NOT NULL
-        insert into @resultid (lake_id, irank) SELECT @search, 0
+        insert into @resultid (lake_id, irank)
+            SELECT @search, 0
+            UNION
+            SELECT lake_id, 0 FROM dbo.lake WHERE secondary_id = TRY_CONVERT(UNIQUEIDENTIFIER, @search)
 
     IF NOT EXISTS (SELECT * FROM @resultid)    
     BEGIN
@@ -3502,7 +3506,7 @@ BEGIN
         -- the cached flag has drifted on a legacy row
         , CASE WHEN EXISTS (SELECT 1 FROM dbo.lake_fish lf WHERE lf.lake_id = l.lake_id) THEN 1 ELSE 0 END AS isFish
         , l.noFish, l.isolated, l.is_fishing_prohibited, l.sid, l.drainage, l.discharge, l.watershield, l.basin
-        , l.surface, l.shoreline, l.lake_road_access, l.CGNDB, l.CGNDM, l.descript, l.fishing
+        , l.surface, l.shoreline, l.lake_road_access, l.CGNDB, l.CGNDM, l.secondary_id, l.descript, l.fishing
         , w.source_name, w.mouth_name, w.source_state, w.source_country, l.source, l.mouth, l.reviewed
       FROM dbo.lake l JOIN dbo.vw_lake w ON l.lake_id=w.lake_id WHERE w.lake_id = @lake_id
     )
@@ -3514,7 +3518,7 @@ BEGIN
     (
         SELECT * FROM
         (
-            SELECT lake_id, stamp, locType, depth, width, length, volume, surface, shoreline, CGNDB, CGNDM, source_state, source_country
+            SELECT lake_id, secondary_id, stamp, locType, depth, width, length, volume, surface, shoreline, CGNDB, CGNDM, source_state, source_country
                  , COALESCE(isfish, 0) AS is_fish, COALESCE(noFish, 0) AS no_fish, lake_road_access
                  , COALESCE(is_fishing_prohibited, 0) AS is_fishing_prohibited, COALESCE(reviewed, 0) AS reviewed
                  , isolated, link, basin, sid, drainage, discharge, watershield, fishing, source, mouth
@@ -5336,6 +5340,7 @@ BEGIN
     (
         SELECT TOP 1
             CONVERT(varchar(36), l.lake_id)          AS guid,
+            CONVERT(varchar(36), l.secondary_id)     AS secondaryGuid,
             l.lake_name                              AS lakeName,
             l.alt_name                               AS altName,
             l.[native]                               AS nativeName,
