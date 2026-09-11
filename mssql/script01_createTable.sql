@@ -806,6 +806,7 @@ CREATE TABLE Lake
     surface     int,                    -- km^2
     CGNDB       char(5),                -- unique id on http://www4.rncan.gc.ca/search-place-names/unique
     CGNDM       char(5),                -- secondary CGNDB-style id, edited on Editor/LakeEditor.aspx
+    secondary_id uniqueidentifier,      -- secondary GUID (edited under GUID on Editor/LakeEditor.aspx), searchable by SearchLakeList
     geom        geography,
     symbol      nvarchar(1),            -- first letter of actual name (to speed up search)
     reviewed    bit,                    -- means review manually done by operator
@@ -849,6 +850,8 @@ GO
 CREATE UNIQUE NONCLUSTERED INDEX UK_lake_CGNDB ON LAKE(CGNDB) WHERE CGNDB IS NOT NULL
 GO
 CREATE UNIQUE NONCLUSTERED INDEX UK_lake_CGNDM ON LAKE(CGNDM) WHERE CGNDM IS NOT NULL
+GO
+CREATE UNIQUE NONCLUSTERED INDEX UK_lake_secondary_id ON LAKE(secondary_id) WHERE secondary_id IS NOT NULL
 GO
 CREATE NONCLUSTERED INDEX [IX_Lake_symbol] ON [dbo].[Lake] ([symbol]) INCLUDE ([lake_name], [IsFish], [isWell]); 
 GO

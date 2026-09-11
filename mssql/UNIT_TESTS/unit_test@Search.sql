@@ -22,6 +22,7 @@ GO
   TEST 13 - find: Lac gold
   TEST 14 - lake with 2 photos in lake_image is NOT duplicated (vw_lake join regression)
   TEST 15 - find lake by CGNDM (secondary CGNDB-style id, Editor/LakeEditor.aspx)
+  TEST 16 - find lake by secondary_id (the "Sec. GUID" box, Editor/LakeEditor.aspx)
 */
 SET NOCOUNT ON;
 
@@ -214,6 +215,16 @@ BEGIN TRY
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R15 = 1 PRINT 'TEST 15 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: found lake by CGNDM';
     ELSE PRINT 'TEST 15 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 1, got ' + CAST(@R15 AS varchar);
+
+    SET @tStart = SYSUTCDATETIME();
+    DECLARE @Sec16 uniqueidentifier = NEWID();
+    INSERT INTO lake (lake_name, locType, secondary_id) VALUES (N'Test Secondary GUID Lake', 1, @Sec16);
+    DECLARE @Tbl16 TABLE (lake_name sysname, locType int);
+    INSERT INTO @Tbl16 (lake_name, locType) SELECT lake_name, locType FROM dbo.SearchLakeList(CONVERT(sysname, @Sec16));
+    DECLARE @R16 int = (SELECT COUNT(*) FROM @Tbl16 WHERE lake_name = N'Test Secondary GUID Lake');
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @R16 = 1 PRINT 'TEST 16 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: found lake by secondary_id';
+    ELSE PRINT 'TEST 16 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 1, got ' + CAST(@R16 AS varchar);
 
     ROLLBACK TRANSACTION;
 
