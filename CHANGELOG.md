@@ -48,8 +48,10 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   (`Users.prime` continues from the highest prime already issued, `Users_Prime` likewise), which is
   what the two UNIQUE indexes require. The database stores and enforces uniqueness; **the primes
   themselves are computed by `FishTracker.PrimeGenerator` in `fishfind-frontend`** — see that repo's
-  changelog for the C# half and the measurements. **Built and tested locally; NOT applied to
-  production.**
+  changelog for the C# half and the measurements. **APPLIED TO PROD** — this note said "NOT applied"
+  for days after it actually shipped; caught 2026-09-14 by checking live: `dbo.Users.prime` exists,
+  `dbo.Users_Prime` holds 1095 rows, 3 accounts carry a non-null prime, matching the 2026-09-09 entry
+  above which already depended on this being live.
   - **Prime generation lives in C#, not here.** `dbo.fn_prime_next_list` was written, measured, and
     **removed the same day**: trial division inside a multi-statement TVF cost **~500 ms per
     registration at ~1000 accounts** and grew with the primes, capping registration at ~156/minute.
@@ -289,8 +291,13 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   country IS NULL`, title/paragraph `LIKE` search) and, for the photo-lookup proc, the original
   candidate-scan-then-point-lookup workaround for the ORDER BY + BLOB connection-abort bug. Verified
   locally against a throwaway MySQL 8 database built from `script0.sql` + `script01_createTable.sql`
-  + `script02_Proc.sql`; not yet applied to the live Winhost database (requires the same deploy
-  permission as any other prod DB change). **New `dbo.sp_lake_description_update(@lake_id, @patch)` — JSON merge-patch of the
+  + `script02_Proc.sql`. **Applied to the live Winhost database** — this note said "not yet applied"
+  well after it shipped; caught 2026-09-14 by cross-referencing `CLAUDE.md` (which states
+  unconditionally that `MySqlNewsHelper.cs` calls these procs and "nothing in that helper hits the
+  `news` table directly any more") and `docapi`'s `MySqlNewsQueryRepository` source comments, which
+  describe `sp_news_list_for_grid`/`sp_news_count` as having scanned every published row on this host
+  "since 2026-08-31." (Not independently re-verified against Winhost MySQL directly — this
+  workstation cannot reach that host — but two independent docs agree, and neither hedges.) **New `dbo.sp_lake_description_update(@lake_id, @patch)` — JSON merge-patch of the
   `Editor/LakeEditor.aspx` "General" tab's editable fields.** (`script02_Proc.sql`.) Backs the new
   docapi `PATCH /api/v1/river/description/{guid}`. `@patch` is a JSON object; only keys actually
   present are touched (`JSON_PATH_EXISTS` per column) — a caller can change one field without
@@ -331,7 +338,10 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   object — no signature change to anything existing. `unit_test@LakeFishUpsertBatch.sql` (8 tests:
   insert, fill-empty-link, skip-sourced-fish, unknown fish, invalid fish id, unknown lake, mixed batch
   order, isFish trigger) passes via `autorun.bat` (full suite 505 PASS / 2 pre-existing FAIL, both in
-  `unit_test@FishCodeLatinJson.sql`, unrelated). **Built and tested locally; not yet applied to prod.**
+  `unit_test@FishCodeLatinJson.sql`, unrelated). **Applied to prod** — this note said "not yet
+  applied" long after it shipped; caught 2026-09-14 by checking `sys.objects` directly:
+  `sp_lake_fish_upsert_batch` exists, created 2026-08-25 (the same date docapi's PATCH endpoint
+  backed by it was deployed and verified live through cproxy — see that repo's changelog).
 
 - 2026-08-24: **New `dbo.fn_river_unfished_json(@country, @state, @river)` — next un-processed water
   body as JSON.** (`script02_Funct.sql`.) A scalar function returning the next water body of a type in a
@@ -891,7 +901,10 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   (`JdbcNewsQueryRepository.importNews`, `POST /api/v1/news/import`); the matching export reuses the
   existing `dbo.fn_news_json`. `unit_test@NewsImport.sql` — 4 tests, each its own transaction (full doc
   mapped/published; base64 photo → original bytes; **fn_news_json export → sp_news_import round-trip**;
-  minimal doc + defaults). All pass via `autorun.bat`. **Not yet applied to prod.**
+  minimal doc + defaults). All pass via `autorun.bat`. **Applied to prod** — this note said "not yet
+  applied" for well over a month after it shipped; caught 2026-09-14 by checking `sys.objects`
+  directly: both `sp_news_import` and `fn_news_json` exist, created 2026-07-31 and 2026-07-30
+  respectively, matching this entry's own dates.
 - 2026-07-30: **`dbo.fn_news_json(@news_id)` — export a news article as one self-contained JSON
   object** (`script02_Funct.sql`; scalar, idempotent `IF EXISTS(...xtype='FN') DROP…GO CREATE`).
   Returns, via `FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES`, every field needed to
