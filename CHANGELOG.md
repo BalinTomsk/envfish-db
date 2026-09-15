@@ -11,15 +11,24 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   because MySQL's `ROW_COUNT()` counts *changed* rows, not *matched* ones (unlike SQL Server's
   `@@ROWCOUNT`) — a byte-identical resubmit would otherwise read as "no such draft" and wrongly
   insert a duplicate. `sp_news_admin_photo_update` checks existence with an explicit `SELECT
-  COUNT(*)` before its `UPDATE` for the same reason. **Not yet applied to production** — `portos`
-  (the app's only MySQL credential) holds no `INSERT`/`UPDATE`/`CREATE ROUTINE` on
-  `mysql_111487_envfish` (same gap `FIX_missing_v_news_default_doc.sql` hit), so
-  `mysql/ADMIN_WRITE_news_procs.sql` is a ready-to-paste copy of just this section for the Winhost
-  control panel; once created there, `portos`'s existing blanket `EXECUTE` grant is enough to call
-  them (a routine runs under its definer's rights). 10 unit tests added
-  (`mysql/UNIT_TESTS/unit_test@NewsAdminWrite.sql`) but **not yet run against a real MySQL server**
-  this session (workstation can't reach Winhost; no local MySQL 8 container was reachable either) —
-  review before trusting a green run blindly.
+  COUNT(*)` before its `UPDATE` for the same reason. `portos` (the app's only MySQL credential)
+  holds no `INSERT`/`UPDATE`/`CREATE ROUTINE` on `mysql_111487_envfish` (same gap
+  `FIX_missing_v_news_default_doc.sql` hit), so `mysql/ADMIN_WRITE_news_procs.sql` is a ready-to-paste
+  copy of just this section for the Winhost control panel; once created there, `portos`'s existing
+  blanket `EXECUTE` grant is enough to call them (a routine runs under its definer's rights). 10 unit
+  tests added (`mysql/UNIT_TESTS/unit_test@NewsAdminWrite.sql`) but **not run against a real MySQL
+  server** — the workstation can't reach Winhost and no local MySQL 8 container was reachable.
+
+  **Applied to production 2026-09-15** (user ran `ADMIN_WRITE_news_procs.sql` via the control
+  panel). One more schema gap surfaced testing it live: `sp_news_admin_draft_create`'s
+  `DELETE FROM news WHERE news_publish <> 1` was a full table scan — no index existed on
+  `news_publish` — against a ~4,800-row table carrying several `LONGBLOB`/`LONGTEXT` columns, the
+  same "multi-row scan hangs on this host" hazard this file already documents for
+  `news_photo0`/`1`/`2`. New `idx_news_publish` (added to the `CREATE TABLE` for a fresh build, plus
+  the same idempotent guarded-migration pattern as `has_photo0` for an existing database) fixes it —
+  `portos` holds `ALTER`/`INDEX` (unlike `CREATE ROUTINE`), so docapi applied this one itself via a
+  startup bootstrap rather than needing the control panel again; see
+  `efj-backend/service/docapi/CHANGELOG.md`'s 1.13.5 entry for the full diagnostic story.
 
 - 2026-09-09: **`dbo.sp_user_prime_sync_backfill` — the `Users_Prime` sync stream had delivered
   nothing, ever. APPLIED TO PROD.** Every piece of the pipeline existed and worked

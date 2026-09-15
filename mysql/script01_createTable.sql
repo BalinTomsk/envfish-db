@@ -49,8 +49,31 @@ CREATE TABLE news (
     has_photo0 TINYINT(1) NOT NULL DEFAULT 0,
 
     PRIMARY KEY (news_id),
-    UNIQUE KEY id (id)
+    UNIQUE KEY id (id),
+    -- news_publish is heavily skewed (the vast majority of ~4,800 rows are published), and
+    -- sp_news_admin_draft_create's `DELETE FROM news WHERE news_publish <> 1` needs to seek
+    -- straight to the rare unpublished rows -- without this index that DELETE is a full table
+    -- scan of a BLOB-heavy table, which hangs on the live Winhost host well past any reasonable
+    -- timeout (confirmed 2026-09-15; see the PRODUCTION MIGRATION block below for the guarded
+    -- add-to-an-existing-database form, same idempotent pattern as has_photo0 above).
+    KEY idx_news_publish (news_publish)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================================================
+-- PRODUCTION MIGRATION -- news: add idx_news_publish (idempotent/guarded, for databases created
+-- before this index existed; the CREATE TABLE above already has it for a fresh build). See the
+-- comment on the inline KEY definition above for why this index matters.
+-- ============================================================================================
+SET @idx_news_publish_exists = (
+    SELECT COUNT(*) FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = 'news' AND index_name = 'idx_news_publish'
+);
+SET @sql = IF(@idx_news_publish_exists = 0,
+    'CREATE INDEX idx_news_publish ON news (news_publish)',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- ============================================================================================
 -- PRODUCTION MIGRATION -- news: add has_photo0 (idempotent/guarded, for databases created before
