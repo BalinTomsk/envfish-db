@@ -268,4 +268,158 @@ BEGIN
     SELECT doc FROM v_news_default_doc ORDER BY rn LIMIT 5;
 END //
 
+-- ============================================================================================
+-- docapi ADMIN WRITE endpoints (com.fishfind.docapi.repo.MySqlNewsAdminCommandRepository,
+-- "jdbc" profile) -- POST /api/v1/news/admin/draft, PATCH /api/v1/news/admin/{id},
+-- PATCH /api/v1/news/admin/{id}/photo/{index}. These back fishfind-frontend's
+-- Editor/AddNews.aspx admin authoring page (migrated off SQL Server's dbo.news 2026-09-14 -- see
+-- fishfind-frontend/Editor/CLAUDE.md -- because that table is being dropped).
+--
+-- WARNING: portos CANNOT apply this section of the script. It holds SELECT, DELETE, DROP,
+-- REFERENCES, INDEX, ALTER, LOCK TABLES, EXECUTE, SHOW VIEW, ALTER ROUTINE, TRIGGER on
+-- mysql_111487_envfish -- no INSERT, no UPDATE, no CREATE ROUTINE (confirmed twice, from two
+-- different hosts, trying to CREATE VIEW -- see FIX_missing_v_news_default_doc.sql for the exact
+-- error and grant list). These three procedures must therefore be created via the Winhost control
+-- panel's own DB tool (or by a differently-privileged account), same route as that view fix. Once
+-- created that way, portos's blanket EXECUTE privilege is enough to CALL them: a stored routine
+-- runs under its DEFINER's rights by default, so the INSERT/UPDATE inside happens under whichever
+-- account ran this script, not under portos -- portos itself never needs the missing grants.
+-- ADMIN_WRITE_news_procs.sql in this folder is a ready-to-paste copy of just this section for that
+-- control-panel run.
+-- ============================================================================================
+
+-- sp_news_admin_draft_create : mirrors Editor/AddNews.aspx.cs's old Page_Load exactly -- purge
+-- every unpublished draft (only one admin is ever meant to be composing at a time; this is the
+-- SQL-Server page's own pre-existing behaviour, not a new rule introduced here), then insert a
+-- fresh one under a server-generated id with the same placeholder values the C# page used to
+-- write itself. OUT p_news_id is the new draft's id.
+DROP PROCEDURE IF EXISTS sp_news_admin_draft_create //
+CREATE PROCEDURE sp_news_admin_draft_create(
+    OUT p_news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
+)
+BEGIN
+    DELETE FROM news WHERE news_publish <> 1;
+
+    SET p_news_id = UUID();
+
+    INSERT INTO news (news_id, news_title, news_author, news_publish, news_stamp)
+    VALUES (p_news_id, 'title', 'Lepsik', 0, NOW(6));
+END //
+
+-- sp_news_admin_publish : the article's editable fields, upserted by news_id and marked
+-- published. Uses INSERT ... ON DUPLICATE KEY UPDATE rather than an UPDATE-then-check-affected-
+-- rows pattern deliberately: MySQL's ROW_COUNT() after an UPDATE counts CHANGED rows, not matched
+-- ones (unlike SQL Server's @@ROWCOUNT), so a resubmit whose values are byte-identical to what's
+-- already stored would read as "0 rows affected" and wrongly be treated as "no such draft" --
+-- exactly the bug this avoids. Still mirrors the intent of ButtonSubmitAddNews_Click's original
+-- UPDATE-then-INSERT-fallback recovery (the draft row can be gone if a second AddNews tab's
+-- Page_Load purged it first -- see the 2026-07-07 fix note in Editor/CLAUDE.md): an unknown
+-- news_id here INSERTs a fresh row instead of silently doing nothing. Returns one row
+-- (news_id, action) where action is 'inserted' for a brand new row or 'updated' for an existing
+-- one (including a no-op resubmit).
+DROP PROCEDURE IF EXISTS sp_news_admin_publish //
+CREATE PROCEDURE sp_news_admin_publish(
+    IN p_news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_title VARCHAR(128) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_author VARCHAR(500) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_source VARCHAR(255) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_source_link VARCHAR(1024) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_author_link VARCHAR(1024) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_stamp DATETIME(6),
+    IN p_video_link VARCHAR(255) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_paragraph0 LONGTEXT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_paragraph1 LONGTEXT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_paragraph2 LONGTEXT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_country CHAR(2) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_lake_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_fish1_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_fish2_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_fish3_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
+)
+BEGIN
+    INSERT INTO news (
+        news_id, news_title, news_author, news_source, news_source_link, news_author_link,
+        news_stamp, news_publish, news_video_link, news_paragraph0, news_paragraph1,
+        news_paragraph2, country, lake_id, fish1_id, fish2_id, fish3_id
+    ) VALUES (
+        p_news_id, p_title, p_author, p_source, p_source_link, p_author_link,
+        p_stamp, 1, p_video_link, p_paragraph0, p_paragraph1,
+        p_paragraph2, p_country, p_lake_id, p_fish1_id, p_fish2_id, p_fish3_id
+    )
+    ON DUPLICATE KEY UPDATE
+        news_title = VALUES(news_title),
+        news_author = VALUES(news_author),
+        news_source = VALUES(news_source),
+        news_source_link = VALUES(news_source_link),
+        news_author_link = VALUES(news_author_link),
+        news_stamp = VALUES(news_stamp),
+        news_publish = VALUES(news_publish),
+        news_video_link = VALUES(news_video_link),
+        news_paragraph0 = VALUES(news_paragraph0),
+        news_paragraph1 = VALUES(news_paragraph1),
+        news_paragraph2 = VALUES(news_paragraph2),
+        country = VALUES(country),
+        lake_id = VALUES(lake_id),
+        fish1_id = VALUES(fish1_id),
+        fish2_id = VALUES(fish2_id),
+        fish3_id = VALUES(fish3_id);
+
+    -- ROW_COUNT() after INSERT ... ON DUPLICATE KEY UPDATE is 1 for a fresh insert, 2 for an
+    -- existing row that was actually changed, 0 for an existing row whose new values matched what
+    -- was already stored -- so "= 1" is the only reliable test for "this news_id was new".
+    SELECT p_news_id AS news_id, IF(ROW_COUNT() = 1, 'inserted', 'updated') AS action;
+END //
+
+-- sp_news_admin_photo_update : one paragraph-photo slot (0/1/2) on an existing draft/article.
+-- p_photo is required; p_author/p_alt are optional -- NULL leaves that column unchanged
+-- (COALESCE), matching GetPicture/ImportPhoto (bytes only) vs btnBriefUpload_Click (bytes +
+-- author + alt) writing the same three columns with different completeness today.
+--
+-- Existence is checked explicitly with a single-row SELECT COUNT(*) BEFORE the UPDATE, rather
+-- than trusting the UPDATE's own ROW_COUNT(), for the same MySQL "changed rows, not matched rows"
+-- reason sp_news_admin_publish documents above: re-saving byte-identical photo bytes would
+-- otherwise read as "no such news_id" and wrongly be reported 404. Both lookups are single-row by
+-- primary key, which is the one access pattern that is safe against news_photo0/1/2 on this host
+-- -- see envfish-db/CLAUDE.md "news_photo0/1/2 are dangerous at scale"; never widen either
+-- statement into a scan.
+--
+-- Returns one row (found, updated): found = whether news_id exists at all; updated = whether a
+-- column was actually written (false when found but p_index is outside 0..2). The caller maps
+-- found=0 to 404 and found=1,updated=0 to 400.
+DROP PROCEDURE IF EXISTS sp_news_admin_photo_update //
+CREATE PROCEDURE sp_news_admin_photo_update(
+    IN p_news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_index TINYINT,
+    IN p_photo LONGBLOB,
+    IN p_author VARCHAR(64) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_alt VARCHAR(128) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
+)
+BEGIN
+    DECLARE v_exists INT DEFAULT 0;
+
+    SELECT COUNT(*) INTO v_exists FROM news WHERE news_id = p_news_id;
+
+    IF v_exists = 1 AND p_index = 0 THEN
+        UPDATE news SET
+            news_photo0 = p_photo,
+            news_photo_author0 = COALESCE(p_author, news_photo_author0),
+            news_photo_alt0 = COALESCE(p_alt, news_photo_alt0)
+        WHERE news_id = p_news_id;
+    ELSEIF v_exists = 1 AND p_index = 1 THEN
+        UPDATE news SET
+            news_photo1 = p_photo,
+            news_photo_author1 = COALESCE(p_author, news_photo_author1),
+            news_photo_alt1 = COALESCE(p_alt, news_photo_alt1)
+        WHERE news_id = p_news_id;
+    ELSEIF v_exists = 1 AND p_index = 2 THEN
+        UPDATE news SET
+            news_photo2 = p_photo,
+            news_photo_author2 = COALESCE(p_author, news_photo_author2),
+            news_photo_alt2 = COALESCE(p_alt, news_photo_alt2)
+        WHERE news_id = p_news_id;
+    END IF;
+
+    SELECT v_exists AS found, (v_exists = 1 AND p_index BETWEEN 0 AND 2) AS updated;
+END //
+
 DELIMITER ;

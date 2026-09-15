@@ -2,6 +2,25 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-14: **MySQL `news` — three admin-write procedures for `Editor/AddNews.aspx`'s migration
+  off SQL Server** (`mysql/script02_Proc.sql`: `sp_news_admin_draft_create`, `sp_news_admin_publish`,
+  `sp_news_admin_photo_update`), backing docapi's new `MySqlNewsAdminCommandRepository` /
+  `POST`+`PATCH /api/v1/news/admin/*` — see `efj-backend/service/docapi/CHANGELOG.md` and
+  `fishfind-frontend/Editor/CLAUDE.md` for the full session. `sp_news_admin_publish` uses
+  `INSERT ... ON DUPLICATE KEY UPDATE` rather than an UPDATE-then-check-`ROW_COUNT()` upsert,
+  because MySQL's `ROW_COUNT()` counts *changed* rows, not *matched* ones (unlike SQL Server's
+  `@@ROWCOUNT`) — a byte-identical resubmit would otherwise read as "no such draft" and wrongly
+  insert a duplicate. `sp_news_admin_photo_update` checks existence with an explicit `SELECT
+  COUNT(*)` before its `UPDATE` for the same reason. **Not yet applied to production** — `portos`
+  (the app's only MySQL credential) holds no `INSERT`/`UPDATE`/`CREATE ROUTINE` on
+  `mysql_111487_envfish` (same gap `FIX_missing_v_news_default_doc.sql` hit), so
+  `mysql/ADMIN_WRITE_news_procs.sql` is a ready-to-paste copy of just this section for the Winhost
+  control panel; once created there, `portos`'s existing blanket `EXECUTE` grant is enough to call
+  them (a routine runs under its definer's rights). 10 unit tests added
+  (`mysql/UNIT_TESTS/unit_test@NewsAdminWrite.sql`) but **not yet run against a real MySQL server**
+  this session (workstation can't reach Winhost; no local MySQL 8 container was reachable either) —
+  review before trusting a green run blindly.
+
 - 2026-09-09: **`dbo.sp_user_prime_sync_backfill` — the `Users_Prime` sync stream had delivered
   nothing, ever. APPLIED TO PROD.** Every piece of the pipeline existed and worked
   (`TR_Users_Prime_SyncOutbox` → `dbo.UserPrimeSyncOutbox` → dispatcher → RabbitMQ → cproxy's SQLite
