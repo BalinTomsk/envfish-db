@@ -79,34 +79,44 @@ CREATE PROCEDURE sp_news_admin_publish(
     IN p_fish3_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
 )
 BEGIN
-    INSERT INTO news (
-        news_id, news_title, news_author, news_source, news_source_link, news_author_link,
-        news_stamp, news_publish, news_video_link, news_paragraph0, news_paragraph1,
-        news_paragraph2, country, lake_id, fish1_id, fish2_id, fish3_id
-    ) VALUES (
-        p_news_id, p_title, p_author, p_source, p_source_link, p_author_link,
-        p_stamp, 1, p_video_link, p_paragraph0, p_paragraph1,
-        p_paragraph2, p_country, p_lake_id, p_fish1_id, p_fish2_id, p_fish3_id
-    )
-    ON DUPLICATE KEY UPDATE
-        news_title = VALUES(news_title),
-        news_author = VALUES(news_author),
-        news_source = VALUES(news_source),
-        news_source_link = VALUES(news_source_link),
-        news_author_link = VALUES(news_author_link),
-        news_stamp = VALUES(news_stamp),
-        news_publish = VALUES(news_publish),
-        news_video_link = VALUES(news_video_link),
-        news_paragraph0 = VALUES(news_paragraph0),
-        news_paragraph1 = VALUES(news_paragraph1),
-        news_paragraph2 = VALUES(news_paragraph2),
-        country = VALUES(country),
-        lake_id = VALUES(lake_id),
-        fish1_id = VALUES(fish1_id),
-        fish2_id = VALUES(fish2_id),
-        fish3_id = VALUES(fish3_id);
+    DECLARE v_exists INT DEFAULT 0;
 
-    SELECT p_news_id AS news_id, IF(ROW_COUNT() = 1, 'inserted', 'updated') AS action;
+    SELECT COUNT(*) INTO v_exists FROM news WHERE news_id = p_news_id;
+
+    IF v_exists = 1 THEN
+        UPDATE news SET
+            news_title = p_title,
+            news_author = p_author,
+            news_source = p_source,
+            news_source_link = p_source_link,
+            news_author_link = p_author_link,
+            news_stamp = p_stamp,
+            news_publish = 1,
+            news_video_link = p_video_link,
+            news_paragraph0 = p_paragraph0,
+            news_paragraph1 = p_paragraph1,
+            news_paragraph2 = p_paragraph2,
+            country = p_country,
+            lake_id = p_lake_id,
+            fish1_id = p_fish1_id,
+            fish2_id = p_fish2_id,
+            fish3_id = p_fish3_id
+        WHERE news_id = p_news_id;
+
+        SELECT p_news_id AS news_id, 'updated' AS action;
+    ELSE
+        INSERT INTO news (
+            news_id, news_title, news_author, news_source, news_source_link, news_author_link,
+            news_stamp, news_publish, news_video_link, news_paragraph0, news_paragraph1,
+            news_paragraph2, country, lake_id, fish1_id, fish2_id, fish3_id
+        ) VALUES (
+            p_news_id, p_title, p_author, p_source, p_source_link, p_author_link,
+            p_stamp, 1, p_video_link, p_paragraph0, p_paragraph1,
+            p_paragraph2, p_country, p_lake_id, p_fish1_id, p_fish2_id, p_fish3_id
+        );
+
+        SELECT p_news_id AS news_id, 'inserted' AS action;
+    END IF;
 END //
 
 DROP PROCEDURE IF EXISTS sp_news_admin_photo_update //
