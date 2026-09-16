@@ -307,16 +307,30 @@ BEGIN
 END //
 
 -- sp_news_admin_publish : the article's editable fields, upserted by news_id and marked
--- published. Uses INSERT ... ON DUPLICATE KEY UPDATE rather than an UPDATE-then-check-affected-
--- rows pattern deliberately: MySQL's ROW_COUNT() after an UPDATE counts CHANGED rows, not matched
--- ones (unlike SQL Server's @@ROWCOUNT), so a resubmit whose values are byte-identical to what's
--- already stored would read as "0 rows affected" and wrongly be treated as "no such draft" --
--- exactly the bug this avoids. Still mirrors the intent of ButtonSubmitAddNews_Click's original
--- UPDATE-then-INSERT-fallback recovery (the draft row can be gone if a second AddNews tab's
--- Page_Load purged it first -- see the 2026-07-07 fix note in Editor/CLAUDE.md): an unknown
--- news_id here INSERTs a fresh row instead of silently doing nothing. Returns one row
--- (news_id, action) where action is 'inserted' for a brand new row or 'updated' for an existing
--- one (including a no-op resubmit).
+-- published. Existence is checked explicitly with a SELECT COUNT(*) first, then either a plain
+-- UPDATE or a plain INSERT runs -- the same pattern sp_news_admin_photo_update below already uses,
+-- and for the SAME two reasons:
+--   1. MySQL's ROW_COUNT() after a plain UPDATE counts CHANGED rows, not matched ones (unlike SQL
+--      Server's @@ROWCOUNT), so a resubmit whose values are byte-identical to what's already stored
+--      would read as "0 rows affected" and wrongly be treated as "no such draft".
+--   2. An earlier version used INSERT ... ON DUPLICATE KEY UPDATE instead, and it silently
+--      corrupted has_photo0/1/2 on every publish (confirmed live 2026-09-15: an article whose photo
+--      was uploaded before Submit came out of publish with has_photo0=0 despite a real photo in
+--      news_photo0, hiding it from News.aspx's "first article with a photo" default-lead pick).
+--      Root cause: neither news_photo0/1/2 nor has_photo0/1/2 are in this procedure's column list
+--      (photos are sp_news_admin_photo_update's job), and for INSERT ... ON DUPLICATE KEY UPDATE,
+--      MySQL fires the table's BEFORE INSERT trigger first, as if a fresh row were being inserted --
+--      TR_news_has_photo0_ins then computed has_photo0 from NEW.news_photo0, which for a column
+--      absent from the INSERT list reads as NULL at that point, regardless of what the row already
+--      had stored. Only after that does MySQL redirect to the UPDATE half on the duplicate key, by
+--      which point the wrong has_photo0 had already stuck. A plain UPDATE never goes through this
+--      INSERT-first path at all, so it cannot re-trigger this: unlisted columns are simply never
+--      touched, has_photo0 included.
+-- Still mirrors the intent of ButtonSubmitAddNews_Click's original UPDATE-then-INSERT-fallback
+-- recovery (the draft row can be gone if a second AddNews tab's Page_Load purged it first -- see
+-- the 2026-07-07 fix note in Editor/CLAUDE.md): an unknown news_id here INSERTs a fresh row instead
+-- of silently doing nothing. Returns one row (news_id, action) where action is 'inserted' for a
+-- brand new row or 'updated' for an existing one (including a no-op resubmit).
 DROP PROCEDURE IF EXISTS sp_news_admin_publish //
 CREATE PROCEDURE sp_news_admin_publish(
     IN p_news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
@@ -337,37 +351,44 @@ CREATE PROCEDURE sp_news_admin_publish(
     IN p_fish3_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
 )
 BEGIN
-    INSERT INTO news (
-        news_id, news_title, news_author, news_source, news_source_link, news_author_link,
-        news_stamp, news_publish, news_video_link, news_paragraph0, news_paragraph1,
-        news_paragraph2, country, lake_id, fish1_id, fish2_id, fish3_id
-    ) VALUES (
-        p_news_id, p_title, p_author, p_source, p_source_link, p_author_link,
-        p_stamp, 1, p_video_link, p_paragraph0, p_paragraph1,
-        p_paragraph2, p_country, p_lake_id, p_fish1_id, p_fish2_id, p_fish3_id
-    )
-    ON DUPLICATE KEY UPDATE
-        news_title = VALUES(news_title),
-        news_author = VALUES(news_author),
-        news_source = VALUES(news_source),
-        news_source_link = VALUES(news_source_link),
-        news_author_link = VALUES(news_author_link),
-        news_stamp = VALUES(news_stamp),
-        news_publish = VALUES(news_publish),
-        news_video_link = VALUES(news_video_link),
-        news_paragraph0 = VALUES(news_paragraph0),
-        news_paragraph1 = VALUES(news_paragraph1),
-        news_paragraph2 = VALUES(news_paragraph2),
-        country = VALUES(country),
-        lake_id = VALUES(lake_id),
-        fish1_id = VALUES(fish1_id),
-        fish2_id = VALUES(fish2_id),
-        fish3_id = VALUES(fish3_id);
+    DECLARE v_exists INT DEFAULT 0;
 
-    -- ROW_COUNT() after INSERT ... ON DUPLICATE KEY UPDATE is 1 for a fresh insert, 2 for an
-    -- existing row that was actually changed, 0 for an existing row whose new values matched what
-    -- was already stored -- so "= 1" is the only reliable test for "this news_id was new".
-    SELECT p_news_id AS news_id, IF(ROW_COUNT() = 1, 'inserted', 'updated') AS action;
+    SELECT COUNT(*) INTO v_exists FROM news WHERE news_id = p_news_id;
+
+    IF v_exists = 1 THEN
+        UPDATE news SET
+            news_title = p_title,
+            news_author = p_author,
+            news_source = p_source,
+            news_source_link = p_source_link,
+            news_author_link = p_author_link,
+            news_stamp = p_stamp,
+            news_publish = 1,
+            news_video_link = p_video_link,
+            news_paragraph0 = p_paragraph0,
+            news_paragraph1 = p_paragraph1,
+            news_paragraph2 = p_paragraph2,
+            country = p_country,
+            lake_id = p_lake_id,
+            fish1_id = p_fish1_id,
+            fish2_id = p_fish2_id,
+            fish3_id = p_fish3_id
+        WHERE news_id = p_news_id;
+
+        SELECT p_news_id AS news_id, 'updated' AS action;
+    ELSE
+        INSERT INTO news (
+            news_id, news_title, news_author, news_source, news_source_link, news_author_link,
+            news_stamp, news_publish, news_video_link, news_paragraph0, news_paragraph1,
+            news_paragraph2, country, lake_id, fish1_id, fish2_id, fish3_id
+        ) VALUES (
+            p_news_id, p_title, p_author, p_source, p_source_link, p_author_link,
+            p_stamp, 1, p_video_link, p_paragraph0, p_paragraph1,
+            p_paragraph2, p_country, p_lake_id, p_fish1_id, p_fish2_id, p_fish3_id
+        );
+
+        SELECT p_news_id AS news_id, 'inserted' AS action;
+    END IF;
 END //
 
 -- sp_news_admin_photo_update : one paragraph-photo slot (0/1/2) on an existing draft/article.
