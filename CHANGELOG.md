@@ -2,6 +2,16 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-16: **MySQL `sp_news_list_json` lists news newest-ADDED first** (`ORDER BY block_ord, id
+  DESC`), no longer by the article's own date (`news_stamp`). An editor who added an article dated a
+  week back saw it land below older entries in News.aspx, so it looked missing. The CA padding block
+  for non-CA countries uses the same order. Checked on MySQL 8.4 with schema, views and procs loaded
+  from this repo: all-countries, US + CA padding and paging all come back in insertion order, and
+  `UNIT_TESTS/unit_test@NewsMySQL.sql` passes 20/20. **Not applied to production:** `portos` has no
+  `CREATE ROUTINE`, and `ADMIN_WRITE_news_procs.sql` does not carry this procedure, so it has to be
+  run from `script02_Proc.sql` through the Winhost control panel. Prod's list still read in date
+  order on 2026-09-16 (top 200 items).
+
 - 2026-09-14: **MySQL `news` — three admin-write procedures for `Editor/AddNews.aspx`'s migration
   off SQL Server** (`mysql/script02_Proc.sql`: `sp_news_admin_draft_create`, `sp_news_admin_publish`,
   `sp_news_admin_photo_update`), backing docapi's new `MySqlNewsAdminCommandRepository` /
