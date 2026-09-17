@@ -217,7 +217,11 @@ BEGIN
     SELECT rn, news_id, title, source, stamp, flag, has_photo, block_ord, total
     FROM (
         SELECT
-            ROW_NUMBER() OVER (ORDER BY block_ord ASC, news_stamp DESC, id DESC) AS rn,
+            -- Newest ADDED first: id is news's AUTO_INCREMENT, i.e. insertion order (a new article's
+            -- row is created when AddNews opens its draft). Ordering by news_stamp -- the article's own
+            -- date, which the editor sets -- put a just-added article dated a week back below older
+            -- entries, so it looked missing from the list.
+            ROW_NUMBER() OVER (ORDER BY block_ord ASC, id DESC) AS rn,
             COUNT(*) OVER () AS total,
             news_id, title, source, stamp, flag, has_photo, block_ord
         FROM (
@@ -231,7 +235,7 @@ BEGIN
             SELECT id, news_id, title, source, news_stamp, stamp, flag, has_photo, 1 AS block_ord
             FROM (
                 SELECT id, news_id, title, source, news_stamp, stamp, flag, has_photo,
-                       ROW_NUMBER() OVER (ORDER BY news_stamp DESC, id DESC) AS pad_rn
+                       ROW_NUMBER() OVER (ORDER BY id DESC) AS pad_rn
                 FROM v_news_list_rows
                 WHERE v_country IS NOT NULL AND v_country <> 'CA' AND country = 'CA'
             ) pad
