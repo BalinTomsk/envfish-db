@@ -2,6 +2,38 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-17: **MySQL `sp_news_doc_export` — the interchange export ported off SQL Server's
+  `dbo.fn_news_json`.** The admin "Save JSON" export on News.aspx was the last news object still
+  answered by SQL Server, and it had been dead since 2026-09-14: `Editor/AddNews.aspx` writes to the
+  MySQL `news` table now, so nothing published after that date had a SQL Server row to export. New
+  procedure in `mysql/script02_Proc.sql`, a field-for-field port — the same 24 camelCase keys, all
+  always present, nulls included.
+
+  **Two divergences from `fn_news_json`, both deliberate.** `TO_BASE64` wraps its output every 76
+  characters where `FOR JSON` does not, so the photos go through `REPLACE(TO_BASE64(…), '\n', '')`
+  (`sp_news_doc_get`'s bare `TO_BASE64` is not a precedent — its photo is never diffed against a SQL
+  Server document). Key order cannot be matched: MySQL sorts JSON object keys by length then bytes.
+  Nothing reads the document positionally, so that one is cosmetic.
+
+  **No `news_publish` filter**, unlike every other read here — `fn_news_json` had none either, and a
+  draft must stay exportable. The endpoint is admin-gated at the portal and day-key gated at the
+  proxy, so this is not a leak path.
+
+  Verified on mysql:8.0 in Docker: `script01_createTable.sql` + `script01_createView.sql` +
+  `script02_Proc.sql` build clean, the exported key set diffs against `dbo.fn_news_json`'s 24 aliases
+  with none missing and none extra, an unknown id returns zero rows (docapi's 404), a draft still
+  exports, and a 120-byte blob comes back as 160 unbroken base64 chars decoding to the original
+  bytes. `UNIT_TESTS/unit_test@NewsMySQL.sql` passes **23/23** (3 new: JSON names + explicit nulls,
+  unbroken base64 round trip, and a contract test that reads the *deployed* procedure out of
+  `information_schema` to catch drift in the two properties above).
+
+  **APPLIED TO PRODUCTION 2026-09-17** — the user ran `mysql/ADMIN_WRITE_news_export.sql` from the
+  Winhost control panel (same route as `ADMIN_WRITE_news_procs.sql`; `portos` still has no
+  `CREATE ROUTINE`). The `1305 … does not exist` warning on the leading `DROP PROCEDURE IF EXISTS`
+  is expected on a first run and is what makes the file re-runnable. Confirmed live through docapi
+  1.14.0: an article published 2026-09-16 exports 200 with all 24 keys and a photo that decodes
+  under strict base64 validation; an unknown id returns zero rows → 404.
+
 - 2026-09-16: **MySQL `sp_news_list_json` lists news newest-ADDED first** (`ORDER BY block_ord, id
   DESC`), no longer by the article's own date (`news_stamp`). An editor who added an article dated a
   week back saw it land below older entries in News.aspx, so it looked missing. The CA padding block
