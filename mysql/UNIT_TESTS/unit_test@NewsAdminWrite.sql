@@ -339,6 +339,274 @@ BEGIN
     ROLLBACK;
 END //
 
+-- ================================================================================================
+-- sp_news_doc_insert / sp_news_doc_update (docapi 1.16.0, 2026-09-18) -- the MySQL replacements
+-- for SQL Server's dbo.sp_news_doc_add / dbo.sp_news_import / dbo.sp_news_doc_update behind
+-- POST /api/v1/news, POST /news/import and PUT /api/v1/news/{id}. sp_news_doc_insert generates its
+-- own id, which a test cannot capture from calling SQL (see the header), so the insert tests find
+-- their row by a title unique to that test instead.
+-- ================================================================================================
+
+-- ----------------------------------------------------------------
+-- TEST 11: sp_news_doc_insert creates one PUBLISHED row carrying every supplied field
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_11_doc_insert_creates_published_row //
+CREATE PROCEDURE test_11_doc_insert_creates_published_row()
+BEGIN
+    DECLARE v_ok INT;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 11 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    CALL sp_news_doc_insert(
+        'T11 Insert Title', 'Some Author', 'https://author.example/11', 'Some Source',
+        'https://source.example/11', 'https://video.example/11', 'Body zero.', 'Body one.', NULL,
+        'US', '2026-03-04 05:06:07.000000', 'b0000000-0000-0000-0000-00000000000b',
+        'f1000000-0000-0000-0000-0000000000f1', 'f2000000-0000-0000-0000-0000000000f2', NULL,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+    );
+
+    SELECT COUNT(*) INTO v_ok FROM news
+     WHERE news_title = 'T11 Insert Title' AND news_publish = 1
+       AND news_author = 'Some Author' AND news_author_link = 'https://author.example/11'
+       AND news_source = 'Some Source' AND news_source_link = 'https://source.example/11'
+       AND news_video_link = 'https://video.example/11'
+       AND news_paragraph0 = 'Body zero.' AND news_paragraph1 = 'Body one.' AND news_paragraph2 IS NULL
+       AND country = 'US' AND news_stamp = '2026-03-04 05:06:07.000000'
+       AND lake_id = 'b0000000-0000-0000-0000-00000000000b'
+       AND fish1_id = 'f1000000-0000-0000-0000-0000000000f1'
+       AND fish2_id = 'f2000000-0000-0000-0000-0000000000f2' AND fish3_id IS NULL
+       AND news_photo0 IS NULL AND has_photo0 = 0
+       AND CHAR_LENGTH(news_id) = 36;
+
+    SELECT CASE WHEN v_ok = 1
+                THEN 'TEST 11 PASS: sp_news_doc_insert creates one published row with every field and a generated id'
+                ELSE 'TEST 11 FAIL: sp_news_doc_insert row did not match the supplied fields' END AS message;
+    ROLLBACK;
+END //
+
+-- ----------------------------------------------------------------
+-- TEST 12: a NULL stamp means "now", and all three photo slots are stored (import's shape)
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_12_doc_insert_default_stamp_and_three_photos //
+CREATE PROCEDURE test_12_doc_insert_default_stamp_and_three_photos()
+BEGIN
+    DECLARE v_ok INT;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 12 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    CALL sp_news_doc_insert(
+        'T12 Three Photos', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL,
+        UNHEX('FFD8FF00'), 'Author Zero', 'Alt zero',
+        UNHEX('89504E47'), 'Author One', 'Alt one',
+        UNHEX('47494638'), NULL, 'Alt two'
+    );
+
+    SELECT COUNT(*) INTO v_ok FROM news
+     WHERE news_title = 'T12 Three Photos' AND news_publish = 1
+       AND news_stamp BETWEEN NOW(6) - INTERVAL 1 MINUTE AND NOW(6) + INTERVAL 1 MINUTE
+       AND news_photo0 = UNHEX('FFD8FF00') AND news_photo_author0 = 'Author Zero' AND news_photo_alt0 = 'Alt zero'
+       AND news_photo1 = UNHEX('89504E47') AND news_photo_author1 = 'Author One' AND news_photo_alt1 = 'Alt one'
+       AND news_photo2 = UNHEX('47494638') AND news_photo_author2 IS NULL AND news_photo_alt2 = 'Alt two'
+       -- the trigger, not the procedure, keeps the cached flag honest
+       AND has_photo0 = 1;
+
+    SELECT CASE WHEN v_ok = 1
+                THEN 'TEST 12 PASS: NULL stamp defaults to now, all three photo slots are stored, has_photo0 follows'
+                ELSE 'TEST 12 FAIL: default stamp or photo slots did not match' END AS message;
+    ROLLBACK;
+END //
+
+-- ----------------------------------------------------------------
+-- TEST 13: a blank title is refused with SQLSTATE 45000 and writes nothing
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_13_doc_insert_blank_title_refused //
+CREATE PROCEDURE test_13_doc_insert_blank_title_refused()
+BEGIN
+    DECLARE v_before INT;
+    DECLARE v_after INT;
+    DECLARE v_signalled INT DEFAULT 0;
+    -- Anything OTHER than the expected 45000 (e.g. 1305, the procedure missing entirely) must still
+    -- report FAIL and let the remaining tests run -- the inner CONTINUE HANDLER is more specific, so
+    -- it still wins for 45000. Without this, a missing procedure aborted the whole file here.
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+        SELECT 'TEST 13 FAIL: unexpected SQL error (not the expected SQLSTATE 45000)' AS message;
+
+    SELECT COUNT(*) INTO v_before FROM news;
+    BEGIN
+        DECLARE CONTINUE HANDLER FOR SQLSTATE '45000' SET v_signalled = 1;
+        CALL sp_news_doc_insert(
+            '   ', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+        );
+    END;
+    SELECT COUNT(*) INTO v_after FROM news;
+
+    SELECT CASE WHEN v_signalled = 1 AND v_after = v_before
+                THEN 'TEST 13 PASS: a blank title is refused with SQLSTATE 45000 and no row is written'
+                ELSE CONCAT('TEST 13 FAIL: signalled=', v_signalled, ' rows before=', v_before, ' after=', v_after) END AS message;
+END //
+
+-- ----------------------------------------------------------------
+-- TEST 14: sp_news_doc_update is a FULL replace of the text fields -- a NULL clears the column --
+-- and never touches the publish flag (a draft stays a draft)
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_14_doc_update_full_replace_keeps_publish //
+CREATE PROCEDURE test_14_doc_update_full_replace_keeps_publish()
+BEGIN
+    DECLARE v_ok INT;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 14 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    INSERT INTO news (news_id, news_title, news_author, news_source, news_paragraph1, country,
+                      lake_id, fish1_id, news_publish)
+    VALUES ('a1400000-0000-0000-0000-000000000014', 'Old Title', 'Old Author', 'Old Source',
+            'Old body one.', 'CA', 'b0000000-0000-0000-0000-00000000000b',
+            'f1000000-0000-0000-0000-0000000000f1', 0);
+
+    CALL sp_news_doc_update(
+        'a1400000-0000-0000-0000-000000000014', 'New Title', 'New Author', NULL, NULL, NULL, NULL,
+        'New body zero.', NULL, NULL, 'US', NULL, NULL, 'f3000000-0000-0000-0000-0000000000f3', NULL, NULL,
+        NULL, NULL, NULL
+    );
+
+    SELECT COUNT(*) INTO v_ok FROM news
+     WHERE news_id = 'a1400000-0000-0000-0000-000000000014'
+       AND news_title = 'New Title' AND news_author = 'New Author'
+       AND news_source IS NULL                -- absent from the PUT -> cleared, as SQL Server did
+       AND news_paragraph0 = 'New body zero.'
+       AND news_paragraph1 IS NULL            -- ditto
+       AND country = 'US' AND lake_id IS NULL
+       AND fish1_id = 'f3000000-0000-0000-0000-0000000000f3'
+       AND news_publish = 0;                  -- still a draft
+
+    SELECT CASE WHEN v_ok = 1
+                THEN 'TEST 14 PASS: update replaces every text field (NULL clears) and leaves the publish flag alone'
+                ELSE 'TEST 14 FAIL: full-replace semantics or publish flag did not hold' END AS message;
+    ROLLBACK;
+END //
+
+-- ----------------------------------------------------------------
+-- TEST 15: a NULL stamp keeps the stored stamp, a NULL photo0 keeps the stored bytes, and the slot-0
+-- author/alt are set directly (NULL clears them) -- the three exceptions dbo.sp_news_doc_update had
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_15_doc_update_keeps_stamp_and_photo //
+CREATE PROCEDURE test_15_doc_update_keeps_stamp_and_photo()
+BEGIN
+    DECLARE v_ok INT;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 15 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    INSERT INTO news (news_id, news_title, news_stamp, news_publish,
+                      news_photo0, news_photo_author0, news_photo_alt0,
+                      news_photo1, news_photo_author1)
+    VALUES ('a1500000-0000-0000-0000-000000000015', 'Keep Me', '2025-12-25 10:00:00.000000', 1,
+            UNHEX('FFD8FFAA'), 'Old Credit', 'Old Alt', UNHEX('89504E47'), 'Slot One Author');
+
+    CALL sp_news_doc_update(
+        'a1500000-0000-0000-0000-000000000015', 'Keep Me Edited', NULL, NULL, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        NULL, NULL, 'New Alt'
+    );
+
+    SELECT COUNT(*) INTO v_ok FROM news
+     WHERE news_id = 'a1500000-0000-0000-0000-000000000015'
+       AND news_title = 'Keep Me Edited'
+       AND news_stamp = '2025-12-25 10:00:00.000000'   -- NULL stamp: kept
+       AND news_photo0 = UNHEX('FFD8FFAA')             -- NULL photo0: kept
+       AND has_photo0 = 1
+       AND news_photo_author0 IS NULL                  -- set directly: cleared
+       AND news_photo_alt0 = 'New Alt'                 -- set directly
+       AND news_photo1 = UNHEX('89504E47')             -- slot 1 untouched
+       AND news_photo_author1 = 'Slot One Author';
+
+    SELECT CASE WHEN v_ok = 1
+                THEN 'TEST 15 PASS: NULL stamp and NULL photo0 are kept, slot-0 author/alt set directly, slot 1 untouched'
+                ELSE 'TEST 15 FAIL: stamp/photo keep-rules or slot-0 metadata did not hold' END AS message;
+    ROLLBACK;
+END //
+
+-- ----------------------------------------------------------------
+-- TEST 16: a new photo0 replaces the bytes, and has_photo0 follows via the trigger
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_16_doc_update_replaces_photo0 //
+CREATE PROCEDURE test_16_doc_update_replaces_photo0()
+BEGIN
+    DECLARE v_ok INT;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 16 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    INSERT INTO news (news_id, news_title, news_publish)
+    VALUES ('a1600000-0000-0000-0000-000000000016', 'No Photo Yet', 1);
+
+    CALL sp_news_doc_update(
+        'a1600000-0000-0000-0000-000000000016', 'Now With Photo', NULL, NULL, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        UNHEX('FFD8FFBB'), 'Credit', 'Alt'
+    );
+
+    SELECT COUNT(*) INTO v_ok FROM news
+     WHERE news_id = 'a1600000-0000-0000-0000-000000000016'
+       AND news_photo0 = UNHEX('FFD8FFBB') AND has_photo0 = 1
+       AND news_photo_author0 = 'Credit' AND news_photo_alt0 = 'Alt';
+
+    SELECT CASE WHEN v_ok = 1
+                THEN 'TEST 16 PASS: a supplied photo0 replaces the bytes and has_photo0 follows'
+                ELSE 'TEST 16 FAIL: photo0 was not replaced or has_photo0 did not follow' END AS message;
+    ROLLBACK;
+END //
+
+-- ----------------------------------------------------------------
+-- TEST 17: updating an unknown id writes nothing -- it must NOT upsert the way sp_news_admin_publish
+-- does, or a PUT to a mistyped id would silently create an article
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_17_doc_update_unknown_id_is_noop //
+CREATE PROCEDURE test_17_doc_update_unknown_id_is_noop()
+BEGIN
+    DECLARE v_before INT;
+    DECLARE v_after INT;
+    DECLARE v_row INT;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 17 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    SELECT COUNT(*) INTO v_before FROM news;
+    CALL sp_news_doc_update(
+        'a1700000-0000-0000-0000-000000000017', 'Ghost', NULL, NULL, NULL, NULL, NULL,
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+    );
+    SELECT COUNT(*) INTO v_after FROM news;
+    SELECT COUNT(*) INTO v_row FROM news WHERE news_id = 'a1700000-0000-0000-0000-000000000017';
+
+    SELECT CASE WHEN v_after = v_before AND v_row = 0
+                THEN 'TEST 17 PASS: an unknown id is a no-op (no upsert)'
+                ELSE 'TEST 17 FAIL: updating an unknown id created or changed a row' END AS message;
+    ROLLBACK;
+END //
+
 DELIMITER ;
 
 -- ==================================================================
@@ -355,6 +623,13 @@ CALL test_07_photo_update_null_author_alt_preserved();
 CALL test_08_photo_update_unknown_id_is_noop();
 CALL test_09_photo_update_bad_index_noop();
 CALL test_10_photo_update_slots_independent();
+CALL test_11_doc_insert_creates_published_row();
+CALL test_12_doc_insert_default_stamp_and_three_photos();
+CALL test_13_doc_insert_blank_title_refused();
+CALL test_14_doc_update_full_replace_keeps_publish();
+CALL test_15_doc_update_keeps_stamp_and_photo();
+CALL test_16_doc_update_replaces_photo0();
+CALL test_17_doc_update_unknown_id_is_noop();
 
 -- Clean up the test procedures themselves so the throwaway database ends in the same shape
 -- ffi2.sql produced (no lasting state change -- the same rule each test's ROLLBACK follows).
@@ -368,3 +643,10 @@ DROP PROCEDURE IF EXISTS test_07_photo_update_null_author_alt_preserved;
 DROP PROCEDURE IF EXISTS test_08_photo_update_unknown_id_is_noop;
 DROP PROCEDURE IF EXISTS test_09_photo_update_bad_index_noop;
 DROP PROCEDURE IF EXISTS test_10_photo_update_slots_independent;
+DROP PROCEDURE IF EXISTS test_11_doc_insert_creates_published_row;
+DROP PROCEDURE IF EXISTS test_12_doc_insert_default_stamp_and_three_photos;
+DROP PROCEDURE IF EXISTS test_13_doc_insert_blank_title_refused;
+DROP PROCEDURE IF EXISTS test_14_doc_update_full_replace_keeps_publish;
+DROP PROCEDURE IF EXISTS test_15_doc_update_keeps_stamp_and_photo;
+DROP PROCEDURE IF EXISTS test_16_doc_update_replaces_photo0;
+DROP PROCEDURE IF EXISTS test_17_doc_update_unknown_id_is_noop;

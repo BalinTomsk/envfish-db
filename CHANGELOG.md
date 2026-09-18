@@ -2,6 +2,36 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-18: **MySQL `sp_news_doc_insert` / `sp_news_doc_update` — docapi's news writes leave SQL
+  Server.** The MySQL replacements for `dbo.sp_news_doc_add` / `dbo.sp_news_import` (both → insert) and
+  `dbo.sp_news_doc_update`, behind docapi 1.16.0's `POST /api/v1/news`, `/news/import` and
+  `PUT /api/v1/news/{id}`. With them, nothing in docapi touches `dbo.news`.
+
+  **Typed parameters, not a JSON blob** — the SQL Server procedures took the whole request and used
+  `OPENJSON`; these take one parameter per column, because docapi now parses and validates the body
+  (every client error a 400 before any database call) and decodes the base64 photos itself. Same
+  convention `sp_news_admin_publish` already set. Semantics are otherwise the SQL Server ones: insert
+  always publishes and defaults a NULL stamp to now; update is a full replace of the text fields that
+  keeps a NULL stamp, keeps a NULL `photo0`, sets the slot-0 author/alt directly, never touches the
+  publish flag or slots 1–2, and — unlike `sp_news_admin_publish` — does **not** upsert: an unknown id
+  writes nothing and returns `found = 0` (docapi's 404). Existence is an explicit `SELECT COUNT(*)`
+  first, not `ROW_COUNT()`, for the changed-vs-matched reason `sp_news_admin_publish` documents. One
+  difference not chosen: `dbo.news` had a UNIQUE `news_title`, this table does not, so a duplicate
+  title is accepted.
+
+  `UNIT_TESTS/unit_test@NewsAdminWrite.sql` **17/17** on mysql:8.0 (7 new: published insert with
+  every field and a generated id; NULL stamp ⇒ now with all three photo slots and `has_photo0`
+  following; blank title ⇒ SQLSTATE 45000 and no row; update's full replace with the publish flag
+  untouched; the stamp/photo keep-rules; a replaced photo0; an unknown id as a no-op). **Shown failing
+  first** by running them with the procedures dropped — which caught test 13 aborting the whole file
+  on a non-45000 error and skipping everything after it; it now reports FAIL and lets the rest run.
+  `unit_test@NewsMySQL.sql` still **23/23**. The full `script01_createTable` + `script01_createView` +
+  `script02_Proc` build is clean with them.
+
+  **Not applied to production.** Run `mysql/ADMIN_WRITE_news_doc_writes.sql` from the Winhost control
+  panel (idempotent — applied twice in the container, both clean) **before** docapi 1.16.0 is
+  deployed. Its header carries a read-only probe (`sp_news_doc_update` on a random UUID ⇒ `found = 0`).
+
 - 2026-09-17: **MySQL `sp_news_doc_export` — the interchange export ported off SQL Server's
   `dbo.fn_news_json`.** The admin "Save JSON" export on News.aspx was the last news object still
   answered by SQL Server, and it had been dead since 2026-09-14: `Editor/AddNews.aspx` writes to the
