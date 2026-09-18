@@ -114,14 +114,15 @@ BEGIN
 END //
 
 -- ============================================================================================
--- docapi read endpoints (com.fishfind.docapi.repo.MySqlNewsDocumentRepository /
--- MySqlNewsQueryRepository, "jdbc" profile) -- GET /api/v1/news/{id}, /news/list, /news/default.
--- Only these three moved to MySQL; /news/search, /news/export/{id}, /news/import and the news
--- CRUD writes (POST/PUT) stay on the SQL Server objects (dbo.fn_news_doc / dbo.fn_news_list /
--- dbo.fn_default_news_json / dbo.fn_news_search / dbo.fn_news_json / dbo.sp_news_doc_add /
--- dbo.sp_news_doc_update / dbo.sp_news_import in envfish-db/mssql), since this MySQL database
--- has no `lake`/`fish` tables to resolve lake_name / fish names against, and no interchange or
--- full-text-search objects yet. All three return one JSON string per row (JSON_OBJECT), the same
+-- docapi's news endpoints (com.fishfind.docapi.repo.MySqlNewsDocumentRepository /
+-- MySqlNewsQueryRepository / MySqlNewsWriteRepository, "jdbc" profile). EVERY one of them is
+-- answered here: the reads GET /api/v1/news/{id}, /news/list, /news/default, /news/search and
+-- /news/export/{id} (2026-09-17), and since docapi 1.16.0 (2026-09-18) the writes too --
+-- POST /api/v1/news, PUT /api/v1/news/{id} and POST /news/import, via sp_news_doc_insert /
+-- sp_news_doc_update at the end of this file. docapi no longer holds any code that can reach
+-- SQL Server's dbo.news. fish1_id/fish2_id/fish3_id/lake_id are echoed as raw GUID strings
+-- (unresolved) throughout, because this single-table database has no `lake`/`fish` tables to
+-- resolve lake_name / fish names against. All three return one JSON string per row (JSON_OBJECT), the same
 -- convention as the SQL Server fn_news_doc / fn_default_news_json functions, so the Java layer
 -- (which just parses whatever comes back) needs no per-backend special-casing. fish1_id/fish2_id/
 -- fish3_id/lake_id are echoed as raw GUID strings (unresolved) for the same single-table-DB reason.
@@ -171,6 +172,78 @@ BEGIN
     ) AS doc
     FROM news
     WHERE news_id = p_news_id AND news_publish = 1
+    LIMIT 1;
+END //
+
+-- sp_news_doc_export : one article as the interchange document behind the admin "Save JSON" export
+-- (News.aspx) and "Import from JSON" (Editor/AddNews.aspx). A field-for-field port of SQL Server's
+-- dbo.fn_news_json (mssql/script02_Funct.sql) -- the same 24 keys under the same camelCase names,
+-- every one of them always present, null included: FOR JSON's INCLUDE_NULL_VALUES and JSON_OBJECT
+-- already agree on that, so no NULL handling is needed to match. An unknown id returns no row at
+-- all, which MySqlNewsQueryRepository maps to the same 404 fn_news_json's NULL scalar produced.
+--
+-- DELIBERATELY NOT FILTERED BY news_publish, unlike sp_news_doc_get above. fn_news_json has no such
+-- filter and this is an admin-only round trip: a draft must be exportable, or the export cannot
+-- reproduce the one state AddNews.aspx leaves a row in before Submit. Every other read in this file
+-- is a public endpoint and must never leak a draft; this one is not reachable without the portal's
+-- admin gate plus the gateway's day-key (cproxy 0.15.0 lists /news/export in CPROXY_DAYKEY_PATHS).
+--
+-- TO_BASE64 IS WRAPPED IN REPLACE FOR A REASON: MySQL's TO_BASE64 breaks its output with a newline
+-- every 76 characters, while SQL Server's FOR JSON emits varbinary as one unbroken base64 run
+-- (confirmed on mysql:8.0 2026-09-17 -- a 120-byte blob came back 162 chars with the first newline
+-- at position 77, and 160 chars once stripped). Both consumers tolerate the whitespace -- .NET's
+-- Convert.FromBase64String skips it and a JSON string escapes it harmlessly as \n -- but the whole
+-- point of this procedure is to be indistinguishable from fn_news_json on the wire, and an extra
+-- 1.3% on the largest document this database serves is worth nothing. sp_news_doc_get's bare
+-- TO_BASE64 is NOT a precedent to copy here: its 'photo' is read only by .NET and is never compared
+-- against a SQL Server document.
+--
+-- KEY ORDER DIFFERS FROM fn_news_json AND CANNOT BE MADE TO MATCH: MySQL stores a JSON object's
+-- keys sorted by length then bytes, so 'date' leads and 'photoAuthor2' trails no matter how they
+-- are written below. They are nevertheless written in fn_news_json's declared order, because that
+-- is the order to diff against when checking this port. Nothing reads the document positionally --
+-- AddNews.aspx's importer pulls every field by name (JStr(d, "authorLink") and friends) -- so this
+-- is cosmetic in the downloaded .json file and nowhere else.
+--
+-- Single-row lookup by primary key, so reading all THREE LONGBLOB photo columns here is safe: that
+-- is the one access pattern the live Winhost host does not hang on (see sp_news_list_json's warning
+-- below for what happens otherwise). This is the only query in this file that touches news_photo1
+-- or news_photo2; never widen it past `WHERE news_id = ? LIMIT 1`. The document it assembles is the
+-- largest single response this database serves -- three base64 photos inside one JSON value -- so
+-- its ceiling is the server's max_allowed_packet, not anything this procedure controls.
+DROP PROCEDURE IF EXISTS sp_news_doc_export //
+CREATE PROCEDURE sp_news_doc_export(
+    IN p_news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
+)
+BEGIN
+    SELECT JSON_OBJECT(
+        'title',        news_title,
+        'author',       news_author,
+        'authorLink',   news_author_link,
+        'source',       news_source,
+        'sourceLink',   news_source_link,
+        'videoLink',    news_video_link,
+        'paragraph0',   news_paragraph0,
+        'paragraph1',   news_paragraph1,
+        'paragraph2',   news_paragraph2,
+        'country',      country,
+        'date',         DATE_FORMAT(news_stamp, '%Y-%m-%d'),
+        'lakeId',       lake_id,
+        'fish1Id',      fish1_id,
+        'fish2Id',      fish2_id,
+        'fish3Id',      fish3_id,
+        'photo0',       REPLACE(TO_BASE64(news_photo0), '\n', ''),
+        'photoAuthor0', news_photo_author0,
+        'photoAlt0',    news_photo_alt0,
+        'photo1',       REPLACE(TO_BASE64(news_photo1), '\n', ''),
+        'photoAuthor1', news_photo_author1,
+        'photoAlt1',    news_photo_alt1,
+        'photo2',       REPLACE(TO_BASE64(news_photo2), '\n', ''),
+        'photoAuthor2', news_photo_author2,
+        'photoAlt2',    news_photo_alt2
+    ) AS doc
+    FROM news
+    WHERE news_id = p_news_id
     LIMIT 1;
 END //
 
@@ -288,8 +361,8 @@ END //
 -- created that way, portos's blanket EXECUTE privilege is enough to CALL them: a stored routine
 -- runs under its DEFINER's rights by default, so the INSERT/UPDATE inside happens under whichever
 -- account ran this script, not under portos -- portos itself never needs the missing grants.
--- ADMIN_WRITE_news_procs.sql in this folder is a ready-to-paste copy of just this section for that
--- control-panel run.
+-- These were applied from a one-off control-panel script (ADMIN_WRITE_news_procs.sql), deleted
+-- once applied. To re-apply, paste this section into the control panel -- it is idempotent.
 -- ============================================================================================
 
 -- sp_news_admin_draft_create : mirrors Editor/AddNews.aspx.cs's old Page_Load exactly -- purge
@@ -445,6 +518,161 @@ BEGIN
     END IF;
 
     SELECT v_exists AS found, (v_exists = 1 AND p_index BETWEEN 0 AND 2) AS updated;
+END //
+
+-- ============================================================================================
+-- docapi's document WRITE endpoints (MySqlNewsWriteRepository, docapi 1.16.0, 2026-09-18):
+--   POST /api/v1/news          -> sp_news_doc_insert   (was SQL Server dbo.sp_news_doc_add)
+--   POST /api/v1/news/import   -> sp_news_doc_insert   (was SQL Server dbo.sp_news_import)
+--   PUT  /api/v1/news/{id}     -> sp_news_doc_update   (was SQL Server dbo.sp_news_doc_update)
+-- These were the last three docapi paths that touched SQL Server's dbo.news. With them here,
+-- NewsController deals with MySQL only, for reads and writes alike.
+--
+-- TYPED PARAMETERS, NOT A JSON BLOB. The SQL Server procedures took the whole request document
+-- and pulled fields out with OPENJSON. These take one parameter per column instead: docapi parses
+-- the body (NewsWriteParser), validates it -- blank title, over-long fields, bad base64 all become a
+-- 400 before any database call -- and decodes the base64 photos to bytes. That keeps a client error
+-- out of the shared sqlBreaker, and it is the convention sp_news_admin_publish above already set.
+--
+-- Semantics are otherwise the SQL Server ones, deliberately and field for field:
+--   * insert: a NEW id (UUID(), the same generator sp_news_admin_draft_create uses), always
+--     published, a missing stamp means "now". Covers both add (one photo slot) and import (three).
+--   * update: a full replace of every text field -- a field absent from the PUT body is set NULL,
+--     as dbo.sp_news_doc_update did -- EXCEPT: a missing stamp keeps the stored one, a missing
+--     photo0 keeps the stored bytes, and the publish flag is never touched (a PUT to a draft leaves
+--     it a draft). Only slot 0 is writable here; slots 1/2 are untouched, as before.
+--   * lake_id / fishN_id arrive already validated as GUIDs or NULL (TRY_CONVERT's rule: an
+--     invalid tag is dropped, not stored).
+--
+-- ONE DIFFERENCE, NOT CHOSEN: SQL Server's dbo.news had a UNIQUE news_title, so importing an
+-- existing title raised a duplicate-key error. This table has no such constraint (see
+-- script01_createTable.sql), and sp_news_admin_publish does not enforce one either -- a duplicate
+-- title is accepted here exactly as it is from Editor/AddNews.aspx.
+--
+-- Title is re-checked with SIGNAL as defence in depth only; docapi rejects a blank title with a 400
+-- before it ever calls either procedure.
+--
+-- Both are single-row statements keyed by primary key, which is the one access pattern that is safe
+-- against news_photo0/1/2 on the live Winhost host (see sp_news_list_json's warning above). The
+-- has_photo0 flag needs no handling here: TR_news_has_photo0_ins/upd re-derive it on every write.
+-- ============================================================================================
+
+-- sp_news_doc_insert : one new PUBLISHED article; returns its news_id as a single-row result.
+DROP PROCEDURE IF EXISTS sp_news_doc_insert //
+CREATE PROCEDURE sp_news_doc_insert(
+    IN p_title VARCHAR(128) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_author VARCHAR(500) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_author_link VARCHAR(1024) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_source VARCHAR(255) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_source_link VARCHAR(1024) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_video_link VARCHAR(255) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_paragraph0 LONGTEXT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_paragraph1 LONGTEXT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_paragraph2 LONGTEXT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_country CHAR(2) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_stamp DATETIME(6),
+    IN p_lake_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_fish1_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_fish2_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_fish3_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_photo0 LONGBLOB,
+    IN p_photo_author0 VARCHAR(64) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_photo_alt0 VARCHAR(128) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_photo1 LONGBLOB,
+    IN p_photo_author1 VARCHAR(64) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_photo_alt1 VARCHAR(128) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_photo2 LONGBLOB,
+    IN p_photo_author2 VARCHAR(64) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_photo_alt2 VARCHAR(128) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
+)
+BEGIN
+    DECLARE v_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+    IF p_title IS NULL OR TRIM(p_title) = '' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'sp_news_doc_insert: a non-empty title is required';
+    END IF;
+
+    SET v_id = UUID();
+
+    INSERT INTO news (
+        news_id, news_title, news_author, news_author_link, news_source, news_source_link,
+        news_video_link, news_paragraph0, news_paragraph1, news_paragraph2, country,
+        news_stamp, news_publish, lake_id, fish1_id, fish2_id, fish3_id,
+        news_photo0, news_photo_author0, news_photo_alt0,
+        news_photo1, news_photo_author1, news_photo_alt1,
+        news_photo2, news_photo_author2, news_photo_alt2
+    ) VALUES (
+        v_id, p_title, p_author, p_author_link, p_source, p_source_link,
+        p_video_link, p_paragraph0, p_paragraph1, p_paragraph2, p_country,
+        COALESCE(p_stamp, NOW(6)), 1, p_lake_id, p_fish1_id, p_fish2_id, p_fish3_id,
+        p_photo0, p_photo_author0, p_photo_alt0,
+        p_photo1, p_photo_author1, p_photo_alt1,
+        p_photo2, p_photo_author2, p_photo_alt2
+    );
+
+    SELECT v_id AS news_id;
+END //
+
+-- sp_news_doc_update : full replace of one article's text fields plus photo slot 0; returns one row
+-- (found). found = 0 means no such news_id -- docapi maps that to 404. Existence is checked with an
+-- explicit single-row SELECT COUNT(*) first, not ROW_COUNT(), for the reason sp_news_admin_publish
+-- documents: MySQL's ROW_COUNT() counts CHANGED rows, so a byte-identical PUT would read as "not
+-- found".
+DROP PROCEDURE IF EXISTS sp_news_doc_update //
+CREATE PROCEDURE sp_news_doc_update(
+    IN p_news_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_title VARCHAR(128) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_author VARCHAR(500) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_author_link VARCHAR(1024) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_source VARCHAR(255) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_source_link VARCHAR(1024) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_video_link VARCHAR(255) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_paragraph0 LONGTEXT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_paragraph1 LONGTEXT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_paragraph2 LONGTEXT CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_country CHAR(2) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_stamp DATETIME(6),
+    IN p_lake_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_fish1_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_fish2_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_fish3_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_photo0 LONGBLOB,
+    IN p_photo_author0 VARCHAR(64) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
+    IN p_photo_alt0 VARCHAR(128) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
+)
+BEGIN
+    DECLARE v_exists INT DEFAULT 0;
+
+    IF p_title IS NULL OR TRIM(p_title) = '' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'sp_news_doc_update: a non-empty title is required';
+    END IF;
+
+    SELECT COUNT(*) INTO v_exists FROM news WHERE news_id = p_news_id;
+
+    IF v_exists = 1 THEN
+        UPDATE news SET
+            news_title         = p_title,
+            news_author        = p_author,
+            news_author_link   = p_author_link,
+            news_source        = p_source,
+            news_source_link   = p_source_link,
+            news_video_link    = p_video_link,
+            news_paragraph0    = p_paragraph0,
+            news_paragraph1    = p_paragraph1,
+            news_paragraph2    = p_paragraph2,
+            country            = p_country,
+            news_stamp         = COALESCE(p_stamp, news_stamp),
+            lake_id            = p_lake_id,
+            fish1_id           = p_fish1_id,
+            fish2_id           = p_fish2_id,
+            fish3_id           = p_fish3_id,
+            news_photo0        = COALESCE(p_photo0, news_photo0),
+            news_photo_author0 = p_photo_author0,
+            news_photo_alt0    = p_photo_alt0
+        WHERE news_id = p_news_id;
+    END IF;
+
+    SELECT v_exists AS found;
 END //
 
 DELIMITER ;

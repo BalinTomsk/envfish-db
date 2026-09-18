@@ -1,5 +1,7 @@
 -- ============================================================================================
--- ROLLBACK for ADMIN_WRITE_news_list_sort.sql -- run in the Winhost MySQL control panel
+-- ROLLBACK for the insertion-order sp_news_list_json (live since 2026-09-18; the ADMIN_WRITE script
+-- that applied it was deleted once applied -- the definition is in script02_Proc.sql).
+-- Run in the Winhost MySQL control panel ONLY to undo that change
 -- Database: mysql_111487_envfish
 --
 -- Restores sp_news_list_json as it was before envfish-db #62 (commit daecb67): news listed by the

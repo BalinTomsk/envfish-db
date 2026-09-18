@@ -609,11 +609,135 @@ BEGIN
     ROLLBACK;
 END //
 
+-- ----------------------------------------------------------------
+-- TEST 21: sp_news_doc_export's query carries the fn_news_json camelCase names, and keeps a NULL
+-- field as an explicit JSON null rather than dropping it
+--
+-- The three tests below mirror the procedure's own expression rather than CALLing it, for the
+-- reason this file's header gives: MySQL cannot capture a procedure's result set from SQL. TEST 23
+-- closes that gap from the other side, asserting against the DEPLOYED procedure's text. The
+-- procedure itself was additionally run end-to-end against mysql:8.0 on 2026-09-17 and its key set
+-- diffed field-for-field against dbo.fn_news_json's aliases -- 24 keys, none missing, none extra.
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_21_export_json_names_and_nulls //
+CREATE PROCEDURE test_21_export_json_names_and_nulls()
+BEGIN
+    DECLARE v_doc JSON;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 21 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    INSERT INTO news (news_id, news_title, news_author_link, news_source_link, news_stamp,
+                      lake_id, fish1_id, news_publish, news_paragraph2)
+    VALUES ('21212121-2121-2121-2121-212121212121', 'Export Title', 'http://author', 'http://source',
+            '2026-09-15 08:30:00', '22222222-2222-2222-2222-222222222222',
+            '33333333-3333-3333-3333-333333333333', 1, NULL);
+
+    SELECT JSON_OBJECT(
+        'title',      news_title,
+        'authorLink', news_author_link,
+        'sourceLink', news_source_link,
+        'date',       DATE_FORMAT(news_stamp, '%Y-%m-%d'),
+        'lakeId',     lake_id,
+        'fish1Id',    fish1_id,
+        'paragraph2', news_paragraph2
+    ) INTO v_doc
+    FROM news WHERE news_id = '21212121-2121-2121-2121-212121212121' LIMIT 1;
+
+    SELECT CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(v_doc, '$.title')) = 'Export Title'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(v_doc, '$.authorLink')) = 'http://author'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(v_doc, '$.sourceLink')) = 'http://source'
+                 -- the date is the day only, never a datetime: CONVERT(varchar(10), .., 23)
+                 AND JSON_UNQUOTE(JSON_EXTRACT(v_doc, '$.date')) = '2026-09-15'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(v_doc, '$.lakeId')) = '22222222-2222-2222-2222-222222222222'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(v_doc, '$.fish1Id')) = '33333333-3333-3333-3333-333333333333'
+                 -- present AND null, not absent: AddNews.aspx reads every field by name
+                 AND JSON_CONTAINS_PATH(v_doc, 'one', '$.paragraph2')
+                 AND JSON_TYPE(JSON_EXTRACT(v_doc, '$.paragraph2')) = 'NULL'
+                THEN 'TEST 21 PASS: sp_news_doc_export JSON uses fn_news_json names and keeps nulls explicit'
+                ELSE 'TEST 21 FAIL: sp_news_doc_export JSON names/nulls did not match' END AS message;
+    ROLLBACK;
+END //
+
+-- ----------------------------------------------------------------
+-- TEST 22: an embedded photo is unbroken base64 that decodes back to the original bytes
+--
+-- MySQL's TO_BASE64 inserts a newline every 76 characters; SQL Server's FOR JSON does not. The
+-- procedure strips them so its document is indistinguishable from dbo.fn_news_json's on the wire.
+-- The blob here is deliberately >57 bytes -- below that the encoding fits on one line and the bug
+-- this test exists for cannot appear.
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_22_export_photo_base64_unbroken //
+CREATE PROCEDURE test_22_export_photo_base64_unbroken()
+BEGIN
+    DECLARE v_b64 LONGTEXT;
+    DECLARE v_raw LONGBLOB;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SELECT 'TEST 22 FAIL: unexpected SQL error' AS message;
+    END;
+
+    START TRANSACTION;
+    INSERT INTO news (news_id, news_title, news_publish, news_photo0)
+    VALUES ('22222222-0000-0000-0000-222222222222', 'Export Photo', 1, REPEAT(UNHEX('FFD8FF'), 40));
+
+    SELECT REPLACE(TO_BASE64(news_photo0), '\n', ''), news_photo0 INTO v_b64, v_raw
+    FROM news WHERE news_id = '22222222-0000-0000-0000-222222222222' LIMIT 1;
+
+    SELECT CASE WHEN LOCATE('\n', v_b64) = 0
+                 AND LOCATE('\r', v_b64) = 0
+                 -- and stripping did not corrupt it: it still decodes to the bytes we stored
+                 AND FROM_BASE64(v_b64) = v_raw
+                 -- 120 bytes -> 160 base64 chars with no padding-free surprises
+                 AND LENGTH(v_b64) = 160
+                THEN 'TEST 22 PASS: exported photo is unbroken base64 and round-trips to the original bytes'
+                ELSE 'TEST 22 FAIL: exported photo base64 was broken by line wrapping or did not round-trip' END AS message;
+    ROLLBACK;
+END //
+
+-- ----------------------------------------------------------------
+-- TEST 23: the DEPLOYED sp_news_doc_export exists, does not filter on news_publish, and strips
+-- TO_BASE64's line breaks
+--
+-- This one asserts against information_schema rather than a mirrored expression, so it is the test
+-- that actually fails if the procedure in the database drifts from the file. Both properties are
+-- deliberate and easy to "tidy" away later: a draft MUST stay exportable (dbo.fn_news_json had no
+-- publish filter, and AddNews.aspx leaves a row unpublished until Submit), and the REPLACE MUST
+-- stay (see TEST 22).
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_23_export_procedure_contract //
+CREATE PROCEDURE test_23_export_procedure_contract()
+BEGIN
+    DECLARE v_body LONGTEXT;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        SELECT 'TEST 23 FAIL: unexpected SQL error' AS message;
+    END;
+
+    SELECT routine_definition INTO v_body
+    FROM information_schema.routines
+    WHERE routine_schema = DATABASE() AND routine_name = 'sp_news_doc_export';
+
+    SELECT CASE WHEN v_body IS NULL
+                THEN 'TEST 23 FAIL: sp_news_doc_export is not present in this database'
+                WHEN LOCATE('news_publish', v_body) > 0
+                THEN 'TEST 23 FAIL: sp_news_doc_export filters on news_publish -- a draft must stay exportable'
+                WHEN LOCATE('REPLACE(TO_BASE64', v_body) = 0
+                THEN 'TEST 23 FAIL: sp_news_doc_export no longer strips TO_BASE64 line breaks'
+                ELSE 'TEST 23 PASS: sp_news_doc_export is deployed, exports drafts, and strips base64 line breaks'
+           END AS message;
+END //
+
 DELIMITER ;
 
 -- ==================================================================
 -- Run every test. Each CALL is independent (its own transaction + EXIT HANDLER), so one test's
 -- failure or unexpected SQL error does not prevent the rest from running.
+
 -- ==================================================================
 CALL test_01_insert_select_roundtrip();
 CALL test_02_publish_defaults_false();
@@ -635,6 +759,9 @@ CALL test_17_default_exactly_two_leads();
 CALL test_18_default_photo_only_in_leads();
 CALL test_19_default_snippet_first_line();
 CALL test_20_default_snippet_fallback();
+CALL test_21_export_json_names_and_nulls();
+CALL test_22_export_photo_base64_unbroken();
+CALL test_23_export_procedure_contract();
 
 -- Clean up the test procedures themselves so the throwaway database ends in the same shape
 -- ffi2.sql produced (no lasting state change -- the same rule each test's ROLLBACK follows).
@@ -658,3 +785,6 @@ DROP PROCEDURE IF EXISTS test_17_default_exactly_two_leads;
 DROP PROCEDURE IF EXISTS test_18_default_photo_only_in_leads;
 DROP PROCEDURE IF EXISTS test_19_default_snippet_first_line;
 DROP PROCEDURE IF EXISTS test_20_default_snippet_fallback;
+DROP PROCEDURE IF EXISTS test_21_export_json_names_and_nulls;
+DROP PROCEDURE IF EXISTS test_22_export_photo_base64_unbroken;
+DROP PROCEDURE IF EXISTS test_23_export_procedure_contract;
