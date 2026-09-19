@@ -2,6 +2,32 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-18: **MySQL news list: ordered by the caller's role — `news.edit_stamp`, `v_news_list_rows.last_edit`,
+  `sp_news_list_json(…, p_sort)`.** Admin: most recently edited first. Registered user and guest: newest
+  article date first. It replaces the insertion-order (`id DESC`) sort (#62) applied earlier the same day,
+  which ordered by when a row was *created* and so ignored both the article's own date and any later edit.
+  **APPLIED to Winhost on 2026-09-19 (~03:22 UTC, by the user, from the control panel)** — the one-off control-panel script (`ADMIN_WRITE_news_list_sort.sql`) has been
+  deleted now that it is applied; the final definitions are in `script01_createTable.sql`, `script01_createView.sql` and
+  `script02_Proc.sql`. Rollback is the previous definitions in git (`git show 89ac50e:mysql/script02_Proc.sql` and `script01_createView.sql`, run from the control panel), together with docapi 1.16.0.
+
+  **What changed:** a nullable `news.edit_stamp` (added `ALGORITHM=INSTANT`, no backfill — NULL reads as the
+  row's `stamp`); a `last_edit` column on `v_news_list_rows`; a **fourth parameter** `p_sort` on
+  `sp_news_list_json`; and the five write procedures now stamp `edit_stamp` (draft create, publish, photo
+  update, doc insert, doc update). The stamp is written explicitly, not by trigger or `ON UPDATE`, so a
+  maintenance `UPDATE` never counts as an edit.
+
+  **The signature change is not backward compatible in either direction** (MySQL has no overloading), so the
+  script and docapi 1.18.1 must go out together — script, docapi, then cproxy 0.17.1 for the role.
+
+  **Verified against a real MySQL 8.0.46:** 8 new tests in `UNIT_TESTS/unit_test@NewsListSort.sql`, written
+  first and failing 8/8 against the old schema, passing after; the two existing files still 17/17 and 23/23.
+  The ordering was checked by `CALL`ing the procedure (mysql CLI and Connector/J) over seeded rows in both
+  orders, with and without a country and CA padding. The control-panel scripts were applied to a database
+  built from the previous sources, twice (idempotent), and rolled back — the rolled-back definitions matched
+  the originals exactly. Fixed on the way: `unit_test@NewsAdminWrite.sql` TEST 1 was failing on a clean
+  build (an `ERROR 1267` collation clash — its `CHAR(36)` variable took the connection's collation, not the
+  procedure's `utf8mb4_unicode_ci`); it now declares the collation and passes.
+
 - 2026-09-18: **MySQL `sp_news_doc_insert` / `sp_news_doc_update` — docapi's news writes leave SQL
   Server.** The MySQL replacements for `dbo.sp_news_doc_add` / `dbo.sp_news_import` (both → insert) and
   `dbo.sp_news_doc_update`, behind docapi 1.16.0's `POST /api/v1/news`, `/news/import` and

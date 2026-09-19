@@ -39,70 +39,31 @@ CREATE TABLE news (
     news_photo_alt1 VARCHAR(128) NULL,
     news_photo_alt2 VARCHAR(128) NULL,
 
-    -- Cached flag: `news_photo0 IS NOT NULL`, maintained by TR_news_has_photo0_ins/upd below.
-    -- Same rationale as dbo.lake.isFish (envfish-db/CLAUDE.md "Cached flags on dbo.lake") -- reading
-    -- this LONGBLOB column at scale (list/home-page queries scanning every row) is catastrophically
-    -- slow on the live Winhost host (confirmed 2026-08-31: a plain `news_photo0 IS NOT NULL` in any
-    -- query that materializes multiple rows -- a temp table or a window function -- hangs
-    -- indefinitely; a single-row lookup by primary key is unaffected). Never set this from app code
-    -- or a proc; only the triggers below write it.
+    -- Derived cache of `news_photo0 IS NOT NULL`. Written ONLY by the triggers TR_news_has_photo0_ins /
+    -- TR_news_has_photo0_upd below -- never by a procedure or application code. The list and home-page
+    -- queries look at every row, and reading the LONGBLOB column there is prohibitively slow on the
+    -- Winhost host, so they read this flag instead; a single-row read by primary key is unaffected.
+    -- Same idea as dbo.lake.isFish (see envfish-db/CLAUDE.md, "Cached flags on news").
     has_photo0 TINYINT(1) NOT NULL DEFAULT 0,
+
+    -- When an editor last changed this article; NULL = never edited, and readers use
+    -- COALESCE(edit_stamp, stamp) (v_news_list_rows.last_edit). An admin's /news/list is ordered by it;
+    -- everyone else's by news_stamp, the article's own date. Written explicitly by the write procedures
+    -- (sp_news_admin_draft_create / _publish / _photo_update, sp_news_doc_insert / _update) -- not by a
+    -- trigger and not ON UPDATE CURRENT_TIMESTAMP, so a maintenance UPDATE is never an edit. Distinct
+    -- from `stamp`, which is when the row was created.
+    edit_stamp DATETIME(6) NULL,
 
     PRIMARY KEY (news_id),
     UNIQUE KEY id (id),
-    -- news_publish is heavily skewed (the vast majority of ~4,800 rows are published), and
-    -- sp_news_admin_draft_create's `DELETE FROM news WHERE news_publish <> 1` needs to seek
-    -- straight to the rare unpublished rows -- without this index that DELETE is a full table
-    -- scan of a BLOB-heavy table, which hangs on the live Winhost host well past any reasonable
-    -- timeout (confirmed 2026-09-15; see the PRODUCTION MIGRATION block below for the guarded
-    -- add-to-an-existing-database form, same idempotent pattern as has_photo0 above).
+    -- news_publish is heavily skewed (nearly every row is published), and
+    -- sp_news_admin_draft_create's `DELETE FROM news WHERE news_publish <> 1` has to seek straight to the
+    -- rare unpublished rows: without this index it is a full scan of a BLOB-heavy table.
     KEY idx_news_publish (news_publish)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ============================================================================================
--- PRODUCTION MIGRATION -- news: add idx_news_publish (idempotent/guarded, for databases created
--- before this index existed; the CREATE TABLE above already has it for a fresh build). See the
--- comment on the inline KEY definition above for why this index matters.
--- ============================================================================================
-SET @idx_news_publish_exists = (
-    SELECT COUNT(*) FROM information_schema.statistics
-    WHERE table_schema = DATABASE() AND table_name = 'news' AND index_name = 'idx_news_publish'
-);
-SET @sql = IF(@idx_news_publish_exists = 0,
-    'CREATE INDEX idx_news_publish ON news (news_publish)',
-    'SELECT 1');
-PREPARE stmt FROM @sql;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
--- ============================================================================================
--- PRODUCTION MIGRATION -- news: add has_photo0 (idempotent/guarded, for databases created before
--- this column existed; the CREATE TABLE above already has it for a fresh build). ALGORITHM=INSTANT
--- (MySQL 8.0.12+, InnoDB, adding a column at the end with a constant default) is metadata-only --
--- no table rebuild, no per-row blob read -- unlike a GENERATED ALWAYS AS (...) STORED column, which
--- would force ALGORITHM=COPY (a full table rebuild reading every row's blob) for the ALTER itself.
--- ============================================================================================
-SET @has_photo0_exists = (
-    SELECT COUNT(*) FROM information_schema.columns
-    WHERE table_schema = DATABASE() AND table_name = 'news' AND column_name = 'has_photo0'
-);
-SET @sql = IF(@has_photo0_exists = 0,
-    'ALTER TABLE news ADD COLUMN has_photo0 TINYINT(1) NOT NULL DEFAULT 0, ALGORITHM=INSTANT',
-    'SELECT 1');
-PREPARE stmt FROM @sql;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
--- One-time backfill for any pre-existing rows where news_photo0 IS NOT NULL (rows without a photo
--- are already correct via the DEFAULT 0, so this only ever touches the subset that has one).
--- Deliberately NOT one unbounded UPDATE -- given how fragile this host is around news_photo0 at
--- scale, apply this by hand in small, increasing, monitored batches instead of running the file
--- straight through (see envfish-db/CLAUDE.md "Cached flags on news" for the exact batching steps):
---     UPDATE news SET has_photo0 = 1 WHERE has_photo0 = 0 AND news_photo0 IS NOT NULL LIMIT 100;
--- repeated until it affects 0 rows.
-
--- Maintenance triggers: keep has_photo0 correct for every future INSERT/UPDATE, one row at a time
--- (the proven-safe case -- only bulk, multi-row materialization of news_photo0 is slow on this host).
+-- Maintenance triggers: keep has_photo0 correct on every INSERT/UPDATE, one row at a time (a
+-- single-row write is the case that is safe on the host; only multi-row work over news_photo0 is not).
 DELIMITER //
 
 DROP TRIGGER IF EXISTS TR_news_has_photo0_ins //

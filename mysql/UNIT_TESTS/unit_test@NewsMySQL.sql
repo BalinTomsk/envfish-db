@@ -248,7 +248,7 @@ BEGIN
     INSERT INTO news (news_id, news_title, news_publish, news_photo0)
     VALUES ('dddddddd-dddd-dddd-dddd-dddddddddddd', 'Has Photo', 1, UNHEX('89504E47'));
     SELECT CASE WHEN (SELECT has_photo0 FROM news WHERE news_id = 'dddddddd-dddd-dddd-dddd-dddddddddddd') = 1
-                THEN 'TEST 10 PASS: TR_news_has_photo0_ins sets has_photo0 = 1 when news_photo0 is present'
+                THEN 'TEST 10 PASS: TR_news_has_photo0_ins sets has_photo0 = 1 with a photo'
                 ELSE 'TEST 10 FAIL: has_photo0 was not set to 1 on insert with a photo' END AS message;
     ROLLBACK;
 END //
@@ -303,7 +303,7 @@ BEGIN
     SELECT has_photo0 INTO v_after_readd FROM news WHERE news_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
 
     SELECT CASE WHEN v_after_removal = 0 AND v_after_readd = 1
-                THEN 'TEST 12 PASS: TR_news_has_photo0_upd re-derives has_photo0 on UPDATE, overriding an explicit wrong value'
+                THEN 'TEST 12 PASS: TR_news_has_photo0_upd re-derives has_photo0 on UPDATE'
                 ELSE 'TEST 12 FAIL: has_photo0 was not correctly re-derived on UPDATE' END AS message;
     ROLLBACK;
 END //
@@ -341,7 +341,7 @@ BEGIN
                  AND JSON_UNQUOTE(JSON_EXTRACT(v_doc, '$.author')) = 'Some Author'
                  AND JSON_UNQUOTE(JSON_EXTRACT(v_doc, '$.flag')) = 'CA.png'
                  AND JSON_TYPE(JSON_EXTRACT(v_doc, '$.photo')) = 'NULL'
-                THEN 'TEST 13 PASS: sp_news_doc_get JSON carries title/author/flag and a null photo when absent'
+                THEN 'TEST 13 PASS: sp_news_doc_get JSON has title/author/flag, null photo'
                 ELSE 'TEST 13 FAIL: sp_news_doc_get JSON fields did not match' END AS message;
     ROLLBACK;
 END //
@@ -372,7 +372,7 @@ BEGIN
         WHERE news_id = '20202020-2020-2020-2020-202020202020';
 
     SELECT CASE WHEN v_doc_get_rows = 0 AND v_list_rows = 0
-                THEN 'TEST 14 PASS: a draft is excluded from both the doc lookup and v_news_list_rows'
+                THEN 'TEST 14 PASS: a draft is hidden from the doc lookup and the list view'
                 ELSE 'TEST 14 FAIL: draft visibility rule not enforced on the read path' END AS message;
     ROLLBACK;
 END //
@@ -437,7 +437,7 @@ BEGIN
         WHERE news_id = '30303030-3030-3030-3030-303030303031';
 
     SELECT CASE WHEN v_ca_count = 2 AND v_stamp = '2026-01-05' AND v_flag = 'CA'
-                THEN 'TEST 16 PASS: v_news_list_rows exposes both rows with an ISO yyyy-mm-dd stamp and country flag'
+                THEN 'TEST 16 PASS: v_news_list_rows shows both rows, ISO stamp, country flag'
                 ELSE 'TEST 16 FAIL: v_news_list_rows shape/date format unexpected' END AS message;
     ROLLBACK;
 END //
@@ -480,8 +480,8 @@ BEGIN
         WHERE rn <= 5 AND JSON_EXTRACT(doc, '$.with_photo') = 0;
 
     SELECT CASE WHEN v_lead_count = 2
-                THEN 'TEST 17 PASS: v_news_default_doc marks exactly 2 lead items by final display rank'
-                ELSE CONCAT('TEST 17 FAIL: expected exactly 2 leads, got ', v_lead_count) END AS message;
+                THEN 'TEST 17 PASS: v_news_default_doc marks exactly 2 leads by display rank'
+                ELSE 'TEST 17 FAIL: v_news_default_doc did not mark exactly 2 leads' END AS message;
     ROLLBACK;
 END //
 
@@ -519,8 +519,8 @@ BEGIN
         WHERE rn BETWEEN 3 AND 5 AND JSON_TYPE(JSON_EXTRACT(doc, '$.photo')) = 'STRING';
 
     SELECT CASE WHEN v_leads_with_photo = 2 AND v_compact_with_photo = 0
-                THEN 'TEST 18 PASS: only the 2 lead items embed a base64 photo; compact items carry JSON null'
-                ELSE CONCAT('TEST 18 FAIL: leads-with-photo=', v_leads_with_photo, ' compact-with-photo=', v_compact_with_photo) END AS message;
+                THEN 'TEST 18 PASS: only the 2 lead items embed a photo; the rest are null'
+                ELSE 'TEST 18 FAIL: photos are not on exactly the 2 lead items' END AS message;
     ROLLBACK;
 END //
 
@@ -558,8 +558,8 @@ BEGIN
         WHERE JSON_UNQUOTE(JSON_EXTRACT(doc, '$.news_id')) = '80808080-8080-8080-8080-808080808082';
 
     SELECT CASE WHEN v_crlf = 'First line of the teaser.' AND v_oneline = 'Only one line here.'
-                THEN 'TEST 19 PASS: snippet is the trimmed, CR-stripped first line of news_paragraph0'
-                ELSE CONCAT('TEST 19 FAIL: crlf=[', IFNULL(v_crlf, '<null>'), '] oneline=[', IFNULL(v_oneline, '<null>'), ']') END AS message;
+                THEN 'TEST 19 PASS: snippet is the trimmed first line of paragraph0, no CR'
+                ELSE 'TEST 19 FAIL: snippet is not the trimmed CR-free first line' END AS message;
     ROLLBACK;
 END //
 
@@ -603,9 +603,8 @@ BEGIN
     SELECT CASE WHEN v_blank = 'Body from paragraph one.'
                  AND v_null = 'Fallback when paragraph zero is null.'
                  AND v_none = '' AND v_none_type = 'STRING'
-                THEN 'TEST 20 PASS: snippet falls back to news_paragraph1, and is an empty string when there is no body'
-                ELSE CONCAT('TEST 20 FAIL: blank=[', IFNULL(v_blank, '<null>'), '] null=[', IFNULL(v_null, '<null>'),
-                            '] none=[', IFNULL(v_none, '<null>'), '/', IFNULL(v_none_type, '<null>'), ']') END AS message;
+                THEN 'TEST 20 PASS: snippet falls back to paragraph1; empty with no body'
+                ELSE 'TEST 20 FAIL: snippet fallback or empty-body rule did not hold' END AS message;
     ROLLBACK;
 END //
 
@@ -657,7 +656,7 @@ BEGIN
                  -- present AND null, not absent: AddNews.aspx reads every field by name
                  AND JSON_CONTAINS_PATH(v_doc, 'one', '$.paragraph2')
                  AND JSON_TYPE(JSON_EXTRACT(v_doc, '$.paragraph2')) = 'NULL'
-                THEN 'TEST 21 PASS: sp_news_doc_export JSON uses fn_news_json names and keeps nulls explicit'
+                THEN 'TEST 21 PASS: sp_news_doc_export JSON uses fn_news_json names, nulls'
                 ELSE 'TEST 21 FAIL: sp_news_doc_export JSON names/nulls did not match' END AS message;
     ROLLBACK;
 END //
@@ -694,8 +693,8 @@ BEGIN
                  AND FROM_BASE64(v_b64) = v_raw
                  -- 120 bytes -> 160 base64 chars with no padding-free surprises
                  AND LENGTH(v_b64) = 160
-                THEN 'TEST 22 PASS: exported photo is unbroken base64 and round-trips to the original bytes'
-                ELSE 'TEST 22 FAIL: exported photo base64 was broken by line wrapping or did not round-trip' END AS message;
+                THEN 'TEST 22 PASS: exported photo is unbroken base64, round-trips its bytes'
+                ELSE 'TEST 22 FAIL: exported photo base64 is broken or did not round-trip' END AS message;
     ROLLBACK;
 END //
 
@@ -725,10 +724,10 @@ BEGIN
     SELECT CASE WHEN v_body IS NULL
                 THEN 'TEST 23 FAIL: sp_news_doc_export is not present in this database'
                 WHEN LOCATE('news_publish', v_body) > 0
-                THEN 'TEST 23 FAIL: sp_news_doc_export filters on news_publish -- a draft must stay exportable'
+                THEN 'TEST 23 FAIL: sp_news_doc_export filters news_publish (drafts export)'
                 WHEN LOCATE('REPLACE(TO_BASE64', v_body) = 0
                 THEN 'TEST 23 FAIL: sp_news_doc_export no longer strips TO_BASE64 line breaks'
-                ELSE 'TEST 23 PASS: sp_news_doc_export is deployed, exports drafts, and strips base64 line breaks'
+                ELSE 'TEST 23 PASS: sp_news_doc_export exists, exports drafts, strips newlines'
            END AS message;
 END //
 
