@@ -253,6 +253,12 @@ END //
 --   p_country : NULL/'' -> all countries; ISO-2 code -> that country, padded with the latest CA
 --               news (block_ord = 1) when it has fewer than 100 published items of its own.
 --   p_offset  : rows to skip (clamped >= 0).  p_limit : page size (clamped 1..200).
+--   p_sort    : the ORDER, chosen by docapi from the caller's role (cproxy's verified X-Fish-Role):
+--               'edited' -> most recently EDITED first (v_news_list_rows.last_edit) -- admin only;
+--               anything else / NULL -> newest article DATE first (news_stamp) -- registered users
+--               and guests. Both break ties on id DESC so the order is total and pages never overlap.
+--               The padding block is ordered the same way. The guest cap (first 100 rows) is NOT applied
+--               here: cproxy and docapi enforce it.
 -- has_photo reads the maintained `news.has_photo0` flag column (script01_createTable.sql), NEVER
 -- `news_photo0` (the LONGBLOB) or `LENGTH(news_photo0)` directly -- this is the one query here that
 -- scans every published row, and on the live Winhost host ANY reference to news_photo0/1/2 in a
@@ -270,12 +276,14 @@ DROP PROCEDURE IF EXISTS sp_news_list_json //
 CREATE PROCEDURE sp_news_list_json(
     IN p_country VARCHAR(2) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci,
     IN p_offset INT,
-    IN p_limit INT
+    IN p_limit INT,
+    IN p_sort VARCHAR(8) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci
 )
 BEGIN
     DECLARE v_offset INT DEFAULT IF(p_offset < 0, 0, p_offset);
     DECLARE v_limit INT DEFAULT IF(p_limit < 1, 25, IF(p_limit > 200, 200, p_limit));
     DECLARE v_country VARCHAR(2) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULLIF(p_country, '');
+    DECLARE v_edited TINYINT(1) DEFAULT IF(LOWER(IFNULL(p_sort, '')) = 'edited', 1, 0);
     DECLARE v_own_count INT DEFAULT 0;
     DECLARE v_pad_limit INT DEFAULT 0;
 
@@ -290,25 +298,25 @@ BEGIN
     SELECT rn, news_id, title, source, stamp, flag, has_photo, block_ord, total
     FROM (
         SELECT
-            -- Newest ADDED first: id is news's AUTO_INCREMENT, i.e. insertion order (a new article's
-            -- row is created when AddNews opens its draft). Ordering by news_stamp -- the article's own
-            -- date, which the editor sets -- put a just-added article dated a week back below older
-            -- entries, so it looked missing from the list.
-            ROW_NUMBER() OVER (ORDER BY block_ord ASC, id DESC) AS rn,
+            -- sort_key is the caller's chosen key (see p_sort): the last EDIT for an admin, the
+            -- article's own DATE (news_stamp) for everyone else. Newest first within each block.
+            ROW_NUMBER() OVER (ORDER BY block_ord ASC, sort_key DESC, id DESC) AS rn,
             COUNT(*) OVER () AS total,
             news_id, title, source, stamp, flag, has_photo, block_ord
         FROM (
             -- PRIMARY block: the requested country, or every country when blank.
-            SELECT id, news_id, title, source, news_stamp, stamp, flag, has_photo, 0 AS block_ord
+            SELECT id, news_id, title, source, IF(v_edited = 1, last_edit, news_stamp) AS sort_key,
+                   stamp, flag, has_photo, 0 AS block_ord
             FROM v_news_list_rows
             WHERE v_country IS NULL OR country = v_country
             UNION ALL
             -- PADDING block: latest CA news topping the list up to 100, only for a non-CA country
             -- short of 100 of its own.
-            SELECT id, news_id, title, source, news_stamp, stamp, flag, has_photo, 1 AS block_ord
+            SELECT id, news_id, title, source, sort_key, stamp, flag, has_photo, 1 AS block_ord
             FROM (
-                SELECT id, news_id, title, source, news_stamp, stamp, flag, has_photo,
-                       ROW_NUMBER() OVER (ORDER BY id DESC) AS pad_rn
+                SELECT id, news_id, title, source, IF(v_edited = 1, last_edit, news_stamp) AS sort_key,
+                       stamp, flag, has_photo,
+                       ROW_NUMBER() OVER (ORDER BY IF(v_edited = 1, last_edit, news_stamp) DESC, id DESC) AS pad_rn
                 FROM v_news_list_rows
                 WHERE v_country IS NOT NULL AND v_country <> 'CA' AND country = 'CA'
             ) pad
@@ -379,8 +387,8 @@ BEGIN
 
     SET p_news_id = UUID();
 
-    INSERT INTO news (news_id, news_title, news_author, news_publish, news_stamp)
-    VALUES (p_news_id, 'title', 'Lepsik', 0, NOW(6));
+    INSERT INTO news (news_id, news_title, news_author, news_publish, news_stamp, edit_stamp)
+    VALUES (p_news_id, 'title', 'Vantus', 0, NOW(6), NOW(6));
 END //
 
 -- sp_news_admin_publish : the article's editable fields, upserted by news_id and marked
@@ -449,7 +457,8 @@ BEGIN
             lake_id = p_lake_id,
             fish1_id = p_fish1_id,
             fish2_id = p_fish2_id,
-            fish3_id = p_fish3_id
+            fish3_id = p_fish3_id,
+            edit_stamp = NOW(6)
         WHERE news_id = p_news_id;
 
         SELECT p_news_id AS news_id, 'updated' AS action;
@@ -457,11 +466,11 @@ BEGIN
         INSERT INTO news (
             news_id, news_title, news_author, news_source, news_source_link, news_author_link,
             news_stamp, news_publish, news_video_link, news_paragraph0, news_paragraph1,
-            news_paragraph2, country, lake_id, fish1_id, fish2_id, fish3_id
+            news_paragraph2, country, lake_id, fish1_id, fish2_id, fish3_id, edit_stamp
         ) VALUES (
             p_news_id, p_title, p_author, p_source, p_source_link, p_author_link,
             p_stamp, 1, p_video_link, p_paragraph0, p_paragraph1,
-            p_paragraph2, p_country, p_lake_id, p_fish1_id, p_fish2_id, p_fish3_id
+            p_paragraph2, p_country, p_lake_id, p_fish1_id, p_fish2_id, p_fish3_id, NOW(6)
         );
 
         SELECT p_news_id AS news_id, 'inserted' AS action;
@@ -501,19 +510,22 @@ BEGIN
         UPDATE news SET
             news_photo0 = p_photo,
             news_photo_author0 = COALESCE(p_author, news_photo_author0),
-            news_photo_alt0 = COALESCE(p_alt, news_photo_alt0)
+            news_photo_alt0 = COALESCE(p_alt, news_photo_alt0),
+            edit_stamp = NOW(6)
         WHERE news_id = p_news_id;
     ELSEIF v_exists = 1 AND p_index = 1 THEN
         UPDATE news SET
             news_photo1 = p_photo,
             news_photo_author1 = COALESCE(p_author, news_photo_author1),
-            news_photo_alt1 = COALESCE(p_alt, news_photo_alt1)
+            news_photo_alt1 = COALESCE(p_alt, news_photo_alt1),
+            edit_stamp = NOW(6)
         WHERE news_id = p_news_id;
     ELSEIF v_exists = 1 AND p_index = 2 THEN
         UPDATE news SET
             news_photo2 = p_photo,
             news_photo_author2 = COALESCE(p_author, news_photo_author2),
-            news_photo_alt2 = COALESCE(p_alt, news_photo_alt2)
+            news_photo_alt2 = COALESCE(p_alt, news_photo_alt2),
+            edit_stamp = NOW(6)
         WHERE news_id = p_news_id;
     END IF;
 
@@ -600,14 +612,14 @@ BEGIN
         news_stamp, news_publish, lake_id, fish1_id, fish2_id, fish3_id,
         news_photo0, news_photo_author0, news_photo_alt0,
         news_photo1, news_photo_author1, news_photo_alt1,
-        news_photo2, news_photo_author2, news_photo_alt2
+        news_photo2, news_photo_author2, news_photo_alt2, edit_stamp
     ) VALUES (
         v_id, p_title, p_author, p_author_link, p_source, p_source_link,
         p_video_link, p_paragraph0, p_paragraph1, p_paragraph2, p_country,
         COALESCE(p_stamp, NOW(6)), 1, p_lake_id, p_fish1_id, p_fish2_id, p_fish3_id,
         p_photo0, p_photo_author0, p_photo_alt0,
         p_photo1, p_photo_author1, p_photo_alt1,
-        p_photo2, p_photo_author2, p_photo_alt2
+        p_photo2, p_photo_author2, p_photo_alt2, NOW(6)
     );
 
     SELECT v_id AS news_id;
@@ -668,7 +680,8 @@ BEGIN
             fish3_id           = p_fish3_id,
             news_photo0        = COALESCE(p_photo0, news_photo0),
             news_photo_author0 = p_photo_author0,
-            news_photo_alt0    = p_photo_alt0
+            news_photo_alt0    = p_photo_alt0,
+            edit_stamp         = NOW(6)
         WHERE news_id = p_news_id;
     END IF;
 

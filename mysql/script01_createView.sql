@@ -48,7 +48,11 @@ SELECT
     DATE_FORMAT(news_stamp, '%Y-%m-%d') AS stamp,
     country AS flag,
     country,
-    has_photo0 AS has_photo
+    has_photo0 AS has_photo,
+    -- The admin sort key: when the article was last EDITED, or, for a row never edited, when the row
+    -- was created. (`stamp` here is the table column; the display `stamp` above is an alias and cannot
+    -- be referenced within the same select list.)
+    COALESCE(edit_stamp, stamp) AS last_edit
 FROM news
 WHERE news_publish = 1;
 

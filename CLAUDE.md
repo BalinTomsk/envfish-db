@@ -395,6 +395,18 @@ a short clean run. The per-test handler turns that into one `FAIL` line and lets
 See `mysql/UNIT_TESTS/unit_test@NewsMySQL.sql` for a worked example with 18 tests in this shape.
 The same `TEST n PASS:` / `TEST n FAIL:` wording and sequential numbering rules as `mssql/` apply.
 
+**Output contract — one line per test, under 80 characters.** Every test prints exactly one string,
+`TEST n PASS: <what held>` or `TEST n FAIL: <what broke>`, and that whole line is **shorter than 80
+characters** (the example to copy: `TEST 6 PASS: news_publish = 1 filter excludes the draft row`).
+- **FAIL messages are fixed text, not `CONCAT`-ed diagnostics.** Values (uuids, timestamps, counts) make a
+  line unbounded and unreadable; if you need them to debug, `SELECT` them in a scratch session.
+- **Result rows from `CALL`ed procedures are noise and are filtered, not suppressed.** MySQL cannot capture or
+  silence a called procedure's result set inside a test, so a test that calls `sp_news_admin_publish` etc. makes
+  the client print its row. `mysql/UNIT_TESTS/averify.py` drops every line that is not a `unit_test@…` header or
+  a `TEST n …` line when it builds `cleaned.txt` (`result.txt` keeps the raw output).
+- **The verifier enforces the contract and cannot hide a failure:** a line starting `ERROR` is kept and fails the
+  run, a `TEST` line of 80+ characters fails it (by name), and so does a `TEST` line that is neither PASS nor FAIL.
+
 ### Testing MySQL procedures — put the query in a view
 
 **MySQL cannot capture a stored procedure's result set from calling SQL** — `INSERT INTO t CALL
@@ -513,6 +525,35 @@ the reason above — the list/home-page queries need to know "does this row have
   stay in the repo, same rule as `script20_Migration.sql` one-off backfills).
 - `sp_news_list_json` and `sp_news_default`'s group-selection queries (`envfish-db/mysql/script02_Proc.sql`)
   read `has_photo0`, never `news_photo0`, for anything that scans more than one row.
+
+### News list order and `news.edit_stamp` (2026-09-18)
+
+`sp_news_list_json(p_country, p_offset, p_limit, p_sort)` (docapi's `GET /news/list`) is ordered by the
+**caller's role**, which docapi passes down as `p_sort`: `'edited'` (admin) — most recently *edited* first,
+`v_news_list_rows.last_edit`; anything else, including NULL (registered user, guest) — newest article
+*date* first, `news_stamp`. Both break ties on `id DESC`, and the CA padding block is ordered the same way.
+The guest cap (first 100 rows) is **not** here — docapi applies it. This replaces the insertion-order
+(`id DESC`) sort applied earlier the same day.
+
+- **`news.edit_stamp DATETIME(6) NULL`** is "when an editor last changed this article". NULL means never
+  edited since the column existed; readers use `COALESCE(edit_stamp, stamp)` — that is `last_edit`. **No
+  backfill**, deliberately. It is written **explicitly** by the five write procedures
+  (`sp_news_admin_draft_create`, `_publish`, `_photo_update`, `sp_news_doc_insert`, `sp_news_doc_update`)
+  and **not** by a trigger or `ON UPDATE CURRENT_TIMESTAMP`: the `has_photo0` backfill and any other
+  maintenance `UPDATE` must not count as an edit. A new write path that changes an article must stamp it.
+  `stamp` is a different thing — when the row was *created*.
+- The schema script only *describes* the column. Getting it onto the live table was a one-off `ALTER TABLE … ADD COLUMN … ALGORITHM=INSTANT` (metadata only, no blob read), applied from the control panel (that script has since been deleted, per the rule for applied one-off files); it is deliberately not in `script01_createTable.sql` — see "Where each kind of change goes": schema scripts describe the final shape, migrations are one-off and transient.
+- **`sp_news_list_json` changed signature (3 → 4 parameters) and MySQL has no overloading.** The docapi
+  that calls it must be deployed in lock-step — the one-off control-panel script (deleted once applied), then docapi 1.18.1
+  straight after, then cproxy 0.17.1 (which supplies the role). Rollback is the
+  mirror image — the previous definitions from git (`89ac50e`) together with docapi 1.16.0; `edit_stamp` stays in place.
+- Tests: `mysql/UNIT_TESTS/unit_test@NewsListSort.sql` (8): the column, the view's `last_edit` fallback,
+  the stamp on each write path, and the procedure's definition. **The ordering itself is not asserted by a
+  test** — a procedure's result set cannot be captured from SQL (see "Testing MySQL procedures") — so it
+  was verified by `CALL`ing the procedure against a real MySQL 8.0.46, from the mysql CLI *and* through
+  Connector/J (`date` → newest article date first; `edited` → last edit first; CA padding follows each).
+  Also proven: both control-panel scripts apply cleanly and idempotently, the upgraded schema is
+  byte-identical to a fresh build from the sources, and the rollback restores the previous definitions exactly.
 
 ## Changelog
 

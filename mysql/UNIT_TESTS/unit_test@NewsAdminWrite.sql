@@ -28,7 +28,7 @@ DELIMITER //
 DROP PROCEDURE IF EXISTS test_01_draft_create_purges_and_inserts //
 CREATE PROCEDURE test_01_draft_create_purges_and_inserts()
 BEGIN
-    DECLARE v_id CHAR(36);
+    DECLARE v_id CHAR(36) CHARSET utf8mb4 COLLATE utf8mb4_unicode_ci;
     DECLARE v_stale_gone INT;
     DECLARE v_new_row INT;
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
@@ -45,12 +45,11 @@ BEGIN
 
     SELECT COUNT(*) INTO v_stale_gone FROM news WHERE news_id = 'a1000000-0000-0000-0000-000000000001';
     SELECT COUNT(*) INTO v_new_row FROM news
-     WHERE news_id = v_id AND news_title = 'title' AND news_author = 'Lepsik' AND news_publish = 0;
+     WHERE news_id = v_id AND news_title = 'title' AND news_author = 'Vantus' AND news_publish = 0;
 
     SELECT CASE WHEN v_id IS NOT NULL AND CHAR_LENGTH(v_id) = 36 AND v_stale_gone = 0 AND v_new_row = 1
                 THEN 'TEST 1 PASS: stale draft purged, fresh placeholder draft created'
-                ELSE CONCAT('TEST 1 FAIL: id=[', IFNULL(v_id, '<null>'), '] stale_gone=', v_stale_gone,
-                            ' new_row=', v_new_row) END AS message;
+                ELSE 'TEST 1 FAIL: draft not created, or the stale draft not purged' END AS message;
     ROLLBACK;
 END //
 
@@ -133,7 +132,7 @@ BEGIN
 
     START TRANSACTION;
     INSERT INTO news (news_id, news_title, news_author, news_publish)
-    VALUES ('a4000000-0000-0000-0000-000000000004', 'title', 'Lepsik', 0);
+    VALUES ('a4000000-0000-0000-0000-000000000004', 'title', 'Vantus', 0);
 
     CALL sp_news_admin_publish(
         'a4000000-0000-0000-0000-000000000004', 'Real Title', 'Real Author', NULL, NULL, NULL,
@@ -148,7 +147,7 @@ BEGIN
 
     SELECT CASE WHEN v_count = 1 AND v_ok = 1
                 THEN 'TEST 4 PASS: an existing draft is updated in place, not duplicated'
-                ELSE CONCAT('TEST 4 FAIL: row_count=', v_count, ' fields_ok=', v_ok) END AS message;
+                ELSE 'TEST 4 FAIL: draft not updated in place, or the row count changed' END AS message;
     ROLLBACK;
 END //
 
@@ -181,7 +180,7 @@ BEGIN
 
     SELECT CASE WHEN v_count = 1
                 THEN 'TEST 5 PASS: an identical resubmit neither errors nor duplicates the row'
-                ELSE CONCAT('TEST 5 FAIL: expected exactly 1 row, found ', v_count) END AS message;
+                ELSE 'TEST 5 FAIL: a resubmit did not leave exactly one row' END AS message;
     ROLLBACK;
 END //
 
@@ -243,7 +242,7 @@ BEGIN
        AND news_photo1 = 0x11223344 AND news_photo_author1 = 'Original Author' AND news_photo_alt1 = 'Original Alt';
 
     SELECT CASE WHEN v_ok = 1
-                THEN 'TEST 7 PASS: NULL author/alt leave the existing values in place while bytes still update'
+                THEN 'TEST 7 PASS: NULL author/alt keep stored values, bytes still update'
                 ELSE 'TEST 7 FAIL: author/alt were overwritten, or bytes were not updated' END AS message;
     ROLLBACK;
 END //
@@ -383,7 +382,7 @@ BEGIN
        AND CHAR_LENGTH(news_id) = 36;
 
     SELECT CASE WHEN v_ok = 1
-                THEN 'TEST 11 PASS: sp_news_doc_insert creates one published row with every field and a generated id'
+                THEN 'TEST 11 PASS: sp_news_doc_insert writes one published row, every field'
                 ELSE 'TEST 11 FAIL: sp_news_doc_insert row did not match the supplied fields' END AS message;
     ROLLBACK;
 END //
@@ -420,7 +419,7 @@ BEGIN
        AND has_photo0 = 1;
 
     SELECT CASE WHEN v_ok = 1
-                THEN 'TEST 12 PASS: NULL stamp defaults to now, all three photo slots are stored, has_photo0 follows'
+                THEN 'TEST 12 PASS: NULL stamp is now, 3 photo slots stored, has_photo0 set'
                 ELSE 'TEST 12 FAIL: default stamp or photo slots did not match' END AS message;
     ROLLBACK;
 END //
@@ -451,8 +450,8 @@ BEGIN
     SELECT COUNT(*) INTO v_after FROM news;
 
     SELECT CASE WHEN v_signalled = 1 AND v_after = v_before
-                THEN 'TEST 13 PASS: a blank title is refused with SQLSTATE 45000 and no row is written'
-                ELSE CONCAT('TEST 13 FAIL: signalled=', v_signalled, ' rows before=', v_before, ' after=', v_after) END AS message;
+                THEN 'TEST 13 PASS: a blank title is refused with SQLSTATE 45000, no row'
+                ELSE 'TEST 13 FAIL: a blank title was not refused with SQLSTATE 45000' END AS message;
 END //
 
 -- ----------------------------------------------------------------
@@ -493,7 +492,7 @@ BEGIN
        AND news_publish = 0;                  -- still a draft
 
     SELECT CASE WHEN v_ok = 1
-                THEN 'TEST 14 PASS: update replaces every text field (NULL clears) and leaves the publish flag alone'
+                THEN 'TEST 14 PASS: update replaces text fields, NULL clears, publish kept'
                 ELSE 'TEST 14 FAIL: full-replace semantics or publish flag did not hold' END AS message;
     ROLLBACK;
 END //
@@ -537,7 +536,7 @@ BEGIN
        AND news_photo_author1 = 'Slot One Author';
 
     SELECT CASE WHEN v_ok = 1
-                THEN 'TEST 15 PASS: NULL stamp and NULL photo0 are kept, slot-0 author/alt set directly, slot 1 untouched'
+                THEN 'TEST 15 PASS: NULL stamp/photo0 kept, slot-0 metadata set, slot 1 kept'
                 ELSE 'TEST 15 FAIL: stamp/photo keep-rules or slot-0 metadata did not hold' END AS message;
     ROLLBACK;
 END //
