@@ -2,6 +2,17 @@
 
 Split out of `CLAUDE.md` for readability. Newest entries first.
 
+- 2026-09-21: **SQL Server `dbo.news` and its 14 dependents removed from the `mssql/` scripts.** MySQL is the news library;
+  `FishTracker.dll` no longer reads `dbo.news`. Removed: table `news` (+ its indexes, FKs and trigger `TR_ins_news`) and its
+  `merge_table` row from `script01_createTable.sql`; views `vDefaultNews`, `vNewsList`; functions `fn_GetTopNews`,
+  `fn_river_view_news`, `fn_fish_view_news`, `fn_news_list`, `fn_news_search`, `fn_news_json`, `fn_news_doc`,
+  `fn_default_news_json`, `fn_default_news_ids`; procedures `sp_news_import`, `sp_news_doc_add`, `sp_news_doc_update`; and the
+  `update news SET lake_id=…` line of `sp_MergeLakes` -- **a lake merge no longer re-points any news row** (the MySQL `news`
+  table has its own `lake_id`). Tests: deleted `unit_test@DefaultNews/FishViewNews/NewsDoc/NewsImport/NewsJson/NewsSearch.sql`;
+  `unit_test@Tributary.sql` lost its 4 `fn_river_view_news` tests (`sp_add_tributary` tests renumbered 1-4). Verified: the
+  trimmed scripts build a fresh database with no errors and no `news` object, `merge_table` row or broken reference left, and
+  the other 59 test files give 534 PASS / 2 FAIL (both in `FishCodeLatinJson`, unrelated). **Live prod is changed separately** by
+  the transient `fishfind-frontend/aspnet/secret/_apply_drop_dbo_news.ps1`, not by these files.
 - 2026-09-18: **MySQL news list: ordered by the caller's role — `news.edit_stamp`, `v_news_list_rows.last_edit`,
   `sp_news_list_json(…, p_sort)`.** Admin: most recently edited first. Registered user and guest: newest
   article date first. It replaces the insertion-order (`id DESC`) sort (#62) applied earlier the same day,

@@ -1,22 +1,17 @@
 SET QUOTED_IDENTIFIER ON
 GO
 /*
-  Unit tests for dbo.fn_river_view_news and dbo.sp_add_tributary.
-  Uses real tables dbo.lake / dbo.news / dbo.Tributaries. Transaction is rolled back at end -
+  Unit tests for dbo.sp_add_tributary.
+  Uses real tables dbo.lake / dbo.Tributaries. Transaction is rolled back at end -
   database state restored.
-
-  TEST 1 - find single news
-  TEST 2 - find no news
-  TEST 3 - find 2 news
-  TEST 4 - find 3 news
 
   sp_add_tributary - creates the RECIPROCAL Tributaries row on the water body being linked.
   Called by FishTracker.Editor.EditTributary.ButtonSubmit_Click; @type is the ddlFlow value
   (1 link / 2 through / 4 inflow / 8 outflow / 64 joined), NOT a side bitmask.
-  TEST 5 - inflow (@type=4) on a lake with NO self source placeholder still creates the side-4 row
-  TEST 6 - inflow (@type=4) on a lake WITH a self source placeholder keeps that side-16 row intact
-  TEST 7 - through (@type=2) creates BOTH the side-4 and the side-8 reciprocal rows
-  TEST 8 - outflow (@type=8) must not re-point an existing self mouth (side-32) row
+  TEST 1 - inflow (@type=4) on a lake with NO self source placeholder still creates the side-4 row
+  TEST 2 - inflow (@type=4) on a lake WITH a self source placeholder keeps that side-16 row intact
+  TEST 3 - through (@type=2) creates BOTH the side-4 and the side-8 reciprocal rows
+  TEST 4 - outflow (@type=8) must not re-point an existing self mouth (side-32) row
 */
 SET NOCOUNT ON;
 
@@ -27,69 +22,7 @@ BEGIN TRY
     BEGIN TRANSACTION;
 
     -- ----------------------------------------------------------------
-    -- TEST 1: find single news
-    -- ----------------------------------------------------------------
-    SET @tStart = SYSUTCDATETIME();
-    DECLARE @Lake1 uniqueidentifier = NEWID();
-    INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES (@Lake1, 2, N'River', 'UTTB1');
-    INSERT INTO news (news_title, news_author, lake_id) VALUES ('test news', 'author', @Lake1);
-    DECLARE @R1a int = (SELECT COUNT(*) FROM dbo.fn_river_view_news(@Lake1, 1));
-    DECLARE @R1b int = (SELECT COUNT(*) FROM dbo.fn_river_view_news(@Lake1, 0));
-    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-    IF @R1a = 1 AND @R1b = 0
-        PRINT 'TEST 1 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: single news item found';
-    ELSE
-        PRINT 'TEST 1 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: flag1=' + CAST(@R1a AS varchar) + ' flag0=' + CAST(@R1b AS varchar);
-
-    -- ----------------------------------------------------------------
-    -- TEST 2: find no news
-    -- ----------------------------------------------------------------
-    SET @tStart = SYSUTCDATETIME();
-    DECLARE @Lake2 uniqueidentifier = NEWID();
-    INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES (@Lake2, 2, N'River', 'UTTB2');
-    DECLARE @R2a int = (SELECT COUNT(*) FROM dbo.fn_river_view_news(@Lake2, 1));
-    DECLARE @R2b int = (SELECT COUNT(*) FROM dbo.fn_river_view_news(@Lake2, 0));
-    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-    IF @R2a = 0 AND @R2b = 0
-        PRINT 'TEST 2 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: no news items found';
-    ELSE
-        PRINT 'TEST 2 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: flag1=' + CAST(@R2a AS varchar) + ' flag0=' + CAST(@R2b AS varchar);
-
-    -- ----------------------------------------------------------------
-    -- TEST 3: find 2 news
-    -- ----------------------------------------------------------------
-    SET @tStart = SYSUTCDATETIME();
-    DECLARE @Lake3 uniqueidentifier = NEWID();
-    INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES (@Lake3, 2, N'River', 'UTTB3');
-    INSERT INTO news (news_title, news_author, lake_id) VALUES ('test news1 T3', 'author', @Lake3);
-    INSERT INTO news (news_title, news_author, lake_id) VALUES ('test news2 T3', 'author', @Lake3);
-    DECLARE @R3a int = (SELECT COUNT(*) FROM dbo.fn_river_view_news(@Lake3, 1));
-    DECLARE @R3b int = (SELECT COUNT(*) FROM dbo.fn_river_view_news(@Lake3, 0));
-    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-    IF @R3a = 1 AND @R3b = 1
-        PRINT 'TEST 3 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: two news items found';
-    ELSE
-        PRINT 'TEST 3 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: flag1=' + CAST(@R3a AS varchar) + ' flag0=' + CAST(@R3b AS varchar);
-
-    -- ----------------------------------------------------------------
-    -- TEST 4: find 3 news
-    -- ----------------------------------------------------------------
-    SET @tStart = SYSUTCDATETIME();
-    DECLARE @Lake4 uniqueidentifier = NEWID();
-    INSERT INTO lake (lake_id, locType, lake_name, CGNDB) VALUES (@Lake4, 2, N'River', 'UTTB4');
-    INSERT INTO news (news_title, news_author, lake_id) VALUES ('test news1 T4', 'author', @Lake4);
-    INSERT INTO news (news_title, news_author, lake_id) VALUES ('test news2 T4', 'author', @Lake4);
-    INSERT INTO news (news_title, news_author, lake_id) VALUES ('test news3 T4', 'author', @Lake4);
-    DECLARE @R4a int = (SELECT COUNT(*) FROM dbo.fn_river_view_news(@Lake4, 1));
-    DECLARE @R4b int = (SELECT COUNT(*) FROM dbo.fn_river_view_news(@Lake4, 0));
-    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-    IF @R4a = 2 AND @R4b = 1
-        PRINT 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: three news items -> flag1=2, flag0=1';
-    ELSE
-        PRINT 'TEST 4 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: flag1=' + CAST(@R4a AS varchar) + ' flag0=' + CAST(@R4b AS varchar);
-
-    -- ----------------------------------------------------------------
-    -- TEST 5: inflow on a lake with NO self source placeholder
+    -- TEST 1: inflow on a lake with NO self source placeholder
     --         The reciprocal row must be created regardless of whether the lake happens to
     --         carry a self-referencing side-16 row (6,284 of 116,777 locType=1 lakes do not).
     -- ----------------------------------------------------------------
@@ -105,12 +38,12 @@ BEGIN TRY
     DECLARE @R5 int = (SELECT COUNT(*) FROM Tributaries WHERE main_lake_id = @Lake5 AND lake_id = @River5 AND side = 4);
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R5 = 1
-        PRINT 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: inflow reciprocal row created without a source placeholder';
+        PRINT 'TEST 1 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: inflow reciprocal row created without a source placeholder';
     ELSE
-        PRINT 'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 1 side-4 row, got ' + CAST(@R5 AS varchar);
+        PRINT 'TEST 1 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 1 side-4 row, got ' + CAST(@R5 AS varchar);
 
     -- ----------------------------------------------------------------
-    -- TEST 6: inflow on a lake WITH a self source placeholder
+    -- TEST 2: inflow on a lake WITH a self source placeholder
     --         The side-16 self row is what fn_EditLakeLink returns for the Source tab of
     --         Editor/EditLakeLink.aspx and holds that point's zone/district/city/elevation -
     --         it must survive untouched, with the inflow added as a separate row.
@@ -127,12 +60,12 @@ BEGIN TRY
     DECLARE @R6b int = (SELECT COUNT(*) FROM Tributaries WHERE main_lake_id = @Lake6 AND lake_id = @Lake6  AND side = 16 AND zone = 42);
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R6a = 1 AND @R6b = 1
-        PRINT 'TEST 6 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: inflow row added and the self source row preserved';
+        PRINT 'TEST 2 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: inflow row added and the self source row preserved';
     ELSE
-        PRINT 'TEST 6 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: side4=' + CAST(@R6a AS varchar) + ' self16=' + CAST(@R6b AS varchar);
+        PRINT 'TEST 2 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: side4=' + CAST(@R6a AS varchar) + ' self16=' + CAST(@R6b AS varchar);
 
     -- ----------------------------------------------------------------
-    -- TEST 7: through (@type=2) creates BOTH reciprocal directions
+    -- TEST 3: through (@type=2) creates BOTH reciprocal directions
     -- ----------------------------------------------------------------
     SET @tStart = SYSUTCDATETIME();
     DECLARE @River7 uniqueidentifier = NEWID();
@@ -144,12 +77,12 @@ BEGIN TRY
     DECLARE @R7b int = (SELECT COUNT(*) FROM Tributaries WHERE main_lake_id = @Lake7 AND lake_id = @River7 AND side = 8);
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R7a = 1 AND @R7b = 1
-        PRINT 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: through created both side-4 and side-8 rows';
+        PRINT 'TEST 3 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: through created both side-4 and side-8 rows';
     ELSE
-        PRINT 'TEST 7 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: side4=' + CAST(@R7a AS varchar) + ' side8=' + CAST(@R7b AS varchar);
+        PRINT 'TEST 3 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: side4=' + CAST(@R7a AS varchar) + ' side8=' + CAST(@R7b AS varchar);
 
     -- ----------------------------------------------------------------
-    -- TEST 8: outflow on a lake that has a self MOUTH row but no self SOURCE row.
+    -- TEST 4: outflow on a lake that has a self MOUTH row but no self SOURCE row.
     --         The old code tested @srcid here but updated @mthid, so this case re-pointed the
     --         side-32 mouth row into a side-8 row - destroying the Mouth tab's data.
     -- ----------------------------------------------------------------
@@ -167,9 +100,9 @@ BEGIN TRY
     DECLARE @R8b int = (SELECT COUNT(*) FROM Tributaries WHERE main_lake_id = @Lake8 AND lake_id = @Lake8  AND side = 32 AND zone = 77);
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R8a = 1 AND @R8b = 1
-        PRINT 'TEST 8 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: outflow row added and the self mouth row preserved';
+        PRINT 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: outflow row added and the self mouth row preserved';
     ELSE
-        PRINT 'TEST 8 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: side8=' + CAST(@R8a AS varchar) + ' self32=' + CAST(@R8b AS varchar);
+        PRINT 'TEST 4 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: side8=' + CAST(@R8a AS varchar) + ' self32=' + CAST(@R8b AS varchar);
 
     ROLLBACK TRANSACTION;
 
