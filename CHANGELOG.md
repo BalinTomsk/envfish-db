@@ -1,6 +1,6 @@
 # envfish-db Changelog
 
-Split out of `CLAUDE.md` for readability. Newest entries first.
+Split out of `AGENTS.md` for readability. Newest entries first.
 
 - 2026-09-21: **SQL Server `dbo.news` and its 14 dependents removed from the `mssql/` scripts.** MySQL is the news library;
   `FishTracker.dll` no longer reads `dbo.news`. Removed: table `news` (+ its indexes, FKs and trigger `TR_ins_news`) and its
@@ -115,7 +115,7 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   off SQL Server** (`mysql/script02_Proc.sql`: `sp_news_admin_draft_create`, `sp_news_admin_publish`,
   `sp_news_admin_photo_update`), backing docapi's new `MySqlNewsAdminCommandRepository` /
   `POST`+`PATCH /api/v1/news/admin/*` — see `efj-backend/service/docapi/CHANGELOG.md` and
-  `fishfind-frontend/Editor/CLAUDE.md` for the full session. `sp_news_admin_publish` uses
+  `fishfind-frontend/Editor/AGENTS.md` for the full session. `sp_news_admin_publish` uses
   `INSERT ... ON DUPLICATE KEY UPDATE` rather than an UPDATE-then-check-`ROW_COUNT()` upsert,
   because MySQL's `ROW_COUNT()` counts *changed* rows, not *matched* ones (unlike SQL Server's
   `@@ROWCOUNT`) — a byte-identical resubmit would otherwise read as "no such draft" and wrongly
@@ -172,7 +172,7 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   - **A trap worth copying:** the three tests initially printed **PASS while failing**. After the
     `CATCH` swallows an error every variable is NULL, and `NULL <> 1` is UNKNOWN, so a bare
     inequality falls through to the ELSE. The assertions now check `IS NULL` first, as the template
-    in `CLAUDE.md` does. Any test whose assertion omits that guard is lying when it matters most.
+    in `AGENTS.md` does. Any test whose assertion omits that guard is lying when it matters most.
   - **Result on prod:** 3 accounts enqueued → dispatched by the `FishFind-UsersSync-Dispatch`
     scheduled task → cproxy's mirror now holds **1095 `user_prime_sync` rows across 3 accounts**,
     and derives the same `Users.prime × Users_Prime.prime` product the frontend puts in a JWT
@@ -362,7 +362,7 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
 - 2026-09-01: **MySQL unit tests restructured to one procedure per test; news read-procedure queries
   extracted into views (`mysql/script01_createView.sql`, new).** `unit_test@NewsMySQL.sql` previously
   used one flat script with a `SAVEPOINT`/`ROLLBACK TO` per test, which violates the per-test
-  isolation rule (see `CLAUDE.md` → "Structure MySQL unit tests"): the mysql CLI has no `TRY/CATCH`,
+  isolation rule (see `AGENTS.md` → "Structure MySQL unit tests"): the mysql CLI has no `TRY/CATCH`,
   so **one unexpected SQL error aborted the whole file and silently skipped every test after it**.
   Each of the 18 tests is now its own `CREATE PROCEDURE` with its own `EXIT HANDLER FOR SQLEXCEPTION`
   + transaction + `ROLLBACK`, `CALL`ed in sequence and dropped at the end.
@@ -398,7 +398,7 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   three independent rewrites. Fixed by adding `news.has_photo0` (`script01_createTable.sql`), a
   cached `news_photo0 IS NOT NULL` flag maintained by two `BEFORE INSERT`/`BEFORE UPDATE` triggers
   (`TR_news_has_photo0_ins`/`upd`, single-row writes only — the proven-safe case) — same pattern as
-  `dbo.lake.isFish` in `mssql/`. See `CLAUDE.md` → "Cached flags on `news`" and the `⚠️` warning
+  `dbo.lake.isFish` in `mssql/`. See `AGENTS.md` → "Cached flags on `news`" and the `⚠️` warning
   directly above it for the full writeup and the do/don't rules for touching these BLOB columns
   going forward. Both procedures now read `has_photo0` instead of `news_photo0` for anything
   scanning more than one row; `sp_news_doc_get` and the final per-item join in `sp_news_default`
@@ -429,7 +429,7 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   candidate-scan-then-point-lookup workaround for the ORDER BY + BLOB connection-abort bug. Verified
   locally against a throwaway MySQL 8 database built from `script0.sql` + `script01_createTable.sql`
   + `script02_Proc.sql`. **Applied to the live Winhost database** — this note said "not yet applied"
-  well after it shipped; caught 2026-09-14 by cross-referencing `CLAUDE.md` (which states
+  well after it shipped; caught 2026-09-14 by cross-referencing `AGENTS.md` (which states
   unconditionally that `MySqlNewsHelper.cs` calls these procs and "nothing in that helper hits the
   `news` table directly any more") and `docapi`'s `MySqlNewsQueryRepository` source comments, which
   describe `sp_news_list_for_grid`/`sp_news_count` as having scanned every published row on this host
@@ -551,7 +551,7 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   after the table's own indexes, further down the file.
   **Frontend (fishfind-frontend):** `Forecast/Planning.aspx.cs` `LoadInitialFishes` calls
   `FillFishListByState` first, falling back to the old proximity-based `FillFishList` only when the
-  visitor's state is unknown or the region has no rows — see that repo's `CLAUDE.md`.
+  visitor's state is unknown or the region has no rows — see that repo's `AGENTS.md`.
   **Already applied directly to production** via a self-gating transaction (smoke test required
   exactly 945 rows / 63 regions / 945 resolved / 0 regions off 15 / 0 non-freshwater rows, rolling
   back otherwise) **before** these `scriptNN_*.sql` sources were updated to match — this changelog
@@ -945,7 +945,7 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   via `autorun.bat` (`crcstate` updated). **Applied to prod 2026-08-05** (SqlClient txn, DDL from
   `script02_Funct.sql` GO-split into 2 batches; smoke-tested live and end-to-end through
   `Forecast/Plot.aspx` inside the `Planning.aspx` iframe). Frontend side in `fishfind-frontend`
-  `aspnet/Forecast/CLAUDE.md`.
+  `aspnet/Forecast/AGENTS.md`.
 - 2026-08-04: **Fix: `dbo.IsIpBanned` banned an IP FOREVER — bans now expire (date-scoped).**
   (`script02_Funct.sql`.) The function matched **any** `baned = 1` row for the IP with no date
   predicate, so one bad day blocked an address permanently. Live impact: **10,503 addresses** were
@@ -1055,7 +1055,7 @@ Split out of `CLAUDE.md` for readability. Newest entries first.
   tests, each its own transaction (core fields; lake/fish GUIDs + null shape; base64 photo decodes back
   to the original bytes; unknown id → NULL). **Applied to prod 2026-07-30** (SqlClient txn +
   smoke-tested on the live Tyee article, 465 KB JSON with the base64 photo). Frontend side documented in
-  `fishfind-frontend` `aspnet/Editor/CLAUDE.md` (2026-07-31 entry).
+  `fishfind-frontend` `aspnet/Editor/AGENTS.md` (2026-07-31 entry).
 - 2026-07-30: **`dbo.fn_fish_image_gallery(@fish_id)` — list a fish's images for the editor gallery**
   (`script02_Funct.sql`; inline TVF, idempotent `IF EXISTS(...xtype='IF') DROP…GO CREATE`). Returns
   `(fish_image_id, fish_image_gender, fish_image_juvenile)` for every image of the fish; the caller

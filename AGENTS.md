@@ -1,4 +1,4 @@
-# CLAUDE.md — Database (all services)
+# AGENTS.md — Database (all services)
 
 Guidance for Claude Code when changing the database for **any** Fish Find service.
 This folder holds the SQL Server schema (`mssql/`) and the MySQL variant (`mysql/`).
@@ -7,7 +7,7 @@ Everything below is about `mssql/` unless stated otherwise — see
 
 ## ⚠️ READ THIS FIRST — non-negotiable
 
-**Read this entire `CLAUDE.md` before touching anything in this repo.**
+**Read this entire `AGENTS.md` before touching anything in this repo.**
 
 **Test-first for every bug fix — no exceptions:**
 1. **Write a unit test that reproduces the bug FIRST** and run it — it must **FAIL** against the
@@ -336,7 +336,7 @@ Guidance below is specific to `mysql/` and does not override the `mssql/` sectio
 Server via `mssql/` remains the primary database for the app. MySQL currently backs **one table**
 (`news`, migrated 2026-08-31) read by `News.aspx` (`fishfind-frontend`, via `MySqlNewsHelper`) and
 by three `docapi` read endpoints (`GET /api/v1/news/{id}`, `/news/list`, `/news/default`, via
-`MySqlNewsDocumentRepository`/`MySqlNewsQueryRepository` — see `efj-backend/service/docapi/CLAUDE.md`
+`MySqlNewsDocumentRepository`/`MySqlNewsQueryRepository` — see `efj-backend/service/docapi/AGENTS.md`
 → "MySQL backing for news reads"); everything else still runs on `mssql/`. Unlike `mssql/`, this
 MySQL database is **not** distributed / peer-to-peer replicated — it is one flat remote schema
 hosted on Winhost (`my06.winhost.com`).
@@ -361,7 +361,7 @@ DDL directly to the live database without a matching, up-to-date script in this 
   `sp_news_get_by_id`, `sp_news_count` are called from `MySqlNewsHelper.cs` (nothing in that helper
   hits the `news` table directly any more). `sp_news_doc_get`, `sp_news_list_json`, `sp_news_default`
   are called from `docapi`'s `MySqlNewsDocumentRepository`/`MySqlNewsQueryRepository` (same rule —
-  see `efj-backend/service/docapi/CLAUDE.md` → "MySQL backing for news reads" for the JSON shapes and
+  see `efj-backend/service/docapi/AGENTS.md` → "MySQL backing for news reads" for the JSON shapes and
   the CA-padding/home-page-assembly logic each mirrors from `mssql/`).
 - `script08_Data.sql` — seed/reference data (create when first needed)
 
@@ -451,7 +451,7 @@ When touching the **live** database rather than the test harness:
 
 - Real connection details (host, database, user, password) live **only** in the frontend app's
   gitignored `connectionStrings.config` / MySQL helper class — never hardcode real credentials
-  into this repo's `.sql` files or into this `CLAUDE.md`.
+  into this repo's `.sql` files or into this `AGENTS.md`.
 - Apply with the `mysql` CLI: `mysql -h <host> -u <user> -p <database> < mysql\scriptNN_xxxxxx.sql`.
 - **After any DDL change, update the matching `mysql/scriptNN_*.sql` to match exactly what was
   applied live.** This repo is the source of truth for the MySQL schema, so letting it drift from
@@ -459,7 +459,7 @@ When touching the **live** database rather than the test harness:
   catch it, so it is on you to keep them in sync by hand.
 - Deploying a MySQL DDL/data change to the **production** Winhost database is still a production
   deploy — get the user's explicit permission first, same as any other prod change (see
-  `fishfind-frontend/CLAUDE.md` → "Deployment policy").
+  `fishfind-frontend/AGENTS.md` → "Deployment policy").
 
 ### Drift reconciled 2026-08-31
 
