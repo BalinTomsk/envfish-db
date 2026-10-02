@@ -1981,6 +1981,82 @@ END
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 --------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_fish_water_bodies_json' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_fish_water_bodies_json
+GO
+
+-- The water bodies where one fish species is recorded, each counted ONCE. Called by docapi's MCP tool
+-- find_water_bodies_by_fish (McpToolCatalog) via JdbcFishQueryRepository.waterBodies.
+--   @fish_id         - the species (dbo.fish.fish_id); NULL -> empty result
+--   @country/@state  - ISO-2 codes, case-insensitive; NULL/blank = any. Taken from the water body's source
+--                      Tributaries row (side 16), else its mouth (side 32) -- the same precedence as vw_lake,
+--                      read directly from the two unique (Main_Lake_id, side) indexes instead of the view.
+--   @loc_type        - locType bitmask (1 lake, 2 river, 4 stream, 8 pond, 64 creek, 8192 reservoir, ...);
+--                      a water body matches when it shares any bit. NULL/0 = any type.
+--   @min_probability - 0..100 (NULL -> 0). lake_fish's key is (lake_Id, fish_Id, probability), so a water
+--                      body can hold several rows for one species; its probability here is the HIGHEST,
+--                      and the minimum is applied to that.
+--   @limit           - items returned, clamped to 1..200 (NULL -> 50). `total` always counts every match.
+-- Returns {"total":n,"limit":l,"items":[{ "lakeId","lakeName","altName","frenchName","locType","CGNDB",
+--          "country","state","probability" }]}, highest probability first, then by name.
+-- select dbo.fn_fish_water_bodies_json('2CFFB500-3E59-4120-9460-055856E9AC5C', 'CA', 'ON', 2, NULL, 20)
+CREATE FUNCTION dbo.fn_fish_water_bodies_json( @fish_id uniqueidentifier, @country varchar(8), @state varchar(8)
+                                             , @loc_type int, @min_probability int, @limit int )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    SET @country = NULLIF(UPPER(LTRIM(RTRIM(@country))), '');
+    SET @state   = NULLIF(UPPER(LTRIM(RTRIM(@state))), '');
+    SET @loc_type = NULLIF(@loc_type, 0);
+    SET @min_probability = CASE WHEN @min_probability IS NULL OR @min_probability < 0 THEN 0
+                                WHEN @min_probability > 100 THEN 100 ELSE @min_probability END;
+    SET @limit = CASE WHEN @limit IS NULL THEN 50 WHEN @limit < 1 THEN 1 WHEN @limit > 200 THEN 200 ELSE @limit END;
+
+    DECLARE @hit TABLE ( lake_id uniqueidentifier NOT NULL PRIMARY KEY, probability int NOT NULL
+                       , country char(2) NULL, state char(2) NULL );
+
+    IF @fish_id IS NOT NULL
+        INSERT INTO @hit (lake_id, probability, country, state)
+        SELECT f.lake_Id, f.probability, loc.country, loc.state
+          FROM ( SELECT lake_Id, MAX(probability) AS probability
+                   FROM dbo.lake_fish
+                  WHERE fish_Id = @fish_id
+                  GROUP BY lake_Id ) f
+          JOIN dbo.lake l ON l.lake_id = f.lake_Id
+          OUTER APPLY ( SELECT COALESCE(RTRIM(s.Country), RTRIM(m.Country)) AS country
+                             , COALESCE(RTRIM(s.State),   RTRIM(m.State))   AS state
+                          FROM (SELECT 1 AS one) x
+                          LEFT JOIN dbo.Tributaries s ON s.Main_Lake_id = l.lake_id AND s.side = 16
+                          LEFT JOIN dbo.Tributaries m ON m.Main_Lake_id = l.lake_id AND m.side = 32 ) loc
+         WHERE f.probability >= @min_probability
+           AND (@loc_type IS NULL OR (l.locType & @loc_type) <> 0)
+           AND (@country  IS NULL OR loc.country = @country)
+           AND (@state    IS NULL OR loc.state   = @state);
+
+    RETURN (
+        SELECT (SELECT COUNT(*) FROM @hit) AS total
+             , @limit AS limit
+             , JSON_QUERY(ISNULL((
+                   SELECT TOP (@limit)
+                          h.lake_id          AS lakeId
+                        , l.lake_name        AS lakeName
+                        , l.alt_name         AS altName
+                        , l.french_name      AS frenchName
+                        , l.locType          AS locType
+                        , RTRIM(l.CGNDB)     AS [CGNDB]
+                        , h.country          AS country
+                        , h.state            AS state
+                        , h.probability      AS probability
+                     FROM @hit h
+                     JOIN dbo.lake l ON l.lake_id = h.lake_id
+                    ORDER BY h.probability DESC, l.lake_name, h.lake_id
+                      FOR JSON PATH, INCLUDE_NULL_VALUES
+               ), N'[]')) AS items
+           FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_otherfish' AND xtype = 'FN')    DROP function dbo.fn_river_viewer_otherfish
 GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_viewer_fish' AND xtype = 'IF')    DROP function dbo.fn_river_viewer_fish

@@ -2,6 +2,22 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-01: **New `dbo.fn_fish_water_bodies_json` -- the water bodies holding one species. APPLIED to production
+  2026-10-01** (by the user with sqlcmd). Verified through docapi 1.20.2: walleye in Ontario rivers 578 (≥50: 576) in 0.28 s;
+  walleye in all of Canada 2,687 in 0.92 s.
+  Backs docapi 1.20.2's MCP tool `find_water_bodies_by_fish` ("how many rivers in Ontario have walleye?").
+  - **Arguments:** `@fish_id`; optional `@country`/`@state`; a `@loc_type` bitmask; `@min_probability` (0..100); `@limit` (1..200).
+  - **Returns** `{total, limit, items[]}`, highest probability first, then by name.
+  - **Each water body is counted ONCE.** `lake_fish`'s key is `(lake_Id, fish_Id, probability)`, so the probability reported
+    and filtered on is the water body's HIGHEST for that species.
+  - **Location** comes from the source `Tributaries` row (side 16), else the mouth (32). That is `vw_lake`'s precedence, but
+    read through the two unique `(Main_Lake_id, side)` indexes rather than the view, which is too heavy to run per candidate.
+  - **Additive:** one new scalar function, no schema or data change.
+  - **Tests:** test-first, new `unit_test@FishWaterBodies.sql` 7/7 PASS. It failed with Msg 4121 before the function
+    existed. The 26 pre-existing non-PASS lines in other files are unchanged.
+  - Also checked through `sp_executesql` with the exact parameter types the JDBC driver sends, on a scratch DB built from
+    `ffi2.sql`.
+
 - 2026-09-21: **SQL Server `dbo.news` and its 14 dependents removed from the `mssql/` scripts.** MySQL is the news library;
   `FishTracker.dll` no longer reads `dbo.news`. Removed: table `news` (+ its indexes, FKs and trigger `TR_ins_news`) and its
   `merge_table` row from `script01_createTable.sql`; views `vDefaultNews`, `vNewsList`; functions `fn_GetTopNews`,
