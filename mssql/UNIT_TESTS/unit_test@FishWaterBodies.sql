@@ -17,6 +17,8 @@ GO
   TEST 5 - limit                                 -> items capped, total still counts every match, order prob desc
   TEST 6 - state taken from the mouth when the source has none
   TEST 7 - NULL fish                             -> total 0, items []
+  TEST 8 - country/state match the source OR the mouth
+  TEST 9 - country CA also matches a water body that only has a CGNDB code
 */
 PRINT 'Unit tests for fn_fish_water_bodies_json (water bodies by species)';
 GO
@@ -280,4 +282,72 @@ ELSE
     print 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: null fish -> empty result'
 
 ROLLBACK TRAN FWB_Test7
+GO
+-- ============================================================================
+-- TEST 8: country/state match EITHER end -- a US-source river whose mouth is in Ontario is Canadian
+-- ============================================================================
+BEGIN TRAN FWB_Test8
+    declare @test_name sysname = N'FWB_Test8 [fn_fish_water_bodies_json] : either end'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(max);
+DECLARE @F uniqueidentifier = NEWID(), @Fam uniqueidentifier = NEWID(), @L uniqueidentifier = NEWID();
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+INSERT INTO dbo.fish_family (Family_id, Family_name, fid, created) VALUES (@Fam, N'ut-family-fwb8', 900308, SYSUTCDATETIME());
+INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, family_Id, created, stamp)
+VALUES (@F, N'Utfwb-fish8', N'Utfwb eight', @Fam, SYSUTCDATETIME(), SYSUTCDATETIME());
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 2, N'Utfwb Border River');
+UPDATE dbo.Tributaries SET Country = 'ZY', State = 'MN' WHERE Main_Lake_id = @L AND side = 16;
+UPDATE dbo.Tributaries SET Country = 'ZZ', State = 'QQ' WHERE Main_Lake_id = @L AND side = 32;
+INSERT INTO dbo.lake_fish (lake_Id, fish_Id, created, probability, lake_fish_id) VALUES (@L, @F, SYSUTCDATETIME(), 100, NEWID());
+
+SET @json = dbo.fn_fish_water_bodies_json(@F, 'ZZ', 'QQ', NULL, NULL, NULL);
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF   ISNULL(JSON_VALUE(@json, '$.total'), '') <> '1'
+   RAISERROR ('TEST 8 FAIL [%dms]: the mouth end must satisfy country and state', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 8 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: mouth end matches country + state'
+
+ROLLBACK TRAN FWB_Test8
+GO
+-- ============================================================================
+-- TEST 9: country 'CA' also matches a water body that only has a CGNDB code
+-- ============================================================================
+BEGIN TRAN FWB_Test9
+    declare @test_name sysname = N'FWB_Test9 [fn_fish_water_bodies_json] : CGNDB is Canadian'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(max);
+DECLARE @F uniqueidentifier = NEWID(), @Fam uniqueidentifier = NEWID(), @L uniqueidentifier = NEWID();
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+INSERT INTO dbo.fish_family (Family_id, Family_name, fid, created) VALUES (@Fam, N'ut-family-fwb9', 900309, SYSUTCDATETIME());
+INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, family_Id, created, stamp)
+VALUES (@F, N'Utfwb-fish9', N'Utfwb nine', @Fam, SYSUTCDATETIME(), SYSUTCDATETIME());
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name, CGNDB) VALUES (@L, 1, N'Utfwb Code Lake', 'ZFWB9');
+INSERT INTO dbo.lake_fish (lake_Id, fish_Id, created, probability, lake_fish_id) VALUES (@L, @F, SYSUTCDATETIME(), 100, NEWID());
+
+SET @json = dbo.fn_fish_water_bodies_json(@F, 'CA', NULL, NULL, NULL, NULL);
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF   ISNULL(JSON_VALUE(@json, '$.total'), '') <> '1'
+   RAISERROR ('TEST 9 FAIL [%dms]: a CGNDB code must count as Canada', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 9 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: CGNDB-only lake counts for CA'
+
+ROLLBACK TRAN FWB_Test9
 GO

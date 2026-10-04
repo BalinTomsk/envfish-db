@@ -3376,6 +3376,55 @@ IF COL_LENGTH('dbo.user_api_key', 'user_api_key_expires_utc') IS NULL
         AS DATEADD(DAY, 90, user_api_key_created) PERSISTED;
 GO
 
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- user_mcp_key : the personal MCP keys a registered user creates for themselves on Account/Profile.aspx
+-- (fishfind-frontend, "MCP" tab), one per computer / Claude app. The key authenticates the MCP path of the
+-- cproxy gateway (https://<mcp-host>/api/v1/mcp) as "Authorization: Bearer ffmcp_...".
+--
+-- ONLY THE SHA-256 OF THE KEY IS STORED. The page generates 32 random bytes, shows the token to the user
+-- once, and hands this database the lower-case hex SHA-256 alone -- a copy of this table, of the account
+-- event that carries the row to cproxy, or of cproxy's mirror grants nothing. A lost key cannot be shown
+-- again; the user revokes it and creates another.
+--
+--   user_mcp_key_id      - v7 GUID row identity (dbo.sp_NewGuidV7). Safe to echo in page state and logs.
+--   user_mcp_key_sha256  - lower-case hex SHA-256 of the full token, "ffmcp_" prefix included.
+--   user_mcp_key_label   - the user's own name for the key ("home laptop"), shown back on the page.
+--   user_mcp_key_revoked - non-NULL => revoked, permanently. The row is kept (history; the hash stays
+--                          unique, so a revoked token can never become valid again).
+-- A suspended or deleted owner's keys are refused by cproxy through its account mirror, so suspending an
+-- account needs no extra step here. Created / revoked by dbo.sp_user_mcp_key_issue / _revoke, listed by
+-- dbo.fn_user_mcp_key_list. Not registered in merge_table -- same as user_api_key.
+IF OBJECT_ID('dbo.user_mcp_key', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.user_mcp_key
+    (
+        user_mcp_key_id      UNIQUEIDENTIFIER NOT NULL
+            CONSTRAINT PK_user_mcp_key PRIMARY KEY,
+        user_mcp_key_userid  UNIQUEIDENTIFIER NOT NULL,   -- Users.id (the key's owner)
+        user_mcp_key_sha256  CHAR(64)         NOT NULL,
+        user_mcp_key_label   NVARCHAR(64)     NOT NULL,
+        user_mcp_key_created DATETIME2        NOT NULL
+            CONSTRAINT DF_user_mcp_key_created DEFAULT SYSUTCDATETIME(),
+        user_mcp_key_expires DATETIME2        NOT NULL
+            CONSTRAINT DF_user_mcp_key_expires DEFAULT DATEADD(DAY, 7, SYSUTCDATETIME()),
+        user_mcp_key_revoked DATETIME2        NULL,
+        CONSTRAINT FK_user_mcp_key_users FOREIGN KEY (user_mcp_key_userid)
+            REFERENCES dbo.Users (id) ON DELETE CASCADE,
+        CONSTRAINT CK_user_mcp_key_sha256 CHECK (
+            LEN(user_mcp_key_sha256) = 64
+            AND user_mcp_key_sha256 COLLATE Latin1_General_BIN NOT LIKE '%[^0-9a-f]%')
+    );
+
+    -- A hash is globally unique and never re-used, revoked rows included.
+    CREATE UNIQUE INDEX UX_user_mcp_key_sha256 ON dbo.user_mcp_key (user_mcp_key_sha256);
+
+    -- "the live keys of this user", newest first (fn_user_mcp_key_list, the per-user cap in _issue).
+    CREATE INDEX IX_user_mcp_key_user
+        ON dbo.user_mcp_key (user_mcp_key_userid, user_mcp_key_created DESC);
+END
+GO
+
 -------------------------------------------------------------------------------------------------------
 -- dbo.day_keys: Daily rotating credentials for cproxy (reverse proxy) authentication.
 -- Schema: stamp (ISO date) as PRIMARY KEY, guid as credential value, created_utc as audit timestamp.

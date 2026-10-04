@@ -2,6 +2,29 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-03: **MCP Canada-only: new `fn_lake_canadian_ids_json`, changed `fn_fish_water_bodies_json`.** APPLIED to
+  production 2026-10-04 by the user (SSMS); verified live through docapi 1.21.0, one-off apply scripts deleted.
+  - `fn_lake_canadian_ids_json(@lake_ids)`: the subset of a JSON array of lake ids that is Canadian — a CGNDB code,
+    or a source (Tributaries side 16) or mouth (side 32) in `CA`. Backs docapi 1.21.0's MCP filter.
+  - `fn_fish_water_bodies_json`: `@country`/`@state` now match EITHER end of a water body (was: source, else
+    mouth), and `CA` also matches any water body with a CGNDB code. Reported country/state are unchanged.
+  - Tests: `unit_test@LakeCanadian.sql` 5/5 (new); `unit_test@FishWaterBodies.sql` 9/9 (+2).
+
+- 2026-10-01: **Self-service MCP keys: `dbo.user_mcp_key`, `fn_user_mcp_key_list`, `sp_user_mcp_key_issue`,
+  `sp_user_mcp_key_revoke`. APPLIED to production 2026-10-02** (by the user, sqlcmd, `ADMIN_WRITE_user_mcp_key.sql`). These back the "MCP" tab of `Account/Profile.aspx`,
+  where a registered user creates and revokes their own keys for the cproxy MCP path (cproxy 0.21.0).
+  - **Only the key's lower-case hex SHA-256 is stored** (`CHAR(64)`, CHECKed to 64 lower-case hex chars). The page
+    generates the token and shows it once, so a copy of the table grants nothing. The hash is unique, revoked rows
+    included, so a revoked token can never come back.
+  - Several live keys per user (one per computer), **capped at 5** under an `UPDLOCK, HOLDLOCK` on that user's rows.
+    Revocation is permanent and scoped to the owner. Suspended/deleted owners are refused at issue, and cproxy also
+    refuses their existing keys through its users-sync mirror.
+  - Tests: `unit_test@UserMcpKey.sql` (7). Full suite run: the 7 new tests pass. The pre-existing `fish_code` failures
+    (TEST 2 and TEST 5 in that file) are unrelated and unchanged.
+  - **Apply with** `mssql/ADMIN_WRITE_user_mcp_key.sql` (verbatim copies of the source definitions; table guarded, so it
+    is re-runnable). Verified against a scratch DB built from `ffi2.sql` with these objects dropped: it applied twice
+    cleanly and the 7 tests passed on the result. Delete the script once applied.
+
 - 2026-10-01: **New `dbo.fn_fish_water_bodies_json` -- the water bodies holding one species. APPLIED to production
   2026-10-01** (by the user with sqlcmd). Verified through docapi 1.20.2: walleye in Ontario rivers 578 (≥50: 576) in 0.28 s;
   walleye in all of Canada 2,687 in 0.92 s.
