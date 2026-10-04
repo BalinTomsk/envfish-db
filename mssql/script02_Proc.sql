@@ -5724,6 +5724,102 @@ END
 GO
 
 -----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- sp_user_mcp_key_issue : record a new MCP key for one user, for the "MCP" tab of Account/Profile.aspx
+-- (fishfind-frontend, btnMcpCreate_Click). The PAGE generates the token and passes only its lower-case hex
+-- SHA-256 (see dbo.user_mcp_key) -- this database never sees a usable key. One live key per user: a key
+-- that is revoked or past user_mcp_key_expires no longer counts, so expiry frees the slot. Returns one row:
+--   status     'issued' | 'no_user' (unknown or soft-deleted account) | 'suspended'
+--              | 'limit' (a live key already exists) | 'bad_request' (hash not 64 lower-case hex, or empty label)
+--              | 'duplicate' (hash already on file, revoked rows included)
+--   key_id, label, created_utc - the new row when status = 'issued', else NULL.
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_mcp_key_issue' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_mcp_key_issue
+GO
+CREATE PROCEDURE dbo.sp_user_mcp_key_issue
+    @userid UNIQUEIDENTIFIER,
+    @label  NVARCHAR(64),
+    @sha256 VARCHAR(64)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @status varchar(20) = NULL;
+    SET @label = LTRIM(RTRIM(ISNULL(@label, N'')));
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE id = @userid AND deleted = 0)
+        SET @status = 'no_user';
+    ELSE IF EXISTS (SELECT 1 FROM dbo.Users WHERE id = @userid AND ISNULL(suspended, 0) <> 0)
+        SET @status = 'suspended';
+    ELSE IF @label = N''
+         OR @sha256 IS NULL OR LEN(@sha256) <> 64
+         OR @sha256 COLLATE Latin1_General_BIN LIKE '%[^0-9a-f]%'
+        SET @status = 'bad_request';
+
+    IF @status IS NOT NULL
+    BEGIN
+        SELECT @status AS status, CAST(NULL AS UNIQUEIDENTIFIER) AS key_id,
+               CAST(NULL AS NVARCHAR(64)) AS label, CAST(NULL AS DATETIME2) AS created_utc;
+        RETURN;
+    END
+
+    DECLARE @id UNIQUEIDENTIFIER;
+    EXEC dbo.sp_NewGuidV7 @id OUTPUT;
+
+    BEGIN TRAN;
+        -- The cap is checked under a range lock on this user's rows, so two simultaneous creates
+        -- cannot both see none and both insert. Only this user's key range is held, never the table.
+        IF EXISTS (SELECT 1 FROM dbo.user_mcp_key WITH (UPDLOCK, HOLDLOCK)
+                WHERE user_mcp_key_userid = @userid AND user_mcp_key_revoked IS NULL
+                  AND user_mcp_key_expires > SYSUTCDATETIME())
+            SET @status = 'limit';
+        ELSE IF EXISTS (SELECT 1 FROM dbo.user_mcp_key WHERE user_mcp_key_sha256 = @sha256)
+            SET @status = 'duplicate';
+        ELSE
+        BEGIN
+            INSERT INTO dbo.user_mcp_key (user_mcp_key_id, user_mcp_key_userid, user_mcp_key_sha256, user_mcp_key_label)
+            VALUES (@id, @userid, @sha256, @label);
+            SET @status = 'issued';
+        END
+    COMMIT;
+
+    IF @status <> 'issued'
+        SELECT @status AS status, CAST(NULL AS UNIQUEIDENTIFIER) AS key_id,
+               CAST(NULL AS NVARCHAR(64)) AS label, CAST(NULL AS DATETIME2) AS created_utc;
+    ELSE
+        SELECT @status AS status, k.key_id, k.label, k.created_utc
+            FROM dbo.fn_user_mcp_key_list(@userid) k
+            WHERE k.key_id = @id;
+END
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- sp_user_mcp_key_revoke : permanently revoke one MCP key, for Account/Profile.aspx (fishfind-frontend,
+-- "MCP" tab: the Revoke button, and the clean-up when a new key could not be delivered to cproxy).
+-- Scoped by @userid, so a user can only revoke their own key. The row is kept (history; its hash stays
+-- unique). Returns one row: status 'revoked' | 'not_found' (no such live key of this user).
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_mcp_key_revoke' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_mcp_key_revoke
+GO
+CREATE PROCEDURE dbo.sp_user_mcp_key_revoke
+    @userid UNIQUEIDENTIFIER,
+    @key_id UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.user_mcp_key
+        SET user_mcp_key_revoked = SYSUTCDATETIME()
+        WHERE user_mcp_key_id      = @key_id
+          AND user_mcp_key_userid  = @userid
+          AND user_mcp_key_revoked IS NULL;
+
+    SELECT CASE WHEN @@ROWCOUNT = 1 THEN 'revoked' ELSE 'not_found' END AS status;
+END
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
 -- RECOVERED FROM PRODUCTION 2026-08-19 - these objects existed on the live database but were
 -- missing from every scriptNN source, so a freshly built database did not have them at all.
 -- Same class of gap as GetDatePeriod / fn_get_float_as_string (2026-08-05). Definitions are

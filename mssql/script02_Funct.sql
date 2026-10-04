@@ -1988,9 +1988,11 @@ GO
 -- The water bodies where one fish species is recorded, each counted ONCE. Called by docapi's MCP tool
 -- find_water_bodies_by_fish (McpToolCatalog) via JdbcFishQueryRepository.waterBodies.
 --   @fish_id         - the species (dbo.fish.fish_id); NULL -> empty result
---   @country/@state  - ISO-2 codes, case-insensitive; NULL/blank = any. Taken from the water body's source
---                      Tributaries row (side 16), else its mouth (side 32) -- the same precedence as vw_lake,
---                      read directly from the two unique (Main_Lake_id, side) indexes instead of the view.
+--   @country/@state  - ISO-2 codes, case-insensitive; NULL/blank = any. A water body matches when its source
+--                      (Tributaries side 16) OR its mouth (side 32) is there, read through the two unique
+--                      (Main_Lake_id, side) indexes rather than vw_lake. For 'CA' a CGNDB code also counts --
+--                      the same "Canadian" rule as dbo.fn_lake_canadian_ids_json. The country/state REPORTED
+--                      per item stay source-first (vw_lake's precedence).
 --   @loc_type        - locType bitmask (1 lake, 2 river, 4 stream, 8 pond, 64 creek, 8192 reservoir, ...);
 --                      a water body matches when it shares any bit. NULL/0 = any type.
 --   @min_probability - 0..100 (NULL -> 0). lake_fish's key is (lake_Id, fish_Id, probability), so a water
@@ -2025,13 +2027,16 @@ BEGIN
           JOIN dbo.lake l ON l.lake_id = f.lake_Id
           OUTER APPLY ( SELECT COALESCE(RTRIM(s.Country), RTRIM(m.Country)) AS country
                              , COALESCE(RTRIM(s.State),   RTRIM(m.State))   AS state
+                             , RTRIM(s.Country) AS src_country, RTRIM(m.Country) AS mouth_country
+                             , RTRIM(s.State)   AS src_state,   RTRIM(m.State)   AS mouth_state
                           FROM (SELECT 1 AS one) x
                           LEFT JOIN dbo.Tributaries s ON s.Main_Lake_id = l.lake_id AND s.side = 16
                           LEFT JOIN dbo.Tributaries m ON m.Main_Lake_id = l.lake_id AND m.side = 32 ) loc
          WHERE f.probability >= @min_probability
            AND (@loc_type IS NULL OR (l.locType & @loc_type) <> 0)
-           AND (@country  IS NULL OR loc.country = @country)
-           AND (@state    IS NULL OR loc.state   = @state);
+           AND (@country  IS NULL OR @country IN (loc.src_country, loc.mouth_country)
+                OR (@country = 'CA' AND NULLIF(RTRIM(l.CGNDB), '') IS NOT NULL))
+           AND (@state    IS NULL OR @state IN (loc.src_state, loc.mouth_state));
 
     RETURN (
         SELECT (SELECT COUNT(*) FROM @hit) AS total
@@ -2054,6 +2059,36 @@ BEGIN
                ), N'[]')) AS items
            FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
     );
+END
+GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_canadian_ids_json' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_lake_canadian_ids_json
+GO
+
+-- Which of the given water bodies count as CANADIAN. The FishFind MCP server shows only these (docapi
+-- McpToolCatalog via JdbcRiverQueryRepository.canadianIds). A water body is Canadian when it has a CGNDB code,
+-- OR its source (Tributaries side 16) OR its mouth (side 32) is in country 'CA' -- either end is enough, so a
+-- river rising in the US and ending in Canada counts.
+--   @lake_ids - JSON array of lake_id GUID strings; NULL / not JSON / no valid GUIDs -> '[]'
+-- Returns a JSON array of the qualifying lake_id strings, each once (order not guaranteed).
+-- select dbo.fn_lake_canadian_ids_json(N'["4094E667-BBE3-11D8-92E2-080020A0F4C9"]')
+CREATE FUNCTION dbo.fn_lake_canadian_ids_json( @lake_ids nvarchar(max) )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    IF @lake_ids IS NULL OR ISJSON(@lake_ids) <> 1
+        RETURN N'[]';
+
+    RETURN ISNULL((
+        SELECT N'[' + STRING_AGG(N'"' + CONVERT(nvarchar(36), l.lake_id) + N'"', N',') + N']'
+          FROM ( SELECT DISTINCT TRY_CONVERT(uniqueidentifier, j.value) AS lake_id
+                   FROM OPENJSON(@lake_ids) j ) x
+          JOIN dbo.lake l ON l.lake_id = x.lake_id
+         WHERE NULLIF(RTRIM(l.CGNDB), '') IS NOT NULL
+            OR EXISTS ( SELECT 1 FROM dbo.Tributaries t
+                         WHERE t.Main_Lake_id = l.lake_id AND t.side IN (16, 32) AND t.Country = 'CA' )
+    ), N'[]');
 END
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
@@ -6362,6 +6397,30 @@ BEGIN
 
     RETURN @userid;
 END
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-- fn_user_mcp_key_list : the live (not revoked, not expired) MCP keys of one user, newest first by created_utc.
+-- Called by Account/Profile.aspx (fishfind-frontend, "MCP" tab, LoadMcpKeys) to list the user's keys
+-- with a Revoke button each, and by dbo.sp_user_mcp_key_issue for its per-user cap. Never returns the
+-- hash: the page has no use for it, and nothing that lists keys should be able to leak one.
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_mcp_key_list' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_user_mcp_key_list
+GO
+CREATE FUNCTION dbo.fn_user_mcp_key_list( @userid uniqueidentifier )
+  RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN
+SELECT k.user_mcp_key_id      AS key_id,
+       k.user_mcp_key_label   AS label,
+       k.user_mcp_key_created AS created_utc,
+       k.user_mcp_key_expires AS expires_utc
+    FROM dbo.user_mcp_key k
+    WHERE k.user_mcp_key_userid  = @userid
+      AND k.user_mcp_key_revoked IS NULL
+      AND k.user_mcp_key_expires > SYSUTCDATETIME()
 GO
 
 -----------------------------------------------------------------------------------------------------------------------------------------------
