@@ -2,8 +2,9 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
-- 2026-10-05: **New `fn_lake_inflows_json` — the water bodies that flow INTO one water body. NOT APPLIED to
-  production.** Backs docapi 1.22.0 (`GET /api/v1/river/tributaries/{guid}` via `RiverController.tributaries`, and the
+- 2026-10-05: **New `fn_lake_inflows_json` — the water bodies that flow INTO one water body. APPLIED to
+  production 2026-10-05** by the user; verified live through docapi 1.22.0 (Humber River → 12 tributaries), and
+  the one-off `ADMIN_WRITE_lake_inflows.sql` deleted. Backs docapi 1.22.0 (`GET /api/v1/river/tributaries/{guid}` via `RiverController.tributaries`, and the
   MCP tool `get_water_body_tributaries` via `McpToolCatalog`), both through `JdbcRiverQueryRepository.tributaries`.
   - An inflow is a water body whose mouth (Tributaries side 32) is this one (`link: "mouth"`, read through the
     existing `fn_SubTributary`, which had no caller until now), or a side-4 row this water body holds (`link:
