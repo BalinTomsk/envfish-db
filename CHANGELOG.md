@@ -2,6 +2,22 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-05: **New `fn_lake_inflows_json` — the water bodies that flow INTO one water body. NOT APPLIED to
+  production.** Backs docapi 1.22.0 (`GET /api/v1/river/tributaries/{guid}` via `RiverController.tributaries`, and the
+  MCP tool `get_water_body_tributaries` via `McpToolCatalog`), both through `JdbcRiverQueryRepository.tributaries`.
+  - An inflow is a water body whose mouth (Tributaries side 32) is this one (`link: "mouth"`, read through the
+    existing `fn_SubTributary`, which had no caller until now), or a side-4 row this water body holds (`link:
+    "inflow"`, how `sp_add_tributary` records an inflow on a lake; used only when there is no mouth row). Each once,
+    by name; `@limit` 1..200 (NULL → 50), `total` counts all; NULL for an unknown water body.
+  - Not `fn_lake_tributary_json`: that one is the editor's Tributary-tab export and lists the rows a water body owns,
+    the other direction.
+  - Tests: `unit_test@LakeInflows.sql` 6/6 (seen failing with Msg 4121 first). Full suite: the only failures are in
+    `unit_test@FishCodeLatinJson.sql` (TEST 2, 5; known, see 2026-10-01) and `unit_test@UserMcpKey.sql` TEST 4 ("the
+    five-key cap did not hold"; passed 2026-10-01). Neither touches this function.
+  - **Apply with** `mssql/ADMIN_WRITE_lake_inflows.sql` against docapi's database, before docapi 1.22.0. It refuses to
+    run when `fn_SubTributary` is missing and ends with `db` / `check_1` (object id) / `check_2` (a Humber probe).
+    Verified on a scratch DB built from `ffi2.sql`: applies twice cleanly; the guard stops it with nothing created.
+
 - 2026-10-03: **MCP Canada-only: new `fn_lake_canadian_ids_json`, changed `fn_fish_water_bodies_json`.** APPLIED to
   production 2026-10-04 by the user (SSMS); verified live through docapi 1.21.0, one-off apply scripts deleted.
   - `fn_lake_canadian_ids_json(@lake_ids)`: the subset of a JSON array of lake ids that is Canadian — a CGNDB code,
