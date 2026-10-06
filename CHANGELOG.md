@@ -2,6 +2,15 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-05: **`unit_test@UserMcpKey.sql` TEST 4 rewritten for the one-live-key cap. Test-only; no schema change.**
+  The test still asserted the 2026-10-01 five-key cap, but on 2026-10-02 the MCP tab of `Account/Profile.aspx` went
+  single-key (one key or the create form; deployed live) and `sp_user_mcp_key_issue` was changed to refuse with
+  `'limit'` while *any* live key exists. e61efb0 committed that proc alongside the old test, so TEST 4 failed ("the
+  five-key cap did not hold"). The proc is correct and unchanged. The 2026-10-01 entry's "capped at 5" is superseded.
+  - TEST 4 now: first key issued, second refused (`limit`), revoking frees the slot, and so does expiry (that
+    case had no test). Mutation-checked: with the proc's check put back to `COUNT(*) >= 5`, TEST 4 fails; restored, 7/7.
+  - Full suite: only the known `unit_test@FishCodeLatinJson.sql` TEST 2 and 5 fail.
+
 - 2026-10-05: **New `fn_lake_inflows_json` — the water bodies that flow INTO one water body. APPLIED to
   production 2026-10-05** by the user; verified live through docapi 1.22.0 (Humber River → 12 tributaries), and
   the one-off `ADMIN_WRITE_lake_inflows.sql` deleted. Backs docapi 1.22.0 (`GET /api/v1/river/tributaries/{guid}` via `RiverController.tributaries`, and the
