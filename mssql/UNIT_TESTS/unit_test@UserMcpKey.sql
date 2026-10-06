@@ -12,7 +12,7 @@ GO
   TEST 1 - issue records one live key; fn_user_mcp_key_list returns it with its label
   TEST 2 - a malformed hash or an empty label is refused ('bad_request') and nothing is stored
   TEST 3 - a hash already on file is refused ('duplicate'), even when that key was revoked
-  TEST 4 - the sixth live key is refused ('limit'); revoking one makes room again
+  TEST 4 - one live key per user: a second is refused ('limit'); revoke or expiry frees the slot
   TEST 5 - revoke removes the key from the list; revoking it again is 'not_found'
   TEST 6 - another user cannot revoke a key that is not theirs
   TEST 7 - an unknown ('no_user') or suspended ('suspended') account gets no key
@@ -146,12 +146,13 @@ ROLLBACK TRAN MK_Test03
 GO
 
 -- ============================================================================
--- TEST 4: sixth live key -> 'limit'; revoking one makes room
+-- TEST 4: one live key per user -> a second is 'limit'; revoke or expiry frees the slot
+-- (single-key mode since 2026-10-02: Account/Profile.aspx shows one key or the create form)
 -- ============================================================================
 BEGIN TRAN MK_Test04
-    declare @test_name sysname = N'MK_Test04 [sp_user_mcp_key_issue] : five live keys at most'
+    declare @test_name sysname = N'MK_Test04 [sp_user_mcp_key_issue] : one live key at most'
 DECLARE @tStart datetime2, @ElapsedMs int;
-DECLARE @i int = 1, @S6 varchar(20), @S7 varchar(20), @First uniqueidentifier, @Cnt int;
+DECLARE @S1 varchar(20), @S2 varchar(20), @S3 varchar(20), @S4 varchar(20), @First uniqueidentifier, @Third uniqueidentifier, @Cnt int;
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
@@ -160,25 +161,25 @@ INSERT INTO dbo.Users (id, userName, psw, firstName, lastName, email, question, 
 VALUES (@U1, N'mk_user_t4', 0x00000000000000000000000000000000, N'F', N'L', N'mk4@test', N'q', 0x00000000000000000000000000000000, N'Local', 0);
 
 CREATE TABLE #r4 (status varchar(20), key_id uniqueidentifier, label nvarchar(64), created_utc datetime2);
-DECLARE @h varchar(64);
-WHILE @i <= 5
-BEGIN
-    SET @h = REPLICATE(CAST(@i AS varchar(1)), 64);
-    INSERT INTO #r4 EXEC dbo.sp_user_mcp_key_issue @U1, N'pc', @h;
-    SET @i = @i + 1;
-END
-SELECT TOP 1 @First = key_id FROM #r4 WHERE status = 'issued';
-DELETE FROM #r4;
+INSERT INTO #r4 EXEC dbo.sp_user_mcp_key_issue @U1, N'pc', '1111111111111111111111111111111111111111111111111111111111111111';
+SELECT @S1 = status, @First = key_id FROM #r4; DELETE FROM #r4;
 
-INSERT INTO #r4 EXEC dbo.sp_user_mcp_key_issue @U1, N'pc', '6666666666666666666666666666666666666666666666666666666666666666';
-SELECT @S6 = status FROM #r4; DELETE FROM #r4;
+-- a second key while the first is live
+INSERT INTO #r4 EXEC dbo.sp_user_mcp_key_issue @U1, N'pc', '2222222222222222222222222222222222222222222222222222222222222222';
+SELECT @S2 = status FROM #r4; DELETE FROM #r4;
 
+-- revoking the first frees the slot
 CREATE TABLE #v4 (status varchar(20));
 INSERT INTO #v4 EXEC dbo.sp_user_mcp_key_revoke @U1, @First;
 DROP TABLE #v4;
+INSERT INTO #r4 EXEC dbo.sp_user_mcp_key_issue @U1, N'pc', '3333333333333333333333333333333333333333333333333333333333333333';
+SELECT @S3 = status, @Third = key_id FROM #r4; DELETE FROM #r4;
 
-INSERT INTO #r4 EXEC dbo.sp_user_mcp_key_issue @U1, N'pc', '7777777777777777777777777777777777777777777777777777777777777777';
-SELECT @S7 = status FROM #r4;
+-- so does expiry (fixture: age the live key past user_mcp_key_expires)
+UPDATE dbo.user_mcp_key SET user_mcp_key_expires = DATEADD(MINUTE, -1, SYSUTCDATETIME())
+    WHERE user_mcp_key_id = @Third;
+INSERT INTO #r4 EXEC dbo.sp_user_mcp_key_issue @U1, N'pc', '4444444444444444444444444444444444444444444444444444444444444444';
+SELECT @S4 = status FROM #r4;
 DROP TABLE #r4;
 
 SELECT @Cnt = COUNT(*) FROM dbo.fn_user_mcp_key_list(@U1);
@@ -190,10 +191,11 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF ISNULL(@S6,'') <> 'limit' OR ISNULL(@S7,'') <> 'issued' OR @Cnt <> 5
-   RAISERROR ('TEST 4 FAIL [%dms]: the five-key cap did not hold', 16, -1, @ElapsedMs)
+IF ISNULL(@S1,'') <> 'issued' OR ISNULL(@S2,'') <> 'limit' OR ISNULL(@S3,'') <> 'issued'
+   OR ISNULL(@S4,'') <> 'issued' OR ISNULL(@Cnt, -1) <> 1
+   RAISERROR ('TEST 4 FAIL [%dms]: the one-live-key cap did not hold', 16, -1, @ElapsedMs)
 ELSE
-    print 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: sixth key refused, room after revoke'
+    print 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: second key refused; revoke or expiry frees it'
 
 ROLLBACK TRAN MK_Test04
 GO

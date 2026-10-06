@@ -1156,6 +1156,9 @@ SET NOCOUNT ON
     -- fish_spot was re-pointed on production but the line had never reached this script (drift
     -- found 2026-08-11 while retiring Parking_Spot, whose own line stood right below this one).
     update fish_spot SET  lake_id=@toLake where lake_id=@fromLake
+    -- waterfalls and dams follow the surviving water body (deleting @fromLake below would only unlink them)
+    update lake_waterfall SET lake_id=@toLake, lake_waterfall_stamp=GETUTCDATE() where lake_id=@fromLake
+    update lake_dam       SET lake_id=@toLake, lake_dam_stamp=GETUTCDATE()       where lake_id=@fromLake
 
     update t set t.phosphorus=COALESCE(s.phosphorus, t.phosphorus )
 	           , t.PH=COALESCE(s.PH, t.PH )
