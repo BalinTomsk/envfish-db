@@ -3446,6 +3446,97 @@ END
 GO
 
 -----------------------------------------------------------------------------------------------------------------------------------------------
+-- lake_waterfall / lake_dam : waterfalls and dams, each optionally linked to the water body (dbo.Lake) it sits on.
+-- Same shape for both tables. Rows come from two public sources, loaded by chn_import/build_lake_barriers.sql
+-- (outside this repo's build):
+--   * CGNDB named features (NRCan geographical names: concise FALL / DAM) -> name, type, CGNDB key, point
+--   * Canadian Hydrospatial Network (CHN) hydrolocations (feature_type waterfall / dam) -> chn_feature_id, and
+--     cabd_id = the Canadian Aquatic Barriers Database obstacle id. CHN points are mostly unnamed.
+--   A CGNDB feature and the CHN point at the same place are one row.
+--   <table>_id     - the source GUID: the CGNDB feature GUID for a named feature, else the CHN feature id, so
+--                    every replication node derives the same id (same convention as Lake.lake_id for CGNDB
+--                    imports). A row added by hand gets a v7 GUID (dbo.sp_NewGuidV7).
+--   lake_id        - the water body; NULL = not linked yet. A deleted lake unlinks its rows (they still exist).
+--   link_method    - how lake_id was set: chn_network (nearest named CHN flowline), chn_polygon (inside a named
+--                    CHN waterbody polygon), name_near (feature name contains the water body's name and the
+--                    water body is close), manual (editor). Required whenever lake_id is set.
+--   link_distance_m- distance from the point to the linked line/polygon/point, metres.
+-- No reader yet; when one is added, go through a function (no direct table access from the apps).
+IF OBJECT_ID('dbo.lake_waterfall', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.lake_waterfall
+    (
+        lake_waterfall_id    UNIQUEIDENTIFIER NOT NULL
+            CONSTRAINT PK_lake_waterfall PRIMARY KEY,
+        lake_id              UNIQUEIDENTIFIER NULL,
+        lake_waterfall_name  NVARCHAR(128)    NULL,       -- official CGNDB name; NULL for an unnamed CHN point
+        lake_waterfall_type  NVARCHAR(64)     NULL,       -- CGNDB generic term: Falls, Waterfall, Cascade, Hydrographic Sill, ...
+        CGNDB                CHAR(5)          NULL,       -- CGNDB key (as Lake.CGNDB)
+        chn_feature_id       UNIQUEIDENTIFIER NULL,       -- CHN hydrolocation feature_id
+        cabd_id              VARCHAR(64)      NULL,       -- Canadian Aquatic Barriers Database obstacle id
+        lat                  FLOAT            NOT NULL,
+        lon                  FLOAT            NOT NULL,
+        province             CHAR(2)          NULL,       -- NB, NS, QC, ... (same codes as Tributaries.State)
+        link_method          VARCHAR(16)      NULL,
+        link_distance_m      INT              NULL,
+        lake_waterfall_stamp DATETIME2        NOT NULL
+            CONSTRAINT DF_lake_waterfall_stamp DEFAULT GETUTCDATE(),
+        CONSTRAINT FK_lake_waterfall_lake FOREIGN KEY (lake_id)
+            REFERENCES dbo.Lake (lake_id) ON DELETE SET NULL ON UPDATE CASCADE,
+        CONSTRAINT CK_lake_waterfall_lat  CHECK (lat BETWEEN -90 AND 90),
+        CONSTRAINT CK_lake_waterfall_lon  CHECK (lon BETWEEN -180 AND 180),
+        CONSTRAINT CK_lake_waterfall_link CHECK (link_method IN ('chn_network', 'chn_polygon', 'name_near', 'manual')),
+        CONSTRAINT CK_lake_waterfall_linked CHECK (lake_id IS NULL OR link_method IS NOT NULL)
+    );
+    CREATE INDEX IX_lake_waterfall_lake ON dbo.lake_waterfall (lake_id) WHERE lake_id IS NOT NULL;
+    CREATE UNIQUE INDEX UK_lake_waterfall_CGNDB ON dbo.lake_waterfall (CGNDB) WHERE CGNDB IS NOT NULL;
+    CREATE UNIQUE INDEX UK_lake_waterfall_chn ON dbo.lake_waterfall (chn_feature_id) WHERE chn_feature_id IS NOT NULL;
+    CREATE UNIQUE INDEX UK_lake_waterfall_cabd ON dbo.lake_waterfall (cabd_id) WHERE cabd_id IS NOT NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.lake_dam', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.lake_dam
+    (
+        lake_dam_id          UNIQUEIDENTIFIER NOT NULL
+            CONSTRAINT PK_lake_dam PRIMARY KEY,
+        lake_id              UNIQUEIDENTIFIER NULL,
+        lake_dam_name        NVARCHAR(128)    NULL,       -- official CGNDB name; NULL for an unnamed CHN point
+        lake_dam_type        NVARCHAR(64)     NULL,       -- CGNDB generic term: Dam, Spillway Dam, Regulating Dam, ...
+        CGNDB                CHAR(5)          NULL,
+        chn_feature_id       UNIQUEIDENTIFIER NULL,
+        cabd_id              VARCHAR(64)      NULL,
+        lat                  FLOAT            NOT NULL,
+        lon                  FLOAT            NOT NULL,
+        province             CHAR(2)          NULL,
+        link_method          VARCHAR(16)      NULL,
+        link_distance_m      INT              NULL,
+        lake_dam_stamp       DATETIME2        NOT NULL
+            CONSTRAINT DF_lake_dam_stamp DEFAULT GETUTCDATE(),
+        CONSTRAINT FK_lake_dam_lake FOREIGN KEY (lake_id)
+            REFERENCES dbo.Lake (lake_id) ON DELETE SET NULL ON UPDATE CASCADE,
+        CONSTRAINT CK_lake_dam_lat  CHECK (lat BETWEEN -90 AND 90),
+        CONSTRAINT CK_lake_dam_lon  CHECK (lon BETWEEN -180 AND 180),
+        CONSTRAINT CK_lake_dam_link CHECK (link_method IN ('chn_network', 'chn_polygon', 'name_near', 'manual')),
+        CONSTRAINT CK_lake_dam_linked CHECK (lake_id IS NULL OR link_method IS NOT NULL)
+    );
+    CREATE INDEX IX_lake_dam_lake ON dbo.lake_dam (lake_id) WHERE lake_id IS NOT NULL;
+    CREATE UNIQUE INDEX UK_lake_dam_CGNDB ON dbo.lake_dam (CGNDB) WHERE CGNDB IS NOT NULL;
+    CREATE UNIQUE INDEX UK_lake_dam_chn ON dbo.lake_dam (chn_feature_id) WHERE chn_feature_id IS NOT NULL;
+    CREATE UNIQUE INDEX UK_lake_dam_cabd ON dbo.lake_dam (cabd_id) WHERE cabd_id IS NOT NULL;
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.merge_table WHERE table_name = 'lake_waterfall')
+    INSERT INTO merge_table (table_name, operation, level, field_list, field_pk, field_stamp, field_exception)
+                     VALUES ('lake_waterfall', 'IUD', 2, '', 'lake_waterfall_id', 'lake_waterfall_stamp', '');
+IF NOT EXISTS (SELECT 1 FROM dbo.merge_table WHERE table_name = 'lake_dam')
+    INSERT INTO merge_table (table_name, operation, level, field_list, field_pk, field_stamp, field_exception)
+                     VALUES ('lake_dam', 'IUD', 2, '', 'lake_dam_id', 'lake_dam_stamp', '');
+GO
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
 -- RECOVERED FROM PRODUCTION 2026-08-19 - these objects existed on the live database but were
 -- missing from every scriptNN source, so a freshly built database did not have them at all.
 -- Same class of gap as GetDatePeriod / fn_get_float_as_string (2026-08-05). Definitions are

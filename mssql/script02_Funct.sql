@@ -5815,6 +5815,71 @@ BEGIN
 END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_barriers_json('eba567df-2892-e811-9104-00155d007b12');   -- Nepisiguit River (NB)
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_barriers_json' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_lake_barriers_json
+GO
+-- fn_lake_barriers_json : the waterfalls (dbo.lake_waterfall) and dams (dbo.lake_dam) linked to one water body.
+-- The single reader of those tables. No caller yet -- written for docapi's water-body endpoints and the MCP
+-- water-body tools (JdbcRiverQueryRepository); name the caller here once it exists.
+-- Returns NULL for an unknown water body, else
+--   {"guid","lakeName",
+--    "waterfalls":[{ "id","name","type","CGNDB","chnFeatureId","cabdId","lat","lon","province","linkMethod","linkDistanceM" }],
+--    "dams":      [ same fields ]}
+-- Each array is [] when empty; named features first by name, then unnamed (CHN-only, name null) by position.
+-- linkMethod says how the link was made (chn_network / chn_polygon / name_near / manual); a caller can treat
+-- name_near (name match within 10-50 km) as less certain than the CHN-based links.
+CREATE FUNCTION dbo.fn_lake_barriers_json( @lake_id uniqueidentifier )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake_id)
+        RETURN NULL;
+
+    RETURN (
+        SELECT CONVERT(varchar(36), l.lake_id) AS guid
+             , l.lake_name                     AS lakeName
+             , JSON_QUERY(ISNULL((
+                   SELECT CONVERT(varchar(36), w.lake_waterfall_id) AS id
+                        , w.lake_waterfall_name                     AS name
+                        , w.lake_waterfall_type                     AS type
+                        , RTRIM(w.CGNDB)                            AS [CGNDB]
+                        , CONVERT(varchar(36), w.chn_feature_id)    AS chnFeatureId
+                        , w.cabd_id                                 AS cabdId
+                        , w.lat                                     AS lat
+                        , w.lon                                     AS lon
+                        , w.province                                AS province
+                        , w.link_method                             AS linkMethod
+                        , w.link_distance_m                         AS linkDistanceM
+                     FROM dbo.lake_waterfall w
+                    WHERE w.lake_id = @lake_id
+                    ORDER BY CASE WHEN w.lake_waterfall_name IS NULL THEN 1 ELSE 0 END, w.lake_waterfall_name, w.lat, w.lon
+                      FOR JSON PATH, INCLUDE_NULL_VALUES
+               ), N'[]')) AS waterfalls
+             , JSON_QUERY(ISNULL((
+                   SELECT CONVERT(varchar(36), d.lake_dam_id)       AS id
+                        , d.lake_dam_name                           AS name
+                        , d.lake_dam_type                           AS type
+                        , RTRIM(d.CGNDB)                            AS [CGNDB]
+                        , CONVERT(varchar(36), d.chn_feature_id)    AS chnFeatureId
+                        , d.cabd_id                                 AS cabdId
+                        , d.lat                                     AS lat
+                        , d.lon                                     AS lon
+                        , d.province                                AS province
+                        , d.link_method                             AS linkMethod
+                        , d.link_distance_m                         AS linkDistanceM
+                     FROM dbo.lake_dam d
+                    WHERE d.lake_id = @lake_id
+                    ORDER BY CASE WHEN d.lake_dam_name IS NULL THEN 1 ELSE 0 END, d.lake_dam_name, d.lat, d.lon
+                      FOR JSON PATH, INCLUDE_NULL_VALUES
+               ), N'[]')) AS dams
+          FROM dbo.lake l
+         WHERE l.lake_id = @lake_id
+           FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
 --     SELECT dbo.fn_lake_fishing_json('a55caadf-2892-e811-9104-00155d007b12');
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_fishing_json' AND xtype = 'FN')
     DROP function dbo.fn_lake_fishing_json
