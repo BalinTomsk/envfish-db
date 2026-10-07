@@ -5880,6 +5880,61 @@ BEGIN
 END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lake_shape_geojson('eba567df-2892-e811-9104-00155d007b12');   -- Nepisiguit River (NB)
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_shape_geojson' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_lake_shape_geojson
+GO
+-- fn_lake_shape_geojson : the shapes of one water body (dbo.Lake_Shape) as a GeoJSON FeatureCollection, for drawing on a
+-- map (Leaflet L.geoJSON). The single reader of Lake_Shape. No caller yet -- written for the site's maps / docapi;
+-- name the caller here once it exists.
+-- Returns NULL for an unknown water body, else
+--   {"type":"FeatureCollection","guid","lakeName",
+--    "features":[{"type":"Feature","properties":{"id","kind"},"geometry":{"type","coordinates"}}]}
+-- kind: "line" (Lake_Shape_type 1, river centre line), "outline" (2, water-body polygon), "shape" (other / NULL).
+-- geometry.type is LineString / MultiLineString / Polygon / MultiPolygon; other geometry types are left out.
+-- Coordinates are [lon, lat] (GeoJSON order, which is also the order STAsText writes for geography).
+-- WKT -> GeoJSON coordinates: protect ring/part separators "), (", turn point separators ", " into "],[", open/close
+-- the innermost lists (a "(" before a number, a ")" after one) as "[[" / "]]", then the remaining parens to brackets
+-- and the space inside each point to a comma.
+CREATE FUNCTION dbo.fn_lake_shape_geojson( @lake_id uniqueidentifier )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake_id)
+        RETURN NULL;
+
+    RETURN (
+        SELECT 'FeatureCollection'               AS [type]
+             , CONVERT(varchar(36), l.lake_id)   AS guid
+             , l.lake_name                       AS lakeName
+             , JSON_QUERY(ISNULL((
+                   SELECT 'Feature'                AS [type]
+                        , s.Lake_Shape_id          AS [properties.id]
+                        , CASE s.Lake_Shape_type WHEN 1 THEN 'line' WHEN 2 THEN 'outline' ELSE 'shape' END AS [properties.kind]
+                        , t.gtype                  AS [geometry.type]
+                        , JSON_QUERY(c6.v)         AS [geometry.coordinates]
+                     FROM dbo.Lake_Shape s
+                    CROSS APPLY (SELECT s.Lake_Shape_shape.STGeometryType() AS gtype, s.Lake_Shape_shape.STAsText() AS wkt) t
+                    CROSS APPLY (SELECT REPLACE(REPLACE(SUBSTRING(t.wkt, CHARINDEX('(', t.wkt), LEN(t.wkt)), '), (', ')|('), ', ', '],[') AS v) c2
+                    CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c2.v,
+                                     '(-', '[[-'), '(0', '[[0'), '(1', '[[1'), '(2', '[[2'), '(3', '[[3'), '(4', '[[4'),
+                                     '(5', '[[5'), '(6', '[[6'), '(7', '[[7'), '(8', '[[8'), '(9', '[[9') AS v) c3
+                    CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c3.v,
+                                     '0)', '0]]'), '1)', '1]]'), '2)', '2]]'), '3)', '3]]'), '4)', '4]]'),
+                                     '5)', '5]]'), '6)', '6]]'), '7)', '7]]'), '8)', '8]]'), '9)', '9]]') AS v) c4
+                    CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(c4.v, '|', ','), '(', '['), ')', ']'), ' ', ',') AS v) c6
+                    WHERE s.lake_id = @lake_id
+                      AND t.gtype IN ('LineString', 'MultiLineString', 'Polygon', 'MultiPolygon')
+                    ORDER BY s.Lake_Shape_type, s.Lake_Shape_id
+                      FOR JSON PATH
+               ), N'[]')) AS features
+          FROM dbo.lake l
+         WHERE l.lake_id = @lake_id
+           FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
 --     SELECT dbo.fn_lake_fishing_json('a55caadf-2892-e811-9104-00155d007b12');
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_fishing_json' AND xtype = 'FN')
     DROP function dbo.fn_lake_fishing_json

@@ -992,7 +992,8 @@ CREATE TABLE Lake_Shape
     lake_id             uniqueidentifier NOT NULL,
     Lake_Shape_id       int not null identity,
     Lake_Shape_shape    geography NOT NULL,
-    Lake_Shape_type     int,
+    Lake_Shape_type     int,                       -- NULL legacy (sp_add_lake_shape line), 1 river centre line, 2 water-body outline
+                                                   -- (1/2 loaded from the Canadian Hydrospatial Network; read by fn_lake_shape_geojson)
     Lake_Shape_stamp    datetime2 NOT NULL,
     Lake_Shape_idx      geometry,                  -- store box with boundaries
     Lake_Shape_hash     bigint,
