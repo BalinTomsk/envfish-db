@@ -2158,6 +2158,7 @@ BEGIN TRY
         watershield      = CASE WHEN JSON_PATH_EXISTS(@patch, '$.watershield_km2') = 1 THEN JSON_VALUE(@patch, '$.watershield_km2') ELSE watershield END,
         drainage         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.drainage')      = 1 THEN JSON_VALUE(@patch, '$.drainage')      ELSE drainage END,
         CGNDB            = CASE WHEN JSON_PATH_EXISTS(@patch, '$.cgndb')         = 1 THEN JSON_VALUE(@patch, '$.cgndb')         ELSE CGNDB END,
+        state_id         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.stateId')       = 1 THEN NULLIF(LTRIM(RTRIM(JSON_VALUE(@patch, '$.stateId'))), '') ELSE state_id END,
         lake_road_access = CASE WHEN JSON_PATH_EXISTS(@patch, '$.roadAccess')    = 1 THEN JSON_VALUE(@patch, '$.roadAccess')    ELSE lake_road_access END,
         is_fishing_prohibited = CASE WHEN JSON_PATH_EXISTS(@patch, '$.fishingProhibited') = 1 THEN TRY_CONVERT(bit, JSON_VALUE(@patch, '$.fishingProhibited')) ELSE is_fishing_prohibited END,
         isolated         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.isolated')      = 1 THEN TRY_CONVERT(bit, JSON_VALUE(@patch, '$.isolated'))      ELSE isolated END,
@@ -2171,7 +2172,7 @@ BEGIN TRY
     SELECT v.f FROM (VALUES
         ('altName'),('nativeName'),('french'),('link'),('type'),('length_km'),('width_km'),
         ('shoreline_km'),('maxDepth_m'),('volume_km3'),('surface_km2'),('discharge_m3s'),
-        ('basin_km2'),('watershield_km2'),('drainage'),('cgndb'),('roadAccess'),
+        ('basin_km2'),('watershield_km2'),('drainage'),('cgndb'),('stateId'),('roadAccess'),
         ('fishingProhibited'),('isolated'),('reviewed'),('description')
     ) AS v(f)
     WHERE JSON_PATH_EXISTS(@patch, '$.' + v.f) = 1;

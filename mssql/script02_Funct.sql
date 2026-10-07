@@ -1513,7 +1513,7 @@ begin
     IF NOT EXISTS (SELECT * FROM @resultid)    
     BEGIN
         insert into @resultid (lake_id, irank)
-           select DISTINCT lake_id, 0 from dbo.lake l where @search IN (CGNDB, CGNDM)
+           select DISTINCT lake_id, 0 from dbo.lake l where @search IN (CGNDB, CGNDM, state_id)
 
         IF NOT EXISTS (SELECT * FROM @resultid)    
         BEGIN
@@ -1899,32 +1899,36 @@ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_search_json' AND xtyp
     DROP FUNCTION dbo.fn_river_search_json
 GO
 
--- Water-body lookup by any combination of: part of a name, either GUID, either CGNDB code, or the MLI
--- of a linked WaterStation. Called by docapi's RiverController (GET /api/v1/river/search) via
--- JdbcRiverQueryRepository.search.
---   @name  - substring of lake_name, alt_name or french_name (case follows the column collation)
---   @guid  - matches lake_id OR secondary_id
---   @cgndb - matches CGNDB OR CGNDM
---   @mli   - WaterStation.MLI; matches the lake that station is linked to (WaterStation.lakeId)
+-- Water-body lookup by any combination of: part of a name, either GUID, either CGNDB code, the
+-- provincial/state id, or the MLI of a linked WaterStation. Called by docapi's RiverController
+-- (GET /api/v1/river/search) and McpToolCatalog (search_water_bodies) via JdbcRiverQueryRepository.search.
+--   @name     - substring of lake_name, alt_name or french_name (case follows the column collation)
+--   @guid     - matches lake_id OR secondary_id
+--   @cgndb    - matches CGNDB OR CGNDM
+--   @state_id - matches state_id exactly (the province's/state's own id, e.g. a BC GNIS id)
+--   @mli      - WaterStation.MLI; matches the lake that station is linked to (WaterStation.lakeId)
 -- Every supplied criterion must match (AND); NULL/blank criteria are ignored. All NULL -> '[]'.
--- The most selective supplied key drives the lookup (guid, then CGNDB, then MLI, then name) so only a
--- name-only search scans the table. Order: exact name, then name prefix, then the rest, by lake_name.
+-- The most selective supplied key drives the lookup (guid, then CGNDB, then state id, then MLI, then
+-- name) so only a name-only search scans the table. Order: exact name, then name prefix, then the rest,
+-- by lake_name.
 -- @limit is clamped to 1..200 (NULL -> 50). Returns a JSON array, '[]' when nothing matches:
---   [{ "lakeId","secondaryId","lakeName","altName","frenchName","locType","CGNDB","CGNDM",
+--   [{ "lakeId","secondaryId","lakeName","altName","frenchName","locType","CGNDB","CGNDM","stateId",
 --      "country","state","mli":["02HC024", ...] }]
--- select dbo.fn_river_search_json(N'Humber', NULL, NULL, NULL, 10)
--- select dbo.fn_river_search_json(NULL, NULL, 'FEFUL', NULL, NULL)
+-- select dbo.fn_river_search_json(N'Humber', NULL, NULL, NULL, NULL, 10)
+-- select dbo.fn_river_search_json(NULL, NULL, 'FEFUL', NULL, NULL, NULL)
+-- select dbo.fn_river_search_json(NULL, NULL, NULL, '39325', NULL, NULL)
 CREATE FUNCTION dbo.fn_river_search_json( @name nvarchar(64), @guid uniqueidentifier, @cgndb varchar(16)
-                                        , @mli varchar(64), @limit int )
+                                        , @state_id varchar(32), @mli varchar(64), @limit int )
 RETURNS nvarchar(max)
 AS
 BEGIN
-    SET @name  = NULLIF(LTRIM(RTRIM(@name)), N'');
-    SET @cgndb = NULLIF(UPPER(LTRIM(RTRIM(@cgndb))), '');
-    SET @mli   = NULLIF(LTRIM(RTRIM(@mli)), '');
+    SET @name     = NULLIF(LTRIM(RTRIM(@name)), N'');
+    SET @cgndb    = NULLIF(UPPER(LTRIM(RTRIM(@cgndb))), '');
+    SET @state_id = NULLIF(LTRIM(RTRIM(@state_id)), '');
+    SET @mli      = NULLIF(LTRIM(RTRIM(@mli)), '');
     SET @limit = CASE WHEN @limit IS NULL THEN 50 WHEN @limit < 1 THEN 1 WHEN @limit > 200 THEN 200 ELSE @limit END;
 
-    IF @name IS NULL AND @guid IS NULL AND @cgndb IS NULL AND @mli IS NULL
+    IF @name IS NULL AND @guid IS NULL AND @cgndb IS NULL AND @state_id IS NULL AND @mli IS NULL
         RETURN N'[]';
 
     DECLARE @cand TABLE ( lake_id uniqueidentifier NOT NULL PRIMARY KEY );
@@ -1937,6 +1941,8 @@ BEGIN
         INSERT INTO @cand SELECT lake_id FROM dbo.lake WHERE CGNDB = @cgndb
                           UNION
                           SELECT lake_id FROM dbo.lake WHERE CGNDM = @cgndb;
+    ELSE IF @state_id IS NOT NULL
+        INSERT INTO @cand SELECT lake_id FROM dbo.lake WHERE state_id = @state_id;
     ELSE IF @mli IS NOT NULL
         INSERT INTO @cand SELECT DISTINCT lakeId FROM dbo.WaterStation WHERE MLI = @mli AND lakeId IS NOT NULL;
     ELSE
@@ -1954,6 +1960,7 @@ BEGIN
           FROM @cand c JOIN dbo.lake l ON l.lake_id = c.lake_id
          WHERE (@guid  IS NULL OR @guid IN (l.lake_id, l.secondary_id))
            AND (@cgndb IS NULL OR @cgndb IN (l.CGNDB, l.CGNDM))
+           AND (@state_id IS NULL OR l.state_id = @state_id)
            AND (@mli   IS NULL OR EXISTS (SELECT 1 FROM dbo.WaterStation w WHERE w.MLI = @mli AND w.lakeId = l.lake_id))
            AND (@name  IS NULL OR CHARINDEX(@name, l.lake_name) > 0 OR CHARINDEX(@name, l.alt_name) > 0 OR CHARINDEX(@name, l.french_name) > 0)
          ORDER BY 2, l.lake_name;
@@ -1967,6 +1974,7 @@ BEGIN
              , l.locType         AS locType
              , RTRIM(l.CGNDB)    AS [CGNDB]
              , RTRIM(l.CGNDM)    AS [CGNDM]
+             , l.state_id        AS stateId
              , v.country         AS country
              , v.state           AS state
              , JSON_QUERY(ISNULL((SELECT N'[' + STRING_AGG(N'"' + STRING_ESCAPE(w.MLI, 'json') + N'"', N',') WITHIN GROUP (ORDER BY w.MLI) + N']'
@@ -3702,7 +3710,7 @@ BEGIN
         -- the cached flag has drifted on a legacy row
         , CASE WHEN EXISTS (SELECT 1 FROM dbo.lake_fish lf WHERE lf.lake_id = l.lake_id) THEN 1 ELSE 0 END AS isFish
         , l.noFish, l.isolated, l.is_fishing_prohibited, l.sid, l.drainage, l.discharge, l.watershield, l.basin
-        , l.surface, l.shoreline, l.lake_road_access, l.CGNDB, l.CGNDM, l.secondary_id, l.descript, l.fishing
+        , l.surface, l.shoreline, l.lake_road_access, l.CGNDB, l.CGNDM, l.state_id, l.secondary_id, l.descript, l.fishing
         , w.source_name, w.mouth_name, w.source_state, w.source_country, l.source, l.mouth, l.reviewed
       FROM dbo.lake l JOIN dbo.vw_lake w ON l.lake_id=w.lake_id WHERE w.lake_id = @lake_id
     )
@@ -3714,7 +3722,7 @@ BEGIN
     (
         SELECT * FROM
         (
-            SELECT lake_id, secondary_id, stamp, locType, depth, width, length, volume, surface, shoreline, CGNDB, CGNDM, source_state, source_country
+            SELECT lake_id, secondary_id, stamp, locType, depth, width, length, volume, surface, shoreline, CGNDB, CGNDM, state_id, source_state, source_country
                  , COALESCE(isfish, 0) AS is_fish, COALESCE(noFish, 0) AS no_fish, lake_road_access
                  , COALESCE(is_fishing_prohibited, 0) AS is_fishing_prohibited, COALESCE(reviewed, 0) AS reviewed
                  , isolated, link, basin, sid, drainage, discharge, watershield, fishing, source, mouth
@@ -5403,6 +5411,7 @@ BEGIN
             l.drainage                               AS drainage,
             l.CGNDB                                  AS cgndb,
             l.CGNDM                                  AS cgndm,
+            l.state_id                               AS stateId,
             l.lake_road_access                       AS roadAccess,
             @mli                                     AS mli,
             CAST(COALESCE(l.is_fishing_prohibited, 0) AS bit) AS fishingProhibited,
@@ -6062,6 +6071,7 @@ BEGIN
             l.descript                      AS description,
             l.link                          AS link,
             l.CGNDB                         AS cgndb,
+            l.state_id                      AS stateId,
             l.basin                         AS basin,
             l.watershield                   AS watershield,
             l.drainage                      AS drainage,

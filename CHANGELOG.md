@@ -2,6 +2,26 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-07: **New `Lake.state_id varchar(32)` — the province's/state's own id for a water body. APPLIED to
+  production 2026-10-07** by the user (all three scripts; docapi 1.23.0 deployed right after). Verified through docapi:
+  Fraser River `39325`, Cold Lake `4309`, search by `stateId` works. Local envionx not yet applied. Shown as "State ID" under Mouth on `Editor/LakeEditor.aspx`. BC: the BC Geographical Names feature id
+  (= FWA GNIS_ID); AB: the FWMIS waterbody id. Not unique (two provinces' ranges overlap): read it with the lake's
+  state. Filtered index `IX_lake_state_id`.
+  - `SearchLakeList`: a search term equal to a `state_id` finds the water body (as CGNDB / CGNDM do).
+  - `fn_river_search_json(@name, @guid, @cgndb, @state_id, @mli, @limit)`: **new 4th parameter** (signature change;
+    docapi 1.23.0 is the only caller); items carry `stateId`.
+  - `fn_lake_edit` (`state_id` attribute), `fn_lake_description_json` and `fn_lake_view_json` (`stateId`),
+    `sp_lake_description_update` (`stateId` patchable, blank → NULL).
+  - Tests: `unit_test@lake.sql` 30, `unit_test@Search.sql` 17, `unit_test@RiverSearch.sql` 8–9 (+ every call now 6
+    arguments, TEST 1 checks `stateId`), `unit_test@LakeJson.sql` 1 and 10, `unit_test@LakeDescriptionUpdate.sql` 9 —
+    all seen failing first (Msg 207 / 8144). Full suite: 593 PASS, 2 FAIL (the known `unit_test@FishCodeLatinJson.sql`
+    TEST 2 and 5).
+  - **Apply** (production, then local): `mssql/ADMIN_WRITE_lake_state_id_1_schema.sql` (column, index, the five
+    objects; safe with docapi 1.22.0; must precede the FishTracker.dll that saves the field) →
+    `mssql/ADMIN_WRITE_lake_state_id_2_search.sql` right before docapi 1.23.0 → `mssql/ADMIN_WRITE_lake_state_id_3_data.sql`
+    (19,259 water bodies: BC 19,009, AB 250; fills only an empty `state_id`). Rehearsed on local envionx in one rolled-back
+    transaction: all filled, a re-run fills 0. Delete the three files once applied and verified.
+
 - 2026-10-06: **New `fn_lake_shape_geojson(@lake_id)` and map shapes in `dbo.Lake_Shape` from the Canadian Hydrospatial
   Network. APPLIED to production 2026-10-06** by the user (and to the local copy). The first production check found
   nothing, because the script had only run locally; it was then run against `DB_111487_fish`. Verified with a

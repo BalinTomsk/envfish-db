@@ -807,6 +807,10 @@ CREATE TABLE Lake
     CGNDB       char(5),                -- unique id on http://www4.rncan.gc.ca/search-place-names/unique
     CGNDM       char(5),                -- secondary CGNDB-style id, edited on Editor/LakeEditor.aspx
     secondary_id uniqueidentifier,      -- secondary GUID (edited under GUID on Editor/LakeEditor.aspx), searchable by SearchLakeList
+    state_id    varchar(32),            -- the province's/state's own id for the water body (BC: BC Geographical Names
+                                        -- feature id = FWA GNIS_ID; AB: FWMIS waterbody id), edited under Mouth on
+                                        -- Editor/LakeEditor.aspx; searchable by SearchLakeList / fn_river_search_json.
+                                        -- Not unique: two provinces' id ranges overlap; read it with the lake's state.
     geom        geography,
     symbol      nvarchar(1),            -- first letter of actual name (to speed up search)
     reviewed    bit,                    -- means review manually done by operator
@@ -852,6 +856,8 @@ GO
 CREATE UNIQUE NONCLUSTERED INDEX UK_lake_CGNDM ON LAKE(CGNDM) WHERE CGNDM IS NOT NULL
 GO
 CREATE UNIQUE NONCLUSTERED INDEX UK_lake_secondary_id ON LAKE(secondary_id) WHERE secondary_id IS NOT NULL
+GO
+CREATE NONCLUSTERED INDEX IX_lake_state_id ON LAKE(state_id) WHERE state_id IS NOT NULL
 GO
 CREATE NONCLUSTERED INDEX [IX_Lake_symbol] ON [dbo].[Lake] ([symbol]) INCLUDE ([lake_name], [IsFish], [isWell]); 
 GO
