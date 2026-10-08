@@ -1490,7 +1490,7 @@ CREATE FUNCTION dbo.SearchLakeList( @search sysname )
                      , source_lat float, source_lon float, source uniqueidentifier, mouth uniqueidentifier
                      , zone int, isWell bit, isFish bit, source_state char(2), mouth_state char(2)
                      , source_country char(2), mouth_country char(2), mouth_lat float, mouth_lon float
-                     , source_loc nvarchar(2048), mouth_loc nvarchar(2048), CGNDB varchar(32))
+                     , source_loc nvarchar(2048), mouth_loc nvarchar(2048), CGNDB varchar(32), CGNDM varchar(32))
     AS
 begin
     set @search = dbo.NormalizeSearch( @search ) -- remove garbige symbols from search string
@@ -1546,7 +1546,7 @@ begin
         , CASE WHEN county IS NULL THEN state ELSE county END AS [description]
         , lat, lon, null, null, zone, isWell, isFish
         , source_state, mouth_state, source_country, mouth_country
-        , mouth_lat, mouth_lon, source_loc, mouth_loc, CGNDB
+        , mouth_lat, mouth_lon, source_loc, mouth_loc, CGNDB, CGNDM
         FROM vw_lake l JOIN @resultid r ON  r.lake_id = l.lake_id
    RETURN
 end
@@ -1782,8 +1782,8 @@ RETURN
     (
         SELECT l.lat, l.lon, l.lake_name, l.alt_Name, l.county, l.lake_id, l.state, l.country
                 , left(COALESCE(source_loc, mouth_loc), 32) AS [description] 
-                , l.zone, l.IsFish, l.isWell, l.source_name, l.mouth_name, source_lat, source_lon, mouth_lat, mouth_lon, source_loc, mouth_loc, CGNDB
-                , COALESCE(source_loc, mouth_loc, CGNDB) AS guidloc, symbol, reviewed, l.noFish
+                , l.zone, l.IsFish, l.isWell, l.source_name, l.mouth_name, source_lat, source_lon, mouth_lat, mouth_lon, source_loc, mouth_loc, CGNDB, CGNDM
+                , COALESCE(source_loc, mouth_loc, CGNDB, CGNDM) AS guidloc, symbol, reviewed, l.noFish
             FROM dbo.vw_lake l
             WHERE @state IN (source_state, mouth_state) AND @river = l.locType
             AND (   ISNULL(isFish,0) = (CASE WHEN @fish = 1 THEN 1 ELSE 0 END)
@@ -1793,13 +1793,13 @@ RETURN
                         UNION SELECT lake_id FROM dbo.lake WHERE symbol=UPPER(@section)
                         UNION SELECT lake_id FROM dbo.lake WHERE @section='$'  )
     )SELECT num, lat, lon, lake_name, alt_Name, county, lake_id, state, country, [description], zone
-        , IsFish, isWell, source_name, mouth_name, source_lat, source_lon, mouth_lat, mouth_lon, source_loc, mouth_loc, CGNDB, guidloc 
+        , IsFish, isWell, source_name, mouth_name, source_lat, source_lon, mouth_lat, mouth_lon, source_loc, mouth_loc, CGNDB, CGNDM, guidloc 
         , x.cnt AS itg, sym, noFish, reviewed
         FROM
         (
             SELECT ROW_NUMBER() Over(Order by (Select 1)) AS num, lat, lon, lake_name, alt_Name, county, lake_id, state
                  , country, [description], zone, IsFish, isWell, source_name, mouth_name, source_lat, source_lon
-                 , mouth_lat, mouth_lon, source_loc, mouth_loc, CGNDB, guidloc, symbol AS sym, reviewed, noFish FROM cte
+                 , mouth_lat, mouth_lon, source_loc, mouth_loc, CGNDB, CGNDM, guidloc, symbol AS sym, reviewed, noFish FROM cte
         )z, (SELECT COUNT(*) AS cnt FROM cte)x
         ORDER BY num ASC OFFSET @page * 25 ROWS FETCH NEXT 25 ROWS ONLY
 GO
@@ -1842,23 +1842,25 @@ GO
 -- the add-fish tooling, now served natively by docapi's RiverController
 -- (GET /api/v1/river/unfished) via TDbInterface JdbcRiverQueryRepository.
 -- @country is ECHOED only (the original filters by @state, not country). @river is a locType value
--- (2 = river, the page default). "throwing" = comma-joined CGNDB of the lakes flagged "Throw"
--- (Tributaries.side = 2) for the found water body, '' when found with none, null when not found.
+-- (2 = river, the page default). "throwing" = comma-joined codes of the lakes flagged "Throw"
+-- (Tributaries.side = 2) for the found water body -- each lake's CGNDB, or its CGNDM when it has no CGNDB --
+-- '' when found with none, null when not found.
 -- Returns ONE JSON object (keys always present; nulls when not found):
 --   { "found":true, "country":"CA","state":"NL","river":2,
---     "lake_id":"...","lake_name":"...","mouth_name":"...","CGNDB":"...","throwing":"ABCDE,FGHIJ" }
+--     "lake_id":"...","lake_name":"...","mouth_name":"...","CGNDB":"...","CGNDM":"...","throwing":"ABCDE,FGHIJ" }
 -- select dbo.fn_river_unfished_json('CA','NL',2)
 CREATE FUNCTION dbo.fn_river_unfished_json( @country char(2), @state char(2), @river int )
 RETURNS nvarchar(max)
 AS
 BEGIN
-    DECLARE @lake_id uniqueidentifier, @lake_name nvarchar(256), @mouth_name nvarchar(256), @cgndb varchar(64);
+    DECLARE @lake_id uniqueidentifier, @lake_name nvarchar(256), @mouth_name nvarchar(256), @cgndb varchar(64), @cgndm varchar(64);
 
     SELECT TOP 1
            @lake_id    = lake_id,
            @lake_name  = lake_name,
            @mouth_name = mouth_name,
-           @cgndb      = CGNDB
+           @cgndb      = CGNDB,
+           @cgndm      = CGNDM
       FROM dbo.vw_lake
      WHERE @state IN (source_state, mouth_state)
        AND locType = @river
@@ -1869,13 +1871,13 @@ BEGIN
     DECLARE @throwing nvarchar(max) = NULL;
     IF @lake_id IS NOT NULL
     BEGIN
-        SELECT @throwing = STRING_AGG(LTRIM(RTRIM(v.CGNDB)), ',') WITHIN GROUP (ORDER BY v.lake_name)
+        SELECT @throwing = STRING_AGG(c.code, ',') WITHIN GROUP (ORDER BY v.lake_name)
           FROM dbo.Tributaries t
           JOIN dbo.Lake v ON v.lake_id = t.lake_id
+         CROSS APPLY (SELECT COALESCE(NULLIF(LTRIM(RTRIM(v.CGNDB)), ''), NULLIF(LTRIM(RTRIM(v.CGNDM)), '')) AS code) c
          WHERE t.main_lake_id = @lake_id
            AND t.side = 2
-           AND v.CGNDB IS NOT NULL
-           AND LTRIM(RTRIM(v.CGNDB)) <> '';
+           AND c.code IS NOT NULL;
         SET @throwing = ISNULL(@throwing, N'');
     END
 
@@ -1889,6 +1891,7 @@ BEGIN
             @lake_name  AS lake_name,
             @mouth_name AS mouth_name,
             @cgndb      AS [CGNDB],
+            @cgndm      AS [CGNDM],
             @throwing   AS throwing
         FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
     );
@@ -1998,7 +2001,7 @@ GO
 --   @fish_id         - the species (dbo.fish.fish_id); NULL -> empty result
 --   @country/@state  - ISO-2 codes, case-insensitive; NULL/blank = any. A water body matches when its source
 --                      (Tributaries side 16) OR its mouth (side 32) is there, read through the two unique
---                      (Main_Lake_id, side) indexes rather than vw_lake. For 'CA' a CGNDB code also counts --
+--                      (Main_Lake_id, side) indexes rather than vw_lake. For 'CA' a CGNDB / CGNDM code also counts --
 --                      the same "Canadian" rule as dbo.fn_lake_canadian_ids_json. The country/state REPORTED
 --                      per item stay source-first (vw_lake's precedence).
 --   @loc_type        - locType bitmask (1 lake, 2 river, 4 stream, 8 pond, 64 creek, 8192 reservoir, ...);
@@ -2007,7 +2010,7 @@ GO
 --                      body can hold several rows for one species; its probability here is the HIGHEST,
 --                      and the minimum is applied to that.
 --   @limit           - items returned, clamped to 1..200 (NULL -> 50). `total` always counts every match.
--- Returns {"total":n,"limit":l,"items":[{ "lakeId","lakeName","altName","frenchName","locType","CGNDB",
+-- Returns {"total":n,"limit":l,"items":[{ "lakeId","lakeName","altName","frenchName","locType","CGNDB","CGNDM",
 --          "country","state","probability" }]}, highest probability first, then by name.
 -- select dbo.fn_fish_water_bodies_json('2CFFB500-3E59-4120-9460-055856E9AC5C', 'CA', 'ON', 2, NULL, 20)
 CREATE FUNCTION dbo.fn_fish_water_bodies_json( @fish_id uniqueidentifier, @country varchar(8), @state varchar(8)
@@ -2043,7 +2046,7 @@ BEGIN
          WHERE f.probability >= @min_probability
            AND (@loc_type IS NULL OR (l.locType & @loc_type) <> 0)
            AND (@country  IS NULL OR @country IN (loc.src_country, loc.mouth_country)
-                OR (@country = 'CA' AND NULLIF(RTRIM(l.CGNDB), '') IS NOT NULL))
+                OR (@country = 'CA' AND (NULLIF(RTRIM(l.CGNDB), '') IS NOT NULL OR NULLIF(RTRIM(l.CGNDM), '') IS NOT NULL)))
            AND (@state    IS NULL OR @state IN (loc.src_state, loc.mouth_state));
 
     RETURN (
@@ -2057,6 +2060,7 @@ BEGIN
                         , l.french_name      AS frenchName
                         , l.locType          AS locType
                         , RTRIM(l.CGNDB)     AS [CGNDB]
+                        , RTRIM(l.CGNDM)     AS [CGNDM]
                         , h.country          AS country
                         , h.state            AS state
                         , h.probability      AS probability
@@ -2075,7 +2079,7 @@ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_canadian_ids_json' AND
 GO
 
 -- Which of the given water bodies count as CANADIAN. The FishFind MCP server shows only these (docapi
--- McpToolCatalog via JdbcRiverQueryRepository.canadianIds). A water body is Canadian when it has a CGNDB code,
+-- McpToolCatalog via JdbcRiverQueryRepository.canadianIds). A water body is Canadian when it has a CGNDB or CGNDM code,
 -- OR its source (Tributaries side 16) OR its mouth (side 32) is in country 'CA' -- either end is enough, so a
 -- river rising in the US and ending in Canada counts.
 --   @lake_ids - JSON array of lake_id GUID strings; NULL / not JSON / no valid GUIDs -> '[]'
@@ -2094,6 +2098,7 @@ BEGIN
                    FROM OPENJSON(@lake_ids) j ) x
           JOIN dbo.lake l ON l.lake_id = x.lake_id
          WHERE NULLIF(RTRIM(l.CGNDB), '') IS NOT NULL
+            OR NULLIF(RTRIM(l.CGNDM), '') IS NOT NULL
             OR EXISTS ( SELECT 1 FROM dbo.Tributaries t
                          WHERE t.Main_Lake_id = l.lake_id AND t.side IN (16, 32) AND t.Country = 'CA' )
     ), N'[]');
@@ -3835,7 +3840,7 @@ BEGIN
         , l.isFish, l.noFish, l.isolated, l.is_fishing_prohibited, l.sid, l.drainage, l.discharge, l.watershield, l.basin
         , l.surface, l.shoreline
 		, CASE WHEN l.lake_road_access LIKE w.source_district + N'%' THEN NULL ELSE l.lake_road_access END AS lake_road_access
-		, l.CGNDB, l.descript, l.fishing
+		, l.CGNDB, l.CGNDM, l.descript, l.fishing
         , w.source_name, w.mouth_name, w.source_state, w.source_country, l.source, l.mouth, w.lat, w.lon
       FROM dbo.lake l JOIN dbo.vw_lake w ON l.lake_id=w.lake_id 
     )
@@ -3847,7 +3852,7 @@ BEGIN
     (
         SELECT * FROM
         (
-            SELECT lake_id, stamp, locType, depth, width, length, volume, surface, shoreline, CGNDB, source_state, source_country
+            SELECT lake_id, stamp, locType, depth, width, length, volume, surface, shoreline, CGNDB, CGNDM, source_state, source_country
                  , COALESCE(isfish, 0) AS is_fish, COALESCE(noFish, 0) AS no_fish, COALESCE(is_fishing_prohibited, 0) AS is_fishing_prohibited
                  , isolated, link, basin, sid, drainage, discharge, watershield, fishing, source, mouth
 				 , dbo.fn_laketypebyint(locType) AS [type], lat, lon
@@ -5764,7 +5769,7 @@ GO
 -- lat/lon/country/state are those of the junction row. @limit is clamped to 1..200 (NULL -> 50); `total`
 -- counts every inflow. Returns NULL for an unknown water body, else
 --   {"guid","lakeName","total","limit","tributaries":[{ "lakeId","lakeName","altName","frenchName","locType",
---    "CGNDB","link","lat","lon","country","state" }]}, by name.
+--    "CGNDB","CGNDM","link","lat","lon","country","state" }]}, by name.
 CREATE FUNCTION dbo.fn_lake_inflows_json( @lake_id uniqueidentifier, @limit int )
 RETURNS nvarchar(max)
 AS
@@ -5807,6 +5812,7 @@ BEGIN
                         , i.french_name      AS frenchName
                         , i.locType          AS locType
                         , RTRIM(i.CGNDB)     AS [CGNDB]
+                        , RTRIM(i.CGNDM)     AS [CGNDM]
                         , h.link             AS link
                         , h.lat              AS lat
                         , h.lon              AS lon
@@ -6071,6 +6077,7 @@ BEGIN
             l.descript                      AS description,
             l.link                          AS link,
             l.CGNDB                         AS cgndb,
+            l.CGNDM                         AS cgndm,
             l.state_id                      AS stateId,
             l.basin                         AS basin,
             l.watershield                   AS watershield,

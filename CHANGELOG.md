@@ -2,6 +2,30 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-07: **CGNDM handled like CGNDB in every object. APPLIED to production (`DB_111487_fish`) and local envionx
+  2026-10-07; verified through MCP (Reindeer Lake `GAWWT`/`HAINF` in get_water_body, search by HAINF, tributaries).**
+  The one-off apply script is deleted. CGNDB
+  keeps one record per province, so a water body in two provinces has two keys (Reindeer Lake: `GAWWT` MB, `HAINF` SK):
+  `Lake.CGNDB` holds one, `Lake.CGNDM` the other. Until now only the editor, `SearchLakeList`'s match,
+  `fn_river_search_json` and `fn_lake_description_json` knew CGNDM.
+  - `vw_lake` exposes `CGNDM`; `SearchLakeList`, `fn_river_list`, `fn_river_unfished_json`, `fn_fish_water_bodies_json`,
+    `fn_lake_inflows_json`, `fn_lake_view_info` (viewer XML) and `fn_lake_view_json` (`cgndm`) return it.
+  - "Canadian" = a CGNDB **or** CGNDM code (or a source/mouth in CA): `fn_lake_canadian_ids_json` (MCP) and the `CA`
+    rule of `fn_fish_water_bodies_json`. `fn_river_unfished_json`'s `throwing` lists a Throw lake by CGNDB, else CGNDM.
+  - `sp_lake_description_update`: `cgndm` patchable.
+  - **Bug fixed, `sp_MergeLakes`:** it copied the source's CGNDB onto a target without one while the source row still
+    existed, so `UK_lake_CGNDB` refused it (Msg 2601) and the merge stopped half-done. It now clears the source's keys,
+    then fills the target's empty CGNDB, then CGNDM, from the source's (both provinces' keys survive a merge).
+  - Tests: new `unit_test@LakeCgndm.sql` (12), all seen failing first (Msg 207, 2601, assertions). Full suite 605 PASS,
+    2 known FishCodeLatinJson FAIL.
+  - **Apply** `mssql/ADMIN_WRITE_cgndm_everywhere.sql` (one-off, never committed, delete once applied everywhere):
+    re-creates `vw_lake` after dropping its schema-bound dependents (`fn_GetLakeRegulations`, `fn_GetAllLakeStates`,
+    `fn_GetAllLakeZones`, `fn_GetCloseLake`, `fn_river_list`, `fn_river_sym`, `fn_ViewTributary` -- in that order, each
+    depends on a later one or on the view) and re-creates them, plus the readers and both procedures; sets Hay River's
+    `state_id` to AB `2062` (one id per water body: the source province's); drops the reverted `state_id2` where it
+    exists. Safe with docapi 1.23.0 and the live DLL. Applied twice to local envionx (re-runnable, verified).
+  - `state_id2` (added and reverted the same day) is gone: one `state_id` per water body.
+
 - 2026-10-07: **New `Lake.state_id varchar(32)` — the province's/state's own id for a water body. APPLIED to
   production 2026-10-07** by the user (all three scripts; docapi 1.23.0 deployed right after). Verified through docapi:
   Fraser River `39325`, Cold Lake `4309`, search by `stateId` works. Local envionx not yet applied. Shown as "State ID" under Mouth on `Editor/LakeEditor.aspx`. BC: the BC Geographical Names feature id
