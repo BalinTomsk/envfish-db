@@ -38,6 +38,7 @@ GO
   TEST 27 - CGNDM round-trips
   TEST 28 - secondary_id round-trips (the "Sec. GUID" box under GUID on Editor/LakeEditor.aspx)
   TEST 29 - a duplicate secondary_id is rejected (UK_lake_secondary_id)
+  TEST 30 - state_id round-trips (the "State ID" box under Mouth on Editor/LakeEditor.aspx)
 */
 SET NOCOUNT ON;
 
@@ -324,6 +325,15 @@ BEGIN TRY
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @DupRejected = 1 PRINT 'TEST 29 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: duplicate secondary_id rejected by UK_lake_secondary_id';
     ELSE PRINT 'TEST 29 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: duplicate secondary_id was accepted';
+
+    SET @tStart = SYSUTCDATETIME();
+    INSERT INTO lake (locType, lake_name, state_id) VALUES (1, N'TestLakeStateId', '39325');
+    SET @LakeId = (SELECT lake_id FROM lake WHERE lake_name = N'TestLakeStateId');
+    SET @Doc = dbo.fn_lake_edit(@LakeId);
+    DECLARE @RstStateId varchar(32) = (SELECT T.C.value('@state_id', 'varchar(32)') FROM @Doc.nodes('/root/lake') T(C));
+    SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+    IF @RstStateId = '39325' PRINT 'TEST 30 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: state_id round-trips';
+    ELSE PRINT 'TEST 30 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: got ' + ISNULL(@RstStateId, 'NULL');
 
     ROLLBACK TRANSACTION;
 

@@ -12,6 +12,7 @@ GO
   TEST 6 - noFish=true is applied when the lake has no assigned species
   TEST 7 - unknown lake_id -> results IS NULL
   TEST 8 - malformed JSON body is handled gracefully, not a raw SQL error
+  TEST 9 - stateId sets lake.state_id and is reported in `updated`
 */
 PRINT 'Unit tests for dbo.sp_lake_description_update';
 GO
@@ -297,4 +298,38 @@ ELSE
     print 'TEST 8 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: malformed JSON handled without touching the row'
 
 ROLLBACK TRAN LDU_Test8
+GO
+-- ============================================================================
+-- TEST 9: stateId sets lake.state_id
+-- ============================================================================
+BEGIN TRAN LDU_Test9
+    declare @test_name sysname = N'LDU_Test9 [sp_lake_description_update] : stateId'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Results9 nvarchar(max);
+DECLARE @RowStateId9 varchar(32);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+DECLARE @Lake9 uniqueidentifier = NEWID();
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake9, 1, N'ut-lake-ldu9');
+
+DECLARE @t9 TABLE (results nvarchar(max));
+INSERT INTO @t9 EXEC dbo.sp_lake_description_update @Lake9, N'{"stateId":"4309"}';
+SELECT @Results9 = results FROM @t9;
+SELECT @RowStateId9 = state_id FROM dbo.Lake WHERE Lake_id = @Lake9;
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name        AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF @RowStateId9 IS NULL OR @RowStateId9 <> '4309'
+   OR NOT EXISTS (SELECT 1 FROM OPENJSON(@Results9, '$.updated') WITH (field nvarchar(50)) WHERE field = 'stateId')
+   RAISERROR ('TEST 9 FAIL [%dms]: expected state_id 4309 and stateId in updated', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 9 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: stateId set state_id and was reported'
+
+ROLLBACK TRAN LDU_Test9
 GO

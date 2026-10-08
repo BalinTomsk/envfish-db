@@ -110,7 +110,7 @@ AS
         , mouth_id
         , mouth_Elevation, mouth_Lat, mouth_Lon, mouth_region, mouth_municipality, mouth_location
         , mouth_state, mouth_country, mouth_county, mouth_city, mouth_district, mouth_zone, mouth_description
-        , lat, lon, city, county, state, country, region, district, municipality, zone, Discharge, fishing, CGNDB
+        , lat, lon, city, county, state, country, region, district, municipality, zone, Discharge, fishing, CGNDB, CGNDM
         , lake_image_source, lake_image_author, lake_image_link, lake_image_stamp
         , COALESCE(source_loc, mouth_loc)    AS location, source_loc, mouth_loc
 		, IIF(t_stamp > stamp, t_stamp, stamp) AS stamp, road_access, reviewed
@@ -120,7 +120,7 @@ AS
         ,  CASE WHEN l.lake_name <> mouth.lake_name  THEN mouth.lake_name  ELSe NULL END AS mouth_name
         , l.lake_id, l.lake_name, COALESCE(l.alt_name, l.native) AS alt_name, l.old_id, l.length, l.depth, l.width, l.locType
         , l.basin, l.watershield, l.link, l.locked, l.editor, l.descript, l.Volume, l.Shoreline, l.Drainage, l.surface
-        , l.Discharge, l.isfish, l.fishing, l.CGNDB, l.native AS native_name, l.isWell, l.symbol
+        , l.Discharge, l.isfish, l.fishing, l.CGNDB, l.CGNDM, l.native AS native_name, l.isWell, l.symbol
 		, CASE WHEN l.french_name = l.lake_name THEN null ELSE l.french_name END AS french_name
         , COALESCE(l.source, CASE WHEN s.lake_id <> l.lake_id THEN s.lake_id ELSE NULL END) AS source_id
         , s.Elevation AS source_Elevation, s.lat AS source_Lat, s.lon AS source_Lon, s.region AS source_region, s.municipality AS source_municipality, s.location AS source_location

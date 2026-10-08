@@ -1194,7 +1194,6 @@ SET NOCOUNT ON
             , t.surface=COALESCE(s.surface, t.surface )
             , t.isWell=COALESCE(s.isWell, t.isWell )
             , t.lake_road_access=COALESCE(s.lake_road_access, t.lake_road_access )
-            , t.CGNDB = CASE WHEN t.CGNDB IS NULL THEN s.CGNDB ELSE t.CGNDB END
     FROM lake t, lake s WHERE t.lake_id = @toLake AND s.lake_id = @fromLake
 
     update t set
@@ -1223,7 +1222,24 @@ SET NOCOUNT ON
 
     delete from tributaries where main_lake_id = @fromLake
     delete from tributaries where lake_id = @fromLake
-    delete from lake where lake_id = @fromLake 
+
+    -- CGNDB keys (one per province): the target keeps its own, then takes the source's into the empty slots,
+    -- CGNDB first, then CGNDM (Reindeer Lake: MB GAWWT + SK HAINF). The source's keys are cleared first --
+    -- UK_lake_CGNDB / UK_lake_CGNDM refuse one key on two rows. A third distinct key cannot be kept.
+    DECLARE @codes TABLE (ord int IDENTITY, code char(5));
+    INSERT INTO @codes (code)
+        SELECT v.code FROM lake l CROSS APPLY (VALUES (1, l.CGNDB), (2, l.CGNDM)) v(n, code)
+         WHERE l.lake_id = @toLake AND NULLIF(RTRIM(v.code), '') IS NOT NULL ORDER BY v.n;
+    INSERT INTO @codes (code)
+        SELECT v.code FROM lake l CROSS APPLY (VALUES (1, l.CGNDB), (2, l.CGNDM)) v(n, code)
+         WHERE l.lake_id = @fromLake AND NULLIF(RTRIM(v.code), '') IS NOT NULL
+           AND v.code NOT IN (SELECT code FROM @codes) ORDER BY v.n;
+    update lake set CGNDB = NULL, CGNDM = NULL where lake_id = @fromLake
+    update lake set CGNDB = (SELECT code FROM @codes WHERE ord = 1)
+                  , CGNDM = (SELECT code FROM @codes WHERE ord = 2)
+        where lake_id = @toLake
+
+    delete from lake where lake_id = @fromLake
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
@@ -2158,6 +2174,8 @@ BEGIN TRY
         watershield      = CASE WHEN JSON_PATH_EXISTS(@patch, '$.watershield_km2') = 1 THEN JSON_VALUE(@patch, '$.watershield_km2') ELSE watershield END,
         drainage         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.drainage')      = 1 THEN JSON_VALUE(@patch, '$.drainage')      ELSE drainage END,
         CGNDB            = CASE WHEN JSON_PATH_EXISTS(@patch, '$.cgndb')         = 1 THEN JSON_VALUE(@patch, '$.cgndb')         ELSE CGNDB END,
+        CGNDM            = CASE WHEN JSON_PATH_EXISTS(@patch, '$.cgndm')         = 1 THEN JSON_VALUE(@patch, '$.cgndm')         ELSE CGNDM END,
+        state_id         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.stateId')       = 1 THEN NULLIF(LTRIM(RTRIM(JSON_VALUE(@patch, '$.stateId'))), '') ELSE state_id END,
         lake_road_access = CASE WHEN JSON_PATH_EXISTS(@patch, '$.roadAccess')    = 1 THEN JSON_VALUE(@patch, '$.roadAccess')    ELSE lake_road_access END,
         is_fishing_prohibited = CASE WHEN JSON_PATH_EXISTS(@patch, '$.fishingProhibited') = 1 THEN TRY_CONVERT(bit, JSON_VALUE(@patch, '$.fishingProhibited')) ELSE is_fishing_prohibited END,
         isolated         = CASE WHEN JSON_PATH_EXISTS(@patch, '$.isolated')      = 1 THEN TRY_CONVERT(bit, JSON_VALUE(@patch, '$.isolated'))      ELSE isolated END,
@@ -2171,7 +2189,7 @@ BEGIN TRY
     SELECT v.f FROM (VALUES
         ('altName'),('nativeName'),('french'),('link'),('type'),('length_km'),('width_km'),
         ('shoreline_km'),('maxDepth_m'),('volume_km3'),('surface_km2'),('discharge_m3s'),
-        ('basin_km2'),('watershield_km2'),('drainage'),('cgndb'),('roadAccess'),
+        ('basin_km2'),('watershield_km2'),('drainage'),('cgndb'),('cgndm'),('stateId'),('roadAccess'),
         ('fishingProhibited'),('isolated'),('reviewed'),('description')
     ) AS v(f)
     WHERE JSON_PATH_EXISTS(@patch, '$.' + v.f) = 1;

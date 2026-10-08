@@ -2,6 +2,79 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-07: **CGNDM handled like CGNDB in every object. APPLIED to production (`DB_111487_fish`) and local envionx
+  2026-10-07; verified through MCP (Reindeer Lake `GAWWT`/`HAINF` in get_water_body, search by HAINF, tributaries).**
+  The one-off apply script is deleted. CGNDB
+  keeps one record per province, so a water body in two provinces has two keys (Reindeer Lake: `GAWWT` MB, `HAINF` SK):
+  `Lake.CGNDB` holds one, `Lake.CGNDM` the other. Until now only the editor, `SearchLakeList`'s match,
+  `fn_river_search_json` and `fn_lake_description_json` knew CGNDM.
+  - `vw_lake` exposes `CGNDM`; `SearchLakeList`, `fn_river_list`, `fn_river_unfished_json`, `fn_fish_water_bodies_json`,
+    `fn_lake_inflows_json`, `fn_lake_view_info` (viewer XML) and `fn_lake_view_json` (`cgndm`) return it.
+  - "Canadian" = a CGNDB **or** CGNDM code (or a source/mouth in CA): `fn_lake_canadian_ids_json` (MCP) and the `CA`
+    rule of `fn_fish_water_bodies_json`. `fn_river_unfished_json`'s `throwing` lists a Throw lake by CGNDB, else CGNDM.
+  - `sp_lake_description_update`: `cgndm` patchable.
+  - **Bug fixed, `sp_MergeLakes`:** it copied the source's CGNDB onto a target without one while the source row still
+    existed, so `UK_lake_CGNDB` refused it (Msg 2601) and the merge stopped half-done. It now clears the source's keys,
+    then fills the target's empty CGNDB, then CGNDM, from the source's (both provinces' keys survive a merge).
+  - Tests: new `unit_test@LakeCgndm.sql` (12), all seen failing first (Msg 207, 2601, assertions). Full suite 605 PASS,
+    2 known FishCodeLatinJson FAIL.
+  - **Apply** `mssql/ADMIN_WRITE_cgndm_everywhere.sql` (one-off, never committed, delete once applied everywhere):
+    re-creates `vw_lake` after dropping its schema-bound dependents (`fn_GetLakeRegulations`, `fn_GetAllLakeStates`,
+    `fn_GetAllLakeZones`, `fn_GetCloseLake`, `fn_river_list`, `fn_river_sym`, `fn_ViewTributary` -- in that order, each
+    depends on a later one or on the view) and re-creates them, plus the readers and both procedures; sets Hay River's
+    `state_id` to AB `2062` (one id per water body: the source province's); drops the reverted `state_id2` where it
+    exists. Safe with docapi 1.23.0 and the live DLL. Applied twice to local envionx (re-runnable, verified).
+  - `state_id2` (added and reverted the same day) is gone: one `state_id` per water body.
+
+- 2026-10-07: **New `Lake.state_id varchar(32)` — the province's/state's own id for a water body. APPLIED to
+  production 2026-10-07** by the user (all three scripts; docapi 1.23.0 deployed right after). Verified through docapi:
+  Fraser River `39325`, Cold Lake `4309`, search by `stateId` works. Local envionx not yet applied. Shown as "State ID" under Mouth on `Editor/LakeEditor.aspx`. BC: the BC Geographical Names feature id
+  (= FWA GNIS_ID); AB: the FWMIS waterbody id. Not unique (two provinces' ranges overlap): read it with the lake's
+  state. Filtered index `IX_lake_state_id`.
+  - `SearchLakeList`: a search term equal to a `state_id` finds the water body (as CGNDB / CGNDM do).
+  - `fn_river_search_json(@name, @guid, @cgndb, @state_id, @mli, @limit)`: **new 4th parameter** (signature change;
+    docapi 1.23.0 is the only caller); items carry `stateId`.
+  - `fn_lake_edit` (`state_id` attribute), `fn_lake_description_json` and `fn_lake_view_json` (`stateId`),
+    `sp_lake_description_update` (`stateId` patchable, blank → NULL).
+  - Tests: `unit_test@lake.sql` 30, `unit_test@Search.sql` 17, `unit_test@RiverSearch.sql` 8–9 (+ every call now 6
+    arguments, TEST 1 checks `stateId`), `unit_test@LakeJson.sql` 1 and 10, `unit_test@LakeDescriptionUpdate.sql` 9 —
+    all seen failing first (Msg 207 / 8144). Full suite: 593 PASS, 2 FAIL (the known `unit_test@FishCodeLatinJson.sql`
+    TEST 2 and 5).
+  - **Apply** (production, then local): `mssql/ADMIN_WRITE_lake_state_id_1_schema.sql` (column, index, the five
+    objects; safe with docapi 1.22.0; must precede the FishTracker.dll that saves the field) →
+    `mssql/ADMIN_WRITE_lake_state_id_2_search.sql` right before docapi 1.23.0 → `mssql/ADMIN_WRITE_lake_state_id_3_data.sql`
+    (19,259 water bodies: BC 19,009, AB 250; fills only an empty `state_id`). Rehearsed on local envionx in one rolled-back
+    transaction: all filled, a re-run fills 0. Delete the three files once applied and verified.
+
+- 2026-10-06: **New `fn_lake_shape_geojson(@lake_id)` and map shapes in `dbo.Lake_Shape` from the Canadian Hydrospatial
+  Network. APPLIED to production 2026-10-06** by the user (and to the local copy). The first production check found
+  nothing, because the script had only run locally; it was then run against `DB_111487_fish`. Verified with a
+  read-only check: 3,045 type-1 lines, 1,894 type-2 outlines, `fn_lake_shape_geojson` present (SQL Server 16.0,
+  compatibility level 160). The one-off `ADMIN_WRITE_lake_shapes.sql` has been deleted. `Lake.geom` is a single point, so it cannot draw a river; `Lake_Shape` existed
+  for shapes but was empty and had no reader.
+  - **`fn_lake_shape_geojson`** (`script02_Funct.sql`): the shapes of one water body as a GeoJSON FeatureCollection,
+    `{"type":"FeatureCollection", guid, lakeName, features:[{type:"Feature", properties:{id, kind}, geometry}]}`, ready
+    for Leaflet `L.geoJSON`. `kind` is `line` (`Lake_Shape_type` 1), `outline` (2) or `shape` (other/NULL). The
+    geometry is LineString / MultiLineString / Polygon / MultiPolygon in `[lon, lat]`, converted from WKT with REPLACEs
+    (SQL Server has no GeoJSON output). NULL for an unknown water body. No caller yet. About 8 ms per water body; about
+    5 KB average.
+  - **`Lake_Shape_type`** is documented in `script01_createTable.sql`: NULL = legacy (`sp_add_lake_shape` line),
+    1 = river centre line, 2 = water-body outline. Comment only; no DDL change.
+  - **Gotcha:** `UK_Lake_Shape` is a unique, unfiltered index on `Lake_Shape_hash`, and `TR_UPD_Lake_Shape` fills the
+    hash only after the insert. A multi-row INSERT without the hash therefore fails with duplicate NULLs (Msg 2601).
+    Supply `CAST(HASHBYTES('MD5', shape.ToString()) AS bigint)` on insert, as `sp_add_lake_shape` does.
+  - Tests: `unit_test@LakeShapeJson.sql` 6/6, all seen failing first (Msg 4121). Full suite: 588 PASS, 2 FAIL (the known
+    `unit_test@FishCodeLatinJson.sql` TEST 2 and 5).
+  - **Data:** 4,939 shapes for NB/NS water bodies matched by CGNDB key: 3,045 river lines (merged named flowlines,
+    simplified ~10 m) and 1,894 outlines (merged polygons, ~5 m). Built by `fishfind/chn_import/build_lake_shapes.sql`.
+  - **Apply with** `mssql/ADMIN_WRITE_lake_shapes.sql` (16 MB; generated by `chn_import/gen_admin_write_lake_shapes.ps1`).
+    It creates the function, then inserts each shape only where the water body exists and has no shape of that type.
+    Shapes travel as hex WKB, and the temp table holds no text. `Lake_Shape` is not in `merge_table` (identity PK), so
+    the rows stay on the node they are applied to. Delete the script once applied.
+  - Rehearsed on the local production copy in a rolled-back transaction: run 1 inserted 4,939; every water body's GeoJSON
+    was valid, with the right feature count and every line's point count matching; run 2 inserted nothing. Nepisiguit
+    River and Mactaquac Lake were drawn with Leaflet over OpenStreetMap and follow the real river and headpond.
+
 - 2026-10-06: **Data fill: empty `Lake` fields completed from the Canadian Hydrospatial Network. APPLIED to production
   2026-10-06** by the user. The first attempt stopped at the script's database guard with nothing changed; the guard
   now names the database it checked and what is missing. Verified live through the FishFind MCP tools: North Branch
