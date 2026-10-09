@@ -5834,6 +5834,67 @@ BEGIN
 END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT * FROM dbo.fn_lake_barrier_map('c9b567df-2892-e811-9104-00155d007b12');   -- Petitcodiac River (NB)
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_dam_map' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_lake_dam_map            -- replaced by fn_lake_barrier_map (dams + waterfalls)
+GO
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_barrier_map' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_lake_barrier_map
+GO
+-- fn_lake_barrier_map : the dams (dbo.lake_dam) and waterfalls (dbo.lake_waterfall) of one water body, each with the
+-- angle of the short symbol the map draws for it (dam: a bar, waterfall: a wave).
+-- Caller: fishfind-frontend Resources/wfRiverViewer.aspx.cs GetBarrierPoints (river viewer General-tab map).
+-- Columns: barrier ('dam' / 'waterfall'), id, name, type, lat, lon, kind ('line' / 'outline' / NULL), bar_deg.
+-- bar_deg is the CSS clockwise rotation (0..179) of a horizontal symbol: ACROSS the river centre line (Lake_Shape_type 1,
+-- preferred when the water body has one), ALONG the lake outline (type 2). NULL when the water body has no shape.
+-- How: the nearest shape is clipped to 1 km around the point in geography (a 170k-point reservoir outline is otherwise
+-- seconds per point), turned into planar lon/lat geometry (a polygon into its boundary), and the direction of the ~50 m
+-- piece of that line nearest the point gives the angle; dx is scaled by cos(lat) so it matches the Web Mercator screen.
+-- Tests: UNIT_TESTS/unit_test@LakeBarrierMap.sql.
+CREATE FUNCTION dbo.fn_lake_barrier_map( @lake_id uniqueidentifier )
+RETURNS TABLE
+AS RETURN
+(
+    SELECT d.barrier
+         , d.id
+         , d.name
+         , d.type
+         , d.lat
+         , d.lon
+         , s.kind
+         , CASE WHEN v.dx IS NULL OR (ABS(v.dx) < 1e-12 AND ABS(v.dy) < 1e-12) THEN NULL
+                ELSE ((CAST(ROUND(-(DEGREES(ATN2(v.dy, v.dx)) + CASE s.kind WHEN 'line' THEN 90 ELSE 0 END), 0) AS int) % 180) + 180) % 180
+            END AS bar_deg
+      FROM (SELECT 'dam' AS barrier, lake_dam_id AS id, lake_dam_name AS name, lake_dam_type AS type, lat, lon, lake_id
+              FROM dbo.lake_dam WHERE lake_id = @lake_id
+            UNION ALL
+            SELECT 'waterfall', lake_waterfall_id, lake_waterfall_name, lake_waterfall_type, lat, lon, lake_id
+              FROM dbo.lake_waterfall WHERE lake_id = @lake_id) d
+     CROSS APPLY (SELECT geography::Point(d.lat, d.lon, 4326) AS gp) p
+     OUTER APPLY (
+        SELECT TOP 1 CASE ls.Lake_Shape_type WHEN 1 THEN 'line' ELSE 'outline' END AS kind, ls.Lake_Shape_shape AS shp
+          FROM dbo.Lake_Shape ls
+         WHERE ls.lake_id = d.lake_id AND ls.Lake_Shape_type IN (1, 2)
+           AND ls.Lake_Shape_shape.STGeometryType() IN ('LineString', 'MultiLineString', 'Polygon', 'MultiPolygon')
+         ORDER BY ls.Lake_Shape_type, ls.Lake_Shape_shape.STDistance(p.gp)
+     ) s
+     OUTER APPLY (SELECT s.shp.STIntersection(p.gp.STBuffer(1000)) AS clip) cl
+     OUTER APPLY (SELECT CASE WHEN cl.clip.STDimension() = 2 THEN g.geo.STBoundary() ELSE g.geo END AS ln
+                    FROM (SELECT geometry::STGeomFromWKB(cl.clip.STAsBinary(), 4326).MakeValid() AS geo) g
+                   WHERE cl.clip.STIsEmpty() = 0) lq
+     -- ShortestLineTo is EMPTY when the point lies on the line (the usual CHN case): the point itself is then the spot.
+     OUTER APPLY (SELECT CASE WHEN lq.ln.STDistance(gd.p) = 0 THEN gd.p ELSE lq.ln.ShortestLineTo(gd.p).STStartPoint() END AS q
+                    FROM (SELECT geometry::Point(d.lon, d.lat, 4326) AS p) gd) n
+     OUTER APPLY (SELECT lq.ln.STIntersection(n.q.STBuffer(0.0005)) AS pc) c
+     OUTER APPLY (SELECT TOP 1 c.pc.STGeometryN(k.i) AS seg
+                    FROM (VALUES (1), (2), (3), (4), (5), (6), (7), (8)) k(i)
+                   WHERE k.i <= c.pc.STNumGeometries()
+                   ORDER BY c.pc.STGeometryN(k.i).STDistance(n.q)) sg
+     OUTER APPLY (SELECT (sg.seg.STEndPoint().STX - sg.seg.STStartPoint().STX) * COS(RADIANS(d.lat)) AS dx
+                       , sg.seg.STEndPoint().STY - sg.seg.STStartPoint().STY AS dy) v
+);
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
 --     SELECT dbo.fn_lake_shape_geojson('eba567df-2892-e811-9104-00155d007b12');   -- Nepisiguit River (NB)
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_shape_geojson' AND xtype = 'FN')
     DROP FUNCTION dbo.fn_lake_shape_geojson
