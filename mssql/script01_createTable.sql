@@ -645,32 +645,6 @@ CREATE TABLE dbo.fish_lunar_catch_probability
 GO
 ------------------------------------------------------------------------------------
 
-if object_id('dbo.GeoIP') is not null 
-    drop TABLE dbo.GeoIP
-GO
-
-CREATE TABLE GeoIP
-(
-    id int not null  identity(1,1),
-    nsi char(16) NOT NULL,
-    mask int NULL,
-    postal varchar(16) NOT NULL,
-    latitude float NOT NULL,
-    longitude float NOT NULL,
-    ip4 binary(4) NOT NULL
-)
-GO
-ALTER TABLE GeoIP ADD CONSTRAINT PK_GeoIP PRIMARY KEY CLUSTERED ([ID] ASC) ON [PRIMARY]    
-GO
-CREATE NONCLUSTERED INDEX [idx_GeoIP_lat] ON GeoIP (latitude ASC)  
-GO
-CREATE NONCLUSTERED INDEX [idx_GeoIP_lon] ON GeoIP (longitude ASC) 
-GO
-CREATE NONCLUSTERED INDEX [idx_GeoIP_ip4] ON GeoIP (ip4 ASC) 
-GO
-ALTER TABLE dbo.GeoIP ADD CONSTRAINT DEF_GeoIP_ip4 DEFAULT (0)   FOR ip4
-GO
-
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
 CREATE TABLE dbo.lake_image
