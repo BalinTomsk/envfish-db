@@ -2,6 +2,13 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-08: **`fn_map_location_trial(@fishName, @lat, @lon, @country, @state)`: a signed-out visitor's forecast
+  map shows their province/state.** Previously it showed every station within 3 degrees of them, which crossed
+  borders and ignored the USA/Canada choice. When `@state` is `''`, it falls back to the 3-degree box held to
+  `@country`. The signature went from 3 to 5 parameters, so it ships with the matching `FishTracker.dll`
+  (`Forecast/Planning.aspx.cs`). Tests: `unit_test@MapLocation.sql` 5-7, seen failing first (Msg 8144). Full
+  suite: only the 2 known FishCodeLatinJson FAILs. **Deployed 2026-10-08** (function, then DLL); verified live signed out.
+
 - 2026-10-07: **CGNDM handled like CGNDB in every object. APPLIED to production (`DB_111487_fish`) and local envionx
   2026-10-07; verified through MCP (Reindeer Lake `GAWWT`/`HAINF` in get_water_body, search by HAINF, tributaries).**
   The one-off apply script is deleted. CGNDB

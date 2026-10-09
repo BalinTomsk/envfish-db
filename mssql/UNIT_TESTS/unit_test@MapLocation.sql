@@ -22,6 +22,15 @@ GO
   TEST 2 - no forecast row                   -> not on the map
   TEST 3 - WaterData rows exist but are empty -> not on the map
   TEST 4 - the species is not recorded there  -> not on the map (per-species, no regression)
+
+  dbo.fn_map_location_trial -- the same map for a signed-out (trial) visitor. It used to plot every
+  station within 3 degrees of the visitor, which shows half a province and spills across borders.
+  It now plots the visitor's province/state; the 3-degree box is only the fallback when the
+  province is unknown, and it is held to the selected country.
+
+  TEST 5 - same province, far from the visitor   -> on the map
+  TEST 6 - near the visitor, another province    -> not on the map
+  TEST 7 - province unknown: box fallback, held to the selected country
 */
 SET NOCOUNT ON;
 GO
@@ -252,4 +261,167 @@ ELSE
     print 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: a station without that species is not plotted for it'
 
 IF @@TRANCOUNT > 0 ROLLBACK TRAN Test04MapPerSpecies
+GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 5: same province far away is on the map
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test05TrialSameProvince
+    DECLARE @test_name sysname = N'Test05TrialSameProvince [fn_map_location_trial] : same province far away is on the map'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Lake uniqueidentifier = NEWID(), @StA uniqueidentifier = NEWID(), @StB uniqueidentifier = NEWID();
+DECLARE @Fish uniqueidentifier, @FishName varchar(64);
+DECLARE @rowsA int = -1, @rowsB int = -1, @err nvarchar(2048), @msg nvarchar(4000);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+SELECT TOP 1 @Fish = fish_id, @FishName = fish_name FROM dbo.fish ORDER BY fish_id;
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake, 2, N'UT MAP Lake');
+INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake, @Fish);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@StA, 'UT_MAP_5', 49.8, -92.8, 'CA', 'ON', N'unit-test station', 2, N'UT MAP Station 5', N'UT County', 940105, @Lake, N'UT MAP Lake', 1);
+INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StA, @Fish, 55, GETUTCDATE());
+INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES ('UT_MAP_5', GETDATE(), 17, 3.5);
+INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
+VALUES (@StA, 'UT_MAP_5', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+
+-- 2. execute unit test : visitor at 43.5, -80.5 (Kitchener, ON)
+
+SELECT @rowsA = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', 'ON') WHERE sid = 940105;
+
+END TRY
+BEGIN CATCH
+    SET @err = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @err IS NOT NULL
+BEGIN
+    SET @msg = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err;
+    RAISERROR (@msg, 16, -1)
+END
+ELSE IF NOT (@rowsA = 1)
+BEGIN
+    SET @msg = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: a station in the visitor province, 12 degrees away, must be plotted';
+    RAISERROR (@msg, 16, -1)
+END
+ELSE
+    print 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: trial: whole province is plotted, not a 3-degree box'
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test05TrialSameProvince
+GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 6: nearby station in another province is not on the map
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test06TrialOtherProvince
+    DECLARE @test_name sysname = N'Test06TrialOtherProvince [fn_map_location_trial] : nearby station in another province is not on the map'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Lake uniqueidentifier = NEWID(), @StA uniqueidentifier = NEWID(), @StB uniqueidentifier = NEWID();
+DECLARE @Fish uniqueidentifier, @FishName varchar(64);
+DECLARE @rowsA int = -1, @rowsB int = -1, @err nvarchar(2048), @msg nvarchar(4000);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+SELECT TOP 1 @Fish = fish_id, @FishName = fish_name FROM dbo.fish ORDER BY fish_id;
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake, 2, N'UT MAP Lake');
+INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake, @Fish);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@StA, 'UT_MAP_6', 45.4, -78.0, 'CA', 'QC', N'unit-test station', 2, N'UT MAP Station 6', N'UT County', 940106, @Lake, N'UT MAP Lake', 1);
+INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StA, @Fish, 55, GETUTCDATE());
+INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES ('UT_MAP_6', GETDATE(), 17, 3.5);
+INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
+VALUES (@StA, 'UT_MAP_6', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+
+-- 2. execute unit test : visitor at 43.5, -80.5 (Kitchener, ON)
+
+SELECT @rowsA = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', 'ON') WHERE sid = 940106;
+
+END TRY
+BEGIN CATCH
+    SET @err = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @err IS NOT NULL
+BEGIN
+    SET @msg = N'TEST 6 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err;
+    RAISERROR (@msg, 16, -1)
+END
+ELSE IF NOT (@rowsA = 0)
+BEGIN
+    SET @msg = N'TEST 6 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: a station in another province must not be plotted';
+    RAISERROR (@msg, 16, -1)
+END
+ELSE
+    print 'TEST 6 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: trial: nearby station in another province is not plotted'
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test06TrialOtherProvince
+GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 7: unknown province falls back to the box, same country only
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test07TrialNoProvince
+    DECLARE @test_name sysname = N'Test07TrialNoProvince [fn_map_location_trial] : unknown province falls back to the box, same country only'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Lake uniqueidentifier = NEWID(), @StA uniqueidentifier = NEWID(), @StB uniqueidentifier = NEWID();
+DECLARE @Fish uniqueidentifier, @FishName varchar(64);
+DECLARE @rowsA int = -1, @rowsB int = -1, @err nvarchar(2048), @msg nvarchar(4000);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+SELECT TOP 1 @Fish = fish_id, @FishName = fish_name FROM dbo.fish ORDER BY fish_id;
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake, 2, N'UT MAP Lake');
+INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake, @Fish);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@StA, 'UT_MAP_7', 44.0, -80.0, 'CA', 'ON', N'unit-test station', 2, N'UT MAP Station 7', N'UT County', 940107, @Lake, N'UT MAP Lake', 1);
+INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StA, @Fish, 55, GETUTCDATE());
+INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES ('UT_MAP_7', GETDATE(), 17, 3.5);
+INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
+VALUES (@StA, 'UT_MAP_7', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@StB, 'UT_MAP_8', 42.5, -79.5, 'US', 'NY', N'unit-test station', 2, N'UT MAP Station 8', N'UT County', 940108, @Lake, N'UT MAP Lake', 1);
+INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StB, @Fish, 55, GETUTCDATE());
+INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES ('UT_MAP_8', GETDATE(), 17, 3.5);
+INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
+VALUES (@StB, 'UT_MAP_8', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+
+-- 2. execute unit test : visitor at 43.5, -80.5 (Kitchener, ON)
+
+SELECT @rowsA = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', '') WHERE sid = 940107;
+SELECT @rowsB = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', '') WHERE sid = 940108;
+
+END TRY
+BEGIN CATCH
+    SET @err = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @err IS NOT NULL
+BEGIN
+    SET @msg = N'TEST 7 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err;
+    RAISERROR (@msg, 16, -1)
+END
+ELSE IF NOT (@rowsA = 1 AND @rowsB = 0)
+BEGIN
+    SET @msg = N'TEST 7 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: no province: the in-box CA station must show and the in-box US one must not';
+    RAISERROR (@msg, 16, -1)
+END
+ELSE
+    print 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: trial: no province -> 3-degree box, selected country only'
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test07TrialNoProvince
 GO

@@ -2312,18 +2312,26 @@ GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_map_location_trial' AND xtype = 'IF')
     DROP function dbo.fn_map_location_trial
 GO
-/****** Called from FishTracker.Forecast.MapFrame.LoadMapLocation
--- SELECT * FROM [dbo].[fn_get_trial_location]( 'burbot', 43, -80 )
--- SELECT * FROM [dbo].[fn_map_location_trial]( 'Bass, Rock', 43, -80 )
+/****** Called from FishTracker Forecast/Planning.aspx.cs (TUserList.LoadMapLocation) for a signed-out
+-- (trial) visitor. @country is the USA/Canada radio; @state is the visitor's IP-geolocated province or
+-- state, '' when unknown or when it lies in the other country.
+-- A trial visitor sees the stations of their own province/state. Only when that is unknown does it
+-- fall back to a 3-degree box around @lat/@lon -- and the box is held to @country as well, so a
+-- Kitchener visitor with Canada selected no longer gets Pennsylvania pins.
+-- SELECT * FROM [dbo].[fn_map_location_trial]( 'Walleye', 43.5, -80.5, 'CA', 'ON' )
+-- SELECT * FROM [dbo].[fn_map_location_trial]( 'Walleye', 43.5, -80.5, 'CA', '' )
 **/
-CREATE function dbo.fn_map_location_trial( @fishName  varchar(64), @lat float, @lon float )
+CREATE function dbo.fn_map_location_trial( @fishName  varchar(64), @lat float, @lon float, @country char(2), @state char(2) )
   RETURNS  TABLE
   WITH SCHEMABINDING
 AS
 RETURN   --lat, lon, today, location, sid, country, state, county
     SELECT w.lat,  w.lon,  f.today, w.LocName as location, w.sid, w.country, w.state, w.county
       FROM dbo.vWaterStation w JOIN dbo.fish_location f ON (f.station_Id = w.id  )
-      WHERE ( w.lat between (@lat-3.0) AND (@lat+3.0) ) AND (w.lon between (@lon-3.0) AND (@lon+3.0) ) 
+      WHERE w.country = @country
+        AND (   ( ISNULL(@state, '') <> '' AND w.state = @state )
+             OR ( ISNULL(@state, '')  = ''
+                  AND ( w.lat between (@lat-3.0) AND (@lat+3.0) ) AND (w.lon between (@lon-3.0) AND (@lon+3.0) ) ) )
         AND EXISTS( SELECT TOP 1 1 FROM dbo.fish s WHERE fish_name = @fishName and f.fish_id = s.fish_id )
 		-- Same rule as dbo.fn_map_location: water AND weather AND fish. Kept in step deliberately --
 		-- a trial user must not be shown pins a paying one would not get, or vice versa.
