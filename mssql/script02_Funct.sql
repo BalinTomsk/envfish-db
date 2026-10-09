@@ -179,7 +179,6 @@ RETURN
         )     
    )ul 
 GO
---  SELECT * FROM dbo.GetLatLonByIP( '::1' )
 -- select * from dbo.fn_get_fish_bylatlon( 41, -83, 3 )    -- V5K 0A1
 ----------------------------------------------------------------------------------------------------------------------------
 
@@ -206,27 +205,6 @@ GO
  
 ----------------------------------------------------------------------------------------------------------------------------
 
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetLatLonByIP' AND xtype = 'TF')
-    DROP FUNCTION dbo.GetLatLonByIP
-GO
-
-CREATE FUNCTION GetLatLonByIP( @ip sysname )
-RETURNS @TBL TABLE (lat float, lon float )
-AS
-begin
-  declare @ip4 binary(4)
-  SET @ip4 = CAST( dbo.IP2Int(@ip) AS binary(4) )
-  if EXISTS (SELECT * FROM dbo.GeoIP WHERE ip4 = @ip4)
-      insert into @TBL SELECT latitude, longitude FROM GeoIP WHERE ip4 = @ip4
-  ELSE
-    insert into @TBL (lat , lon ) VALUES (41, -80)
-  return
-end         
-GO
-
---  select * from dbo.GetLatLonByIP( '38.127.167.46' )
-
-----------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'CheckInterval' AND xtype = 'FN')
     DROP FUNCTION dbo.CheckInterval
 GO
@@ -592,7 +570,6 @@ RETURN
         )     
    )ul 
 GO
---  SELECT * FROM dbo.GetLatLonByIP( '::1' )
 -- select * from dbo.fn_get_fish_bylatlon( 41, -83, 3 )    -- V5K 0A1
 -------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_trial_fish_byzip' AND xtype = 'IF')
@@ -758,52 +735,6 @@ BEGIN
 END
 GO
 ----------------------------------------------------------------------------------------------------------------------------
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_map_latlon_byip' AND xtype = 'TF')
-    DROP FUNCTION dbo.fn_map_latlon_byip
-GO
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetLatLonByIP' AND xtype = 'TF')
-    DROP FUNCTION dbo.GetLatLonByIP
-GO
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetLatLonByIP' AND xtype = 'TF')
-    DROP function dbo.GetLatLonByIP
-GO
--------------------------------------------------------------------------------------------------------
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'IP2Int' AND xtype = 'FN')
-    DROP function dbo.IP2Int
-GO
-CREATE function dbo.IP2Int
-(@ip varchar(15))
-returns bigint
-WITH SCHEMABINDING
-as
-begin
-  return cast(PARSENAME(@ip , 1) as tinyint)
-    +cast(PARSENAME(@ip , 2) as tinyint)*cast(256 as bigint)
-    +cast(PARSENAME(@ip , 3) as tinyint)*cast(65536 as bigint)
-    +cast(PARSENAME(@ip , 4) as tinyint)*cast(16777216 as bigint)
-end
-GO
--------------------------------------------------------------------------------------------------------
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetLatLonByIP' AND xtype = 'TF')
-    DROP function dbo.GetLatLonByIP
-GO
-CREATE FUNCTION dbo.GetLatLonByIP( @ip sysname )
-RETURNS @TBL TABLE (lat float, lon float )
-WITH SCHEMABINDING
-AS
-begin
-  declare @ip4 binary(4)
-  SET @ip4 = CAST( dbo.IP2Int(@ip) AS binary(4) )
-
-  if EXISTS (SELECT TOP 1 1 FROM dbo.GeoIP WHERE ip4 = @ip4)
-      insert into @TBL SELECT latitude, longitude 
-        FROM dbo.GeoIP WHERE ip4 = @ip4
-  ELSE
-    insert into @TBL (lat , lon ) VALUES (41, -80)
-  return
-end         
-GO
--------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'GetLastHourWaterData' AND xtype = 'IF')
     DROP function dbo.GetLastHourWaterData
 GO

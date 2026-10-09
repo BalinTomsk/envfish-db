@@ -2,6 +2,12 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-09: **Dropped `dbo.GeoIP`, `dbo.GetLatLonByIP` and `dbo.IP2Int`; removed the dead `fn_map_latlon_byip`
+  drop guard.** IP geolocation is ip-api.com only (`Models/IpGeolocation.cs`); the frontend's database fallback is
+  removed in the same change (`Forecast/Planning.aspx.cs`). Nothing else referenced these objects, and `GeoIP` was not
+  replicated. **Applied 2026-10-09 to prod (`DB_111487_fish`) and local
+  envionx**, DLL first, with a one-off script (deleted once applied). Full suite: only the 2 known FishCodeLatinJson FAILs (the same 2 fail without this change).
+
 - 2026-10-08: **`fn_map_location_trial(@fishName, @lat, @lon, @country, @state)`: a signed-out visitor's forecast
   map shows their province/state.** Previously it showed every station within 3 degrees of them, which crossed
   borders and ignored the USA/Canada choice. When `@state` is `''`, it falls back to the 3-degree box held to
