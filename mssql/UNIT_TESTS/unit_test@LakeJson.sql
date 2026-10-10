@@ -10,7 +10,7 @@
     dbo.fn_lake_tributary_json     Tributary    (EditTributary.aspx)   all Tributaries rows
     dbo.fn_lake_fishing_json       Fishing      (EditLakeFish.aspx)    lake_fish rows
     dbo.fn_lake_regulation_json    Regulation   (LakeRegulation.aspx)  regulations for this lake
-    dbo.fn_lake_view_json          View         (wfRiverViewer.aspx)   vw_lake + fish + photos
+    dbo.fn_lake_view_json          View         (wfRiverViewer.aspx)   vw_lake + fish + photos + waterfalls + dams
 
   Also covers the write counterparts of the Source/Mouth tabs (docapi RiverController):
     dbo.sp_lake_source_update      PATCH /api/v1/river/source/{guid}   merge-patch, Tributaries side 16
@@ -454,4 +454,33 @@ SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 IF @ok = 1 PRINT 'TEST 18 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: unknown lake id returns NULL for both procs; malformed JSON reports a protected-field error';
 ELSE RAISERROR('TEST 18 FAIL [%dms]: expected NULL for unknown id and a protectedFields error for malformed JSON', 16, -1, @ElapsedMs);
 ROLLBACK TRAN TestLakeJson18
+GO
+-- ---------------------------------------------------------------------------- TEST 19: view carries waterfalls + dams
+BEGIN TRAN TestLakeJson19
+    DECLARE @test_name sysname = N'TestLakeJson19 [fn_lake_view_json] : waterfalls and dams arrays';
+DECLARE @tStart datetime2, @ElapsedMs int; DECLARE @ok int = 0;
+BEGIN TRY  SET NOCOUNT ON; SET @tStart = SYSUTCDATETIME();
+DECLARE @Lake uniqueidentifier = NEWID(), @Bare uniqueidentifier = NEWID();
+INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (@Lake, 2, N'UT View Barriers River'), (@Bare, 2, N'UT View Bare River');
+INSERT INTO dbo.lake_waterfall (lake_waterfall_id, lake_id, lake_waterfall_name, lake_waterfall_type, lat, lon, province, link_method)
+    VALUES (NEWID(), @Lake, N'UT Grand Falls', N'Falls', 48.93, -55.66, 'NL', 'chn_network');
+INSERT INTO dbo.lake_dam (lake_dam_id, lake_id, lake_dam_name, lake_dam_type, lat, lon, province, link_method)
+    VALUES (NEWID(), @Lake, N'UT Dam A', N'Dam', 48.90, -55.70, 'NL', 'chn_polygon'),
+           (NEWID(), @Lake, NULL, NULL, 48.80, -55.80, 'NL', 'chn_network');
+DECLARE @json nvarchar(max) = dbo.fn_lake_view_json(@Lake);
+DECLARE @bareJson nvarchar(max) = dbo.fn_lake_view_json(@Bare);
+IF ISJSON(@json) = 1
+   AND (SELECT COUNT(*) FROM OPENJSON(@json, '$.waterfalls')) = 1
+   AND JSON_VALUE(@json, '$.waterfalls[0].name') = N'UT Grand Falls'
+   AND CAST(JSON_VALUE(@json, '$.waterfalls[0].lat') AS float) = 48.93
+   AND (SELECT COUNT(*) FROM OPENJSON(@json, '$.dams')) = 2
+   AND JSON_VALUE(@json, '$.dams[0].name') = N'UT Dam A'                       -- named first
+   AND JSON_QUERY(@bareJson, '$.waterfalls') = N'[]' AND JSON_QUERY(@bareJson, '$.dams') = N'[]'
+   SET @ok = 1;
+END TRY
+BEGIN CATCH SELECT ERROR_NUMBER() AS ErrorNumber, @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage; END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 19 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: view JSON carries waterfalls and dams';
+ELSE RAISERROR('TEST 19 FAIL [%dms]: fn_lake_view_json must carry waterfalls[] and dams[] (empty when none)', 16, -1, @ElapsedMs);
+ROLLBACK TRAN TestLakeJson19
 GO
