@@ -2,6 +2,14 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-10: **`fn_lake_view_json` carries the water body's `waterfalls` and `dams`** (the two arrays of
+  `dbo.fn_lake_barriers_json`, read once through an `OUTER APPLY`; empty arrays when none). Reaches the site's admin
+  "Save JSON" export (tab `view`), docapi `GET /api/v1/river/description/{guid}` and the MCP tool `get_water_body`
+  with no code change; docapi 1.24.0 adds `GET /river/barriers/{guid}` and the MCP tool `get_water_body_barriers`
+  on the existing `fn_lake_barriers_json`. Test: `unit_test@LakeJson.sql` TEST 19, seen failing first. Full suite:
+  only the 2 known FishCodeLatinJson FAILs. **Applied to production (`DB_111487_fish`) and local envionx 2026-10-10**,
+  verified via MCP (`get_water_body` carries `waterfalls` / `dams`); the one-off script is deleted. Not committed.
+
 - 2026-10-09: **Dropped `dbo.GeoIP`, `dbo.GetLatLonByIP` and `dbo.IP2Int`; removed the dead `fn_map_latlon_byip`
   drop guard.** IP geolocation is ip-api.com only (`Models/IpGeolocation.cs`); the frontend's database fallback is
   removed in the same change (`Forecast/Planning.aspx.cs`). Nothing else referenced these objects, and `GeoIP` was not

@@ -6058,9 +6058,13 @@ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_view_json' AND xtype =
     DROP function dbo.fn_lake_view_json
 GO
 -- fn_lake_view_json : the View tab (Resources/wfRiverViewer.aspx, public read-only) — the composed
--- river-view data: the vw_lake row (source/mouth detail + resolved location) plus the assigned fish
--- and the photo gallery (base64). Anchored on dbo.lake, so vw_lake columns are null for a water body
--- lacking its source/mouth Tributaries placeholders, but the core still exports.
+-- river-view data: the vw_lake row (source/mouth detail + resolved location) plus the assigned fish,
+-- the photo gallery (base64) and the water body's waterfalls and dams (the two arrays of
+-- dbo.fn_lake_barriers_json; empty when none). Anchored on dbo.lake, so vw_lake columns are null for a
+-- water body lacking its source/mouth Tributaries placeholders, but the core still exports.
+-- Callers: fishfind-frontend Editor/HandlerImage.ashx (?lakejson=<guid>&tab=view, the admin "Save JSON"
+-- export); docapi JdbcRiverQueryRepository.description (GET /api/v1/river/description/{guid}, MCP tool
+-- get_water_body).
 CREATE FUNCTION dbo.fn_lake_view_json( @lake_id uniqueidentifier )
 RETURNS NVARCHAR(MAX)
 AS
@@ -6139,9 +6143,12 @@ BEGIN
                 WHERE i.lake_image_ownerid = l.lake_id
                 ORDER BY i.lake_image_stamp
                 FOR JSON PATH, INCLUDE_NULL_VALUES
-            ), N'[]')) AS images
+            ), N'[]')) AS images,
+            JSON_QUERY(b.doc, '$.waterfalls') AS waterfalls,
+            JSON_QUERY(b.doc, '$.dams')       AS dams
         FROM dbo.lake l
         LEFT JOIN dbo.vw_lake v ON v.lake_id = l.lake_id
+        OUTER APPLY (SELECT dbo.fn_lake_barriers_json(l.lake_id) AS doc) b
         WHERE l.lake_id = @lake_id
         FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
     );
