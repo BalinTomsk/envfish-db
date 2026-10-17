@@ -5,6 +5,11 @@ This folder holds the SQL Server schema (`mssql/`) and the MySQL variant (`mysql
 Everything below is about `mssql/` unless stated otherwise — see
 [MySQL (`mysql/`)](#mysql-mysql) near the end of this file for the MySQL-specific workflow.
 
+
+use local host to rundb unit tests
+use server: CTRL, Db: envionx to test data before appling on production
+
+
 ## ⚠️ READ THIS FIRST — non-negotiable
 
 **Read this entire `AGENTS.md` before touching anything in this repo.**
