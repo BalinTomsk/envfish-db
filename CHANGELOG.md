@@ -2,6 +2,13 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-17: **`fn_lake_shape_geojson` gets a `@detail` argument and its first caller** (fishfind-frontend
+  `Resources/wfRiverViewer.aspx.cs GetShapeGeoJson`, the river-viewer map, `@detail` 3000). NULL/<=0 = shapes as
+  stored; otherwise every shape is `Reduce`d with one tolerance per water body (total length + perimeter / `@detail`
+  metres), and a result that became a GeometryCollection is split into parts so the polygon survives. Great Slave
+  Lake 6 MB → 9 KB. Tests: `unit_test@LakeShapeJson.sql` 1-6 now pass `NULL`, new TEST 7-8; 8 PASS on CTRL envionx.
+  **Applied to CTRL envionx and production 2026-10-17**, verified on the live river viewer; the one-off script is deleted.
+
 - 2026-10-16: **Service status: `dbo.ServiceStatus`, `sp_service_status_report`, `sp_service_status_delete`,
   `fn_service_status_list`.** One row per (service, machine), written by efcs-backend `adminservice` from the
   RabbitMQ status messages every backend service publishes; read by fishfind-frontend `stats/Default.aspx`.

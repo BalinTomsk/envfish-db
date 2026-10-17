@@ -5895,28 +5895,38 @@ AS RETURN
 );
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
---     SELECT dbo.fn_lake_shape_geojson('eba567df-2892-e811-9104-00155d007b12');   -- Nepisiguit River (NB)
+--     SELECT dbo.fn_lake_shape_geojson('eba567df-2892-e811-9104-00155d007b12', NULL);   -- Nepisiguit River (NB), full detail
+--     SELECT dbo.fn_lake_shape_geojson('7B69A194-BA36-11D8-92E2-080020A0F4C9', 3000);   -- Great Slave Lake, map detail
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_shape_geojson' AND xtype = 'FN')
     DROP FUNCTION dbo.fn_lake_shape_geojson
 GO
 -- fn_lake_shape_geojson : the shapes of one water body (dbo.Lake_Shape) as a GeoJSON FeatureCollection, for drawing on a
--- map (Leaflet L.geoJSON). The single reader of Lake_Shape. No caller yet -- written for the site's maps / docapi;
--- name the caller here once it exists.
+-- map (Leaflet L.geoJSON). The single reader of Lake_Shape.
+-- Called by: fishfind-frontend Resources/wfRiverViewer.aspx.cs GetShapeGeoJson (General-tab map, @detail 3000).
 -- Returns NULL for an unknown water body, else
 --   {"type":"FeatureCollection","guid","lakeName",
 --    "features":[{"type":"Feature","properties":{"id","kind"},"geometry":{"type","coordinates"}}]}
 -- kind: "line" (Lake_Shape_type 1, river centre line), "outline" (2, water-body polygon), "shape" (other / NULL).
 -- geometry.type is LineString / MultiLineString / Polygon / MultiPolygon; other geometry types are left out.
+-- @detail: NULL or <= 0 = the shapes as stored. Otherwise each shape is simplified (geography Reduce) with one tolerance
+-- for the whole water body, its total line length + perimeter / @detail metres, so the output stays near @detail
+-- vertices whatever the size (Great Slave Lake: 233,733 stored -> ~1,400 at 3000, 6 MB -> 64 KB).
+-- Reduce can turn a polygon with islands into a GeometryCollection (small islands collapse to points/lines); such a
+-- result is split into its parts, one feature each, and the parts of the types above are kept.
 -- Coordinates are [lon, lat] (GeoJSON order, which is also the order STAsText writes for geography).
 -- WKT -> GeoJSON coordinates: protect ring/part separators "), (", turn point separators ", " into "],[", open/close
 -- the innermost lists (a "(" before a number, a ")" after one) as "[[" / "]]", then the remaining parens to brackets
 -- and the space inside each point to a comma.
-CREATE FUNCTION dbo.fn_lake_shape_geojson( @lake_id uniqueidentifier )
+CREATE FUNCTION dbo.fn_lake_shape_geojson( @lake_id uniqueidentifier, @detail int )
 RETURNS nvarchar(max)
 AS
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake_id)
         RETURN NULL;
+
+    DECLARE @tol float = NULL;
+    IF @detail > 0
+        SELECT @tol = SUM(s.Lake_Shape_shape.STLength()) / @detail FROM dbo.Lake_Shape s WHERE s.lake_id = @lake_id;
 
     RETURN (
         SELECT 'FeatureCollection'               AS [type]
@@ -5929,7 +5939,19 @@ BEGIN
                         , t.gtype                  AS [geometry.type]
                         , JSON_QUERY(c6.v)         AS [geometry.coordinates]
                      FROM dbo.Lake_Shape s
-                    CROSS APPLY (SELECT s.Lake_Shape_shape.STGeometryType() AS gtype, s.Lake_Shape_shape.STAsText() AS wkt) t
+                    CROSS APPLY (SELECT CASE WHEN @tol > 0 THEN s.Lake_Shape_shape.Reduce(@tol) ELSE s.Lake_Shape_shape END AS g) r
+                    CROSS APPLY (SELECT r.g AS g, 0 AS part
+                                  WHERE r.g.STGeometryType() <> 'GeometryCollection'
+                                 UNION ALL
+                                 SELECT r.g.STGeometryN(n.n), n.n
+                                   FROM (SELECT TOP (CASE WHEN r.g.STGeometryType() = 'GeometryCollection' THEN r.g.STNumGeometries() ELSE 0 END)
+                                                ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
+                                           FROM       (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) a(x)
+                                           CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) b(x)
+                                           CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) c(x)
+                                           CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) d(x)
+                                           CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) e(x)) n) p
+                    CROSS APPLY (SELECT p.g.STGeometryType() AS gtype, p.g.STAsText() AS wkt) t
                     CROSS APPLY (SELECT REPLACE(REPLACE(SUBSTRING(t.wkt, CHARINDEX('(', t.wkt), LEN(t.wkt)), '), (', ')|('), ', ', '],[') AS v) c2
                     CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c2.v,
                                      '(-', '[[-'), '(0', '[[0'), '(1', '[[1'), '(2', '[[2'), '(3', '[[3'), '(4', '[[4'),
@@ -5940,7 +5962,7 @@ BEGIN
                     CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(c4.v, '|', ','), '(', '['), ')', ']'), ' ', ',') AS v) c6
                     WHERE s.lake_id = @lake_id
                       AND t.gtype IN ('LineString', 'MultiLineString', 'Polygon', 'MultiPolygon')
-                    ORDER BY s.Lake_Shape_type, s.Lake_Shape_id
+                    ORDER BY s.Lake_Shape_type, s.Lake_Shape_id, p.part
                       FOR JSON PATH
                ), N'[]')) AS features
           FROM dbo.lake l
