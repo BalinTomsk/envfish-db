@@ -6780,3 +6780,25 @@ AS
 		)a CROSS APPLY dbo.fn_get_trial_fish_bylatlon( a.lat, a.lon  )
 	)p WHERE code = (CASE WHEN '00000000-0000-0000-0000-000000000000' = @guidUser THEN 1 ELSE 0 END );
 GO
+------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: fishfind-frontend stats/Default.aspx (FishTracker.Stats.ServiceStatusPage). Lists dbo.ServiceStatus
+--   with the live state derived here, not stored: 'dead' when the service said 'stop' or has sent nothing for
+--   @deadAfterSeconds (a crashed or partitioned process just goes quiet), otherwise 'alive'.
+--   upSeconds is the time since the latest process start, for an alive service only (NULL when dead).
+------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_service_status_list' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_service_status_list
+GO
+CREATE FUNCTION dbo.fn_service_status_list( @deadAfterSeconds int )
+RETURNS TABLE
+AS
+RETURN
+    SELECT s.id, s.serviceName, s.machineName, x.state, s.startUtc, s.restartUtc,
+           upSeconds = CASE WHEN x.state = 'alive'
+                            THEN DATEDIFF(second, ISNULL(s.restartUtc, s.startUtc), SYSUTCDATETIME()) END,
+           s.lastSeenUtc, s.lastEvent, s.lastActionUtc, s.lastAction, s.version
+      FROM dbo.ServiceStatus s
+     CROSS APPLY (SELECT state = CASE WHEN s.lastEvent = 'stop'
+                                        OR s.lastSeenUtc < DATEADD(second, -@deadAfterSeconds, SYSUTCDATETIME())
+                                      THEN 'dead' ELSE 'alive' END) x;
+GO

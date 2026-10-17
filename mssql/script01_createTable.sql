@@ -2002,6 +2002,37 @@ GO
 CREATE NONCLUSTERED INDEX IX_CPIR_provider ON CloudProviderIpRange(provider)
 GO
 -------------------------------------------------------------------------------------------------------
+--  Backend service status: one row per (service, machine). Every service publishes start / heartbeat /
+--  stop messages to RabbitMQ (fishfind.servicestatus.events); efcs-backend adminservice consumes them and
+--  writes here through dbo.sp_service_status_report. Read by fishfind-frontend stats/Default.aspx through
+--  dbo.fn_service_status_list, which derives alive/dead from lastSeenUtc (a crashed service stops sending).
+-------------------------------------------------------------------------------------------------------
+CREATE TABLE ServiceStatus
+(
+    id            uniqueidentifier NOT NULL,
+    serviceName   varchar(64)   NOT NULL,           -- 'waterservice', 'docapi', ...
+    machineName   varchar(128)  NOT NULL,           -- host the process runs on, e.g. 'csnode'
+    version       varchar(32)   NULL,
+    startUtc      datetime2(0)  NOT NULL,           -- first process start ever reported for this row
+    restartUtc    datetime2(0)  NULL,               -- latest process start; NULL until the first restart
+    lastSeenUtc   datetime2(0)  NOT NULL,           -- sentUtc of the newest message applied
+    lastEvent     varchar(16)   NOT NULL,           -- 'start' | 'heartbeat' | 'stop'
+    lastActionUtc datetime2(0)  NULL,               -- when the service last processed an item
+    lastAction    nvarchar(256) NULL,               -- what it processed, e.g. 'station 05BH004'
+    updatedUtc    datetime2(0)  NOT NULL
+)
+GO
+ALTER TABLE ServiceStatus ADD CONSTRAINT PK_ServiceStatus PRIMARY KEY CLUSTERED (id)
+GO
+ALTER TABLE ServiceStatus ADD CONSTRAINT DF_SS_id         DEFAULT NEWSEQUENTIALID() FOR id
+GO
+ALTER TABLE ServiceStatus ADD CONSTRAINT DF_SS_updatedUtc DEFAULT SYSUTCDATETIME()  FOR updatedUtc
+GO
+ALTER TABLE ServiceStatus ADD CONSTRAINT CK_SS_lastEvent CHECK (lastEvent IN ('start','heartbeat','stop'))
+GO
+CREATE UNIQUE NONCLUSTERED INDEX UK_ServiceStatus_name ON ServiceStatus(serviceName, machineName)
+GO
+-------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------
 CREATE TABLE USPost
 (

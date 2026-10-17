@@ -2,6 +2,15 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-16: **Service status: `dbo.ServiceStatus`, `sp_service_status_report`, `sp_service_status_delete`,
+  `fn_service_status_list`.** One row per (service, machine), written by efcs-backend `adminservice` from the
+  RabbitMQ status messages every backend service publishes; read by fishfind-frontend `stats/Default.aspx`.
+  `startUtc` is the first start ever reported, `restartUtc` the latest process start; a message older than the
+  row's `lastSeenUtc` is ignored (a late heartbeat never revives a stopped service); alive/dead is derived in
+  `fn_service_status_list(@deadAfterSeconds)` from `lastSeenUtc` and a `stop`, not stored. Tests:
+  `unit_test@ServiceStatus.sql` (10), all PASS; full suite shows only the 2 known FishCodeLatinJson FAILs.
+  **Applied to CTRL envionx and production 2026-10-16** (one-off script, deleted once applied). Not committed.
+
 - 2026-10-10: **`fn_lake_view_json` carries the water body's `waterfalls` and `dams`** (the two arrays of
   `dbo.fn_lake_barriers_json`, read once through an `OUTER APPLY`; empty arrays when none). Reaches the site's admin
   "Save JSON" export (tab `view`), docapi `GET /api/v1/river/description/{guid}` and the MCP tool `get_water_body`
