@@ -5967,3 +5967,88 @@ BEGIN
     select * FROM @tbl
 END
 GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: efcs-backend adminservice ServiceStatusRepository.ReportAsync, once per status message taken off
+--   fishfind.servicestatus.events. Upserts the (serviceName, machineName) row of dbo.ServiceStatus.
+--
+--   @event           'start' | 'heartbeat' | 'stop'
+--   @processStartUtc when the reporting process started; a value later than the row's current start means
+--                    the service restarted, and it becomes restartUtc
+--   @sentUtc         when the service sent the message; a message older than the row's lastSeenUtc arrived
+--                    out of order and is ignored, so a late heartbeat never revives a stopped service
+--   @lastActionUtc / @lastAction  the newest item the service processed; kept only when newer than the row's
+--
+--   Returns one row: applied = 1 when the row changed, 0 when the message was stale.
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'sp_service_status_report' AND type IN ('P'))
+    DROP PROCEDURE dbo.sp_service_status_report
+GO
+CREATE PROCEDURE dbo.sp_service_status_report
+    @serviceName     varchar(64),
+    @machineName     varchar(128),
+    @event           varchar(16),
+    @version         varchar(32),
+    @processStartUtc datetime2(0),
+    @sentUtc         datetime2(0),
+    @lastActionUtc   datetime2(0) = NULL,
+    @lastAction      nvarchar(256) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NULLIF(LTRIM(RTRIM(@serviceName)), '') IS NULL OR NULLIF(LTRIM(RTRIM(@machineName)), '') IS NULL
+       OR @event NOT IN ('start','heartbeat','stop') OR @processStartUtc IS NULL OR @sentUtc IS NULL
+    BEGIN
+        RAISERROR('sp_service_status_report: service, machine, event, processStartUtc and sentUtc are required', 16, 1);
+        RETURN;
+    END
+
+    SET @serviceName = LOWER(LTRIM(RTRIM(@serviceName)));
+    SET @machineName = LOWER(LTRIM(RTRIM(@machineName)));
+    IF @lastActionUtc IS NULL SET @lastAction = NULL;
+
+    UPDATE dbo.ServiceStatus
+       SET version       = ISNULL(@version, version),
+           restartUtc    = CASE WHEN @processStartUtc > ISNULL(restartUtc, startUtc) THEN @processStartUtc ELSE restartUtc END,
+           lastSeenUtc   = @sentUtc,
+           lastEvent     = @event,
+           lastAction    = CASE WHEN @lastActionUtc >= ISNULL(lastActionUtc, '0001-01-01') THEN @lastAction ELSE lastAction END,
+           lastActionUtc = CASE WHEN @lastActionUtc >= ISNULL(lastActionUtc, '0001-01-01') THEN @lastActionUtc ELSE lastActionUtc END,
+           updatedUtc    = SYSUTCDATETIME()
+     WHERE serviceName = @serviceName AND machineName = @machineName
+       AND lastSeenUtc <= @sentUtc;
+
+    IF @@ROWCOUNT > 0
+    BEGIN
+        SELECT applied = 1;
+        RETURN;
+    END
+
+    IF EXISTS (SELECT 1 FROM dbo.ServiceStatus WHERE serviceName = @serviceName AND machineName = @machineName)
+    BEGIN
+        SELECT applied = 0;  -- stale: the row already holds a newer message
+        RETURN;
+    END
+
+    INSERT INTO dbo.ServiceStatus (serviceName, machineName, version, startUtc, restartUtc, lastSeenUtc, lastEvent, lastActionUtc, lastAction)
+    VALUES (@serviceName, @machineName, @version, @processStartUtc, NULL, @sentUtc, @event, @lastActionUtc, @lastAction);
+    SELECT applied = 1;
+END
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: fishfind-frontend stats/Default.aspx (the Remove button). Drops the row of a service that was retired
+--   or moved to another machine, so it stops showing as dead. A still-running service re-creates its row with
+--   its next heartbeat.
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'sp_service_status_delete' AND type IN ('P'))
+    DROP PROCEDURE dbo.sp_service_status_delete
+GO
+CREATE PROCEDURE dbo.sp_service_status_delete
+    @id uniqueidentifier
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM dbo.ServiceStatus WHERE id = @id;
+    SELECT deleted = @@ROWCOUNT;
+END
+GO
