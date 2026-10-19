@@ -1,8 +1,8 @@
 SET QUOTED_IDENTIFIER ON
 GO
 /*
-  Unit tests for dbo.fn_lake_shape_geojson(@lake_id): the shapes of one water body (dbo.Lake_Shape) as a GeoJSON
-  FeatureCollection, for drawing on a map. No caller yet; planned for the site's Leaflet maps / docapi.
+  Unit tests for dbo.fn_lake_shape_geojson(@lake_id, @detail): the shapes of one water body (dbo.Lake_Shape) as a
+  GeoJSON FeatureCollection, for drawing on a map (Resources/wfRiverViewer.aspx.cs GetShapeGeoJson).
 
   TEST 1 - unknown water body                         -> NULL
   TEST 2 - water body without shapes                  -> FeatureCollection with an empty features array
@@ -10,6 +10,8 @@ GO
   TEST 4 - a lake outline with an island (type 2)     -> Polygon with 2 rings, kind "outline"
   TEST 5 - MultiLineString + MultiPolygon             -> right GeoJSON types and nesting depth
   TEST 6 - shapes of another water body               -> not included
+  TEST 7 - @detail on a 401-point zigzag line         -> simplified to a few points, ends kept
+  TEST 8 - @detail collapses an island to a point     -> GeometryCollection split, the Polygon kept
 */
 PRINT 'Unit tests for fn_lake_shape_geojson (map shapes of a water body)';
 GO
@@ -23,7 +25,7 @@ DECLARE @json nvarchar(max) = N'not set';
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
-SET @json = dbo.fn_lake_shape_geojson(NEWID());
+SET @json = dbo.fn_lake_shape_geojson(NEWID(), NULL);
 
 END TRY
 BEGIN CATCH
@@ -51,7 +53,7 @@ BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 1, N'Utlsj Empty Lake');
-SET @json = dbo.fn_lake_shape_geojson(@L);
+SET @json = dbo.fn_lake_shape_geojson(@L, NULL);
 
 END TRY
 BEGIN CATCH
@@ -86,7 +88,7 @@ INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 2, N'Utlsj River'
 INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
 SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
 FROM (VALUES (@L, geography::STGeomFromText('LINESTRING(-66.5 46.1, -66.4 46.2, -66.3 46.25)', 4326), 1)) v(id, g, t);
-SET @json = dbo.fn_lake_shape_geojson(@L);
+SET @json = dbo.fn_lake_shape_geojson(@L, NULL);
 
 END TRY
 BEGIN CATCH
@@ -124,7 +126,7 @@ INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 1, N'Utlsj Island
 INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
 SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
 FROM (VALUES (@L, geography::STGeomFromText('POLYGON((-66 46, -65.9 46, -65.9 46.1, -66 46.1, -66 46), (-65.97 46.03, -65.97 46.06, -65.93 46.06, -65.93 46.03, -65.97 46.03))', 4326), 2)) v(id, g, t);
-SET @json = dbo.fn_lake_shape_geojson(@L);
+SET @json = dbo.fn_lake_shape_geojson(@L, NULL);
 
 END TRY
 BEGIN CATCH
@@ -161,7 +163,7 @@ INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Sha
 SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
 FROM (VALUES (@L, geography::STGeomFromText('MULTILINESTRING((-66.5 46.1, -66.4 46.2), (-66.3 46.3, -66.2 46.4, -66.1 46.45))', 4326), 1),
              (@L, geography::STGeomFromText('MULTIPOLYGON(((-66 46, -65.9 46, -65.9 46.1, -66 46.1, -66 46)), ((-65 47, -64.9 47, -64.9 47.1, -65 47.1, -65 47)))', 4326), 2)) v(id, g, t);
-SET @json = dbo.fn_lake_shape_geojson(@L);
+SET @json = dbo.fn_lake_shape_geojson(@L, NULL);
 
 END TRY
 BEGIN CATCH
@@ -199,7 +201,7 @@ INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Sha
 SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
 FROM (VALUES (@L, geography::STGeomFromText('LINESTRING(-66.5 46.1, -66.4 46.2)', 4326), 1),
              (@Other, geography::STGeomFromText('LINESTRING(-67.5 46.1, -67.4 46.2)', 4326), 1)) v(id, g, t);
-SET @json = dbo.fn_lake_shape_geojson(@L);
+SET @json = dbo.fn_lake_shape_geojson(@L, NULL);
 
 END TRY
 BEGIN CATCH
@@ -215,4 +217,78 @@ ELSE
     print 'TEST 6 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: own shapes only'
 
 ROLLBACK TRAN LSJ_Test6
+GO
+-- ============================================================================
+-- TEST 7: @detail simplifies the shapes
+-- ============================================================================
+BEGIN TRAN LSJ_Test7
+    declare @test_name sysname = N'LSJ_Test7 [fn_lake_shape_geojson] : @detail simplifies'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(max), @full nvarchar(max);
+DECLARE @L uniqueidentifier = NEWID();
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- a straight 40 km line along 46N with a ~10 m zigzag, 401 vertices
+DECLARE @wkt nvarchar(max) = (SELECT 'LINESTRING(' + STRING_AGG(CAST(CONCAT(CONVERT(varchar(20), CAST(-66.5 + n * 0.00125 AS decimal(10,5))), ' ',
+                                 CONVERT(varchar(20), CAST(46 + (n % 2) * 0.0001 AS decimal(10,5)))) AS nvarchar(max)), ', ') WITHIN GROUP (ORDER BY n) + ')'
+                                FROM (SELECT TOP (401) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS n FROM sys.all_objects) x);
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 2, N'Utlsj Zigzag River');
+INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
+SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
+FROM (VALUES (@L, geography::STGeomFromText(@wkt, 4326), 1)) v(id, g, t);
+SET @full = dbo.fn_lake_shape_geojson(@L, NULL);
+SET @json = dbo.fn_lake_shape_geojson(@L, 10);
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF   (SELECT COUNT(*) FROM OPENJSON(@full, '$.features[0].geometry.coordinates')) <> 401
+  OR JSON_VALUE(@json, '$.features[0].geometry.type') <> 'LineString'
+  OR (SELECT COUNT(*) FROM OPENJSON(@json, '$.features[0].geometry.coordinates')) > 20
+  OR ABS(TRY_CONVERT(float, JSON_VALUE(@json, '$.features[0].geometry.coordinates[0][0]')) + 66.5) > 0.0001
+   RAISERROR ('TEST 7 FAIL [%dms]: @detail 10 must cut 401 points to a few, ends kept', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: @detail 10 -> 401 points cut to a few'
+
+ROLLBACK TRAN LSJ_Test7
+GO
+-- ============================================================================
+-- TEST 8: a reduced polygon whose island collapsed (GeometryCollection) is split, the Polygon kept
+-- ============================================================================
+BEGIN TRAN LSJ_Test8
+    declare @test_name sysname = N'LSJ_Test8 [fn_lake_shape_geojson] : collection split'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(max);
+DECLARE @L uniqueidentifier = NEWID();
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- a ~100 km lake and a ~10 m island far off it: Reduce turns the island into a POINT
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 1, N'Utlsj Islet Lake');
+INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
+SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
+FROM (VALUES (@L, geography::STGeomFromText('MULTIPOLYGON(((-66 46, -65 46, -65 47, -66 47, -66 46)), ((-64 46, -63.9999 46, -63.9999 46.0001, -64 46.0001, -64 46)))', 4326), 2)) v(id, g, t);
+SET @json = dbo.fn_lake_shape_geojson(@L, 10);
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF   ISJSON(@json) IS NULL OR ISJSON(@json) <> 1
+  OR (SELECT COUNT(*) FROM OPENJSON(@json, '$.features')) <> 1
+  OR JSON_VALUE(@json, '$.features[0].geometry.type') <> 'Polygon'
+  OR JSON_VALUE(@json, '$.features[0].properties.kind') <> 'outline'
+   RAISERROR ('TEST 8 FAIL [%dms]: the collapsed island must go, the lake Polygon stay', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 8 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: collection split, lake Polygon kept'
+
+ROLLBACK TRAN LSJ_Test8
 GO

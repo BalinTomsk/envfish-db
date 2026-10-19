@@ -2,6 +2,13 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-17: **`fn_lake_shape_geojson` gets a `@detail` argument and its first caller** (fishfind-frontend
+  `Resources/wfRiverViewer.aspx.cs GetShapeGeoJson`, the river-viewer map, `@detail` 3000). NULL/<=0 = shapes as
+  stored; otherwise every shape is `Reduce`d with one tolerance per water body (total length + perimeter / `@detail`
+  metres), and a result that became a GeometryCollection is split into parts so the polygon survives. Great Slave
+  Lake 6 MB → 9 KB. Tests: `unit_test@LakeShapeJson.sql` 1-6 now pass `NULL`, new TEST 7-8; 8 PASS on CTRL envionx.
+  **Applied to CTRL envionx and production 2026-10-17**, verified on the live river viewer; the one-off script is deleted.
+
 - 2026-10-17: **`dbo.sp_lake_link_assign @lake_id, @side, @point_id`** — assigns another water body as a river's/creek's
   source (side 16) or mouth (side 32), for docapi 1.25.0 `PATCH /api/v1/river/source|mouth/{guid}/point`. Mirrors the
   `Editor/EditLakeLink.aspx` "Point" save: re-points the `Tributaries` row, runs `sp_assign_border`, and
