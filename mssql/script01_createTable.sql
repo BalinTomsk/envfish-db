@@ -1042,6 +1042,7 @@ CREATE TABLE Tributaries
     side            int NOT NULL,                      -- 1 - link, 2 - lake Throw, 4 - Inflow Lake, 8 - outflow Lake, 16 - source, 32 - mouth, 64 - joined
 	coast           varchar(1),                       -- L - left, R- right
     Tributaries_stamp DATETIME2,
+    road            nvarchar(128),                     -- nearest named road to a mouth (side 32), NRN / TIGER, <= 10 km
     CONSTRAINT PK_Tributaries PRIMARY KEY CLUSTERED (id)
 );
 GO

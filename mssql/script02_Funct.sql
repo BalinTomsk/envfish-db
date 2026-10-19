@@ -2604,15 +2604,13 @@ GO
 -- Matching is exact (not a substring) and case-insensitive by collation, so the echo may differ
 -- in case from the stored value.
 --
--- ONE ELEMENT PER MATCH, not per requested code. dbo.fish_code's primary key is
--- (fish_id, country, state, code), so a single code may legitimately name more than one species:
--- on the live database BC 'RB' is both Rock Bass and Rainbow Trout, 'LS' both Lake Sturgeon and
--- Largescale Sucker, 'WS' both White Sturgeon and White Sucker. Returning TOP 1 would hide half
--- of that behind an arbitrary pick, so an ambiguous code comes back as several elements sharing
--- the code. A code that matches nothing still yields exactly one element, with latin null, so it
+-- ONE ELEMENT PER MATCH, not per requested code. Since 2026-08-18 UK_fish_code (state, code) allows
+-- one species per code per province (BC 'RB' was both Rock Bass and Rainbow Trout before), so a
+-- code normally yields one element; the join is still not TOP 1, so if codes are ever shared
+-- across countries in one state each match comes back. A code that matches nothing still yields exactly one element, with latin null, so it
 -- never silently disappears from the caller's list.
 --
--- dbo.fish_code.code is char(16) and therefore BLANK-PADDED: every value is 16 bytes wide.
+-- dbo.fish_code.code is char(8) (char(16) on CTRL/prod) and therefore BLANK-PADDED to that width.
 -- It is RTRIMmed on the way out, or the document would carry "BURB            ".
 --
 -- SELECT dbo.fn_fish_code_latin_json('CA', 'AB', N'["BURB","WALL","nope"]')
@@ -6082,7 +6080,8 @@ GO
 -- fn_lake_view_json : the View tab (Resources/wfRiverViewer.aspx, public read-only) — the composed
 -- river-view data: the vw_lake row (source/mouth detail + resolved location) plus the assigned fish,
 -- the photo gallery (base64) and the water body's waterfalls and dams (the two arrays of
--- dbo.fn_lake_barriers_json; empty when none). Anchored on dbo.lake, so vw_lake columns are null for a
+-- dbo.fn_lake_barriers_json; empty when none). mouthRoad is the nearest named road to the mouth
+-- (dbo.Tributaries.road of the side-32 row, NRN / TIGER within 10 km; null when none). Anchored on dbo.lake, so vw_lake columns are null for a
 -- water body lacking its source/mouth Tributaries placeholders, but the core still exports.
 -- Callers: fishfind-frontend Editor/HandlerImage.ashx (?lakejson=<guid>&tab=view, the admin "Save JSON"
 -- export); docapi JdbcRiverQueryRepository.description (GET /api/v1/river/description/{guid}, MCP tool
@@ -6131,6 +6130,7 @@ BEGIN
             v.mouth_state                   AS mouthState,
             v.mouth_country                 AS mouthCountry,
             v.mouth_location                AS mouthLocation,
+            mt.road                         AS mouthRoad,
             v.lat                           AS lat,
             v.lon                           AS lon,
             v.city                          AS city,
@@ -6170,6 +6170,7 @@ BEGIN
             JSON_QUERY(b.doc, '$.dams')       AS dams
         FROM dbo.lake l
         LEFT JOIN dbo.vw_lake v ON v.lake_id = l.lake_id
+        LEFT JOIN dbo.Tributaries mt ON mt.Main_Lake_id = l.lake_id AND mt.side = 32
         OUTER APPLY (SELECT dbo.fn_lake_barriers_json(l.lake_id) AS doc) b
         WHERE l.lake_id = @lake_id
         FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES

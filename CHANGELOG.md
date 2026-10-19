@@ -2,6 +2,20 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-19: **`unit_test@FishCodeLatinJson.sql` TEST 2 and 5 brought in line with 2026-08-18's `fish_code` change**
+  (4fa1532: `code` char(16) → char(8), `UK_fish_code (state, code)`). Both had failed since then. TEST 2 now expects the
+  column's own width (CTRL/prod still have char(16); the narrowing never reached them); TEST 5 asserts the index refuses
+  a second species under one code (Msg 2601) instead of expecting both back. `fn_fish_code_latin_json` itself is
+  unchanged; its header comment and the docapi/cproxy docs no longer say BC `RB` names two species (CTRL: Rainbow Trout
+  only). The whole suite is clean again.
+
+- 2026-10-19: **`mouthRoad` in `dbo.fn_lake_view_json`** (one field added, no signature change): `Tributaries.road` (the column, added on CTRL/prod by the
+  2026-10-19 roads fill, is now in `script01_createTable.sql`) of
+  the side-32 row, joined on `UK_Tributaries_Mouth`, `null` when none. Callers: docapi `GET /api/v1/river/description/{guid}`,
+  MCP `get_water_body`, Editor `HandlerImage.ashx?tab=view`. `vw_lake` is unchanged. Tests:
+  `unit_test@LakeMouthRoad.sql` (2, failing first). **Applied to CTRL envionx** (Wilton Creek → "Big Creek Road");
+  **applied to prod 2026-10-19** (verified via MCP; one-off script deleted).
+
 - 2026-10-19: **Dropped `IDX_TM_WaterData` and `IDX_PH_WaterData`** (index-only, no object signature change). Nothing
   filters `dbo.WaterData` by `temperature` or `ph`: the comment credited `spTotalUpdateProbability`, which reads
   `CurrentWaterState`; every reader goes by `mli` (`UK_WaterData_MLI_stamp`) or ages out by `stamp`
