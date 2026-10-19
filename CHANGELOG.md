@@ -34,8 +34,8 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   New filtered index `IDX_Tributaries_region (State, Country) INCLUDE (Main_Lake_id) WHERE side IN (16, 32)`: a state
   reads ~60 pages instead of ~7k. Tests: `unit_test@RiverSearchRank.sql` (10, all failed first) +
   `unit_test@RiverSearch.sql` moved to the new signature and envelope. **Applied to production 2026-10-19** with
-  docapi 1.26.0 (rollback: docapi 1.25.0 + the 6-argument function from the previous commit); CTRL envionx has the
-  index only, the function there is still the 6-argument one. The one-off script is deleted.
+  docapi 1.26.0 (rollback: docapi 1.25.0 + the 6-argument function from the previous commit); CTRL envionx got the
+  11-argument function from main the same day (index already there). The one-off script is deleted.
 
 - 2026-10-18: **`CGNDB` / `CGNDM` widened `char(5)` -> `varchar(10)`** on `Lake`, `lake_waterfall` and `lake_dam`
   (and `sp_MergeLakes`' key table), so a US water body can carry its GNIS feature id (Maine import, first US state).
