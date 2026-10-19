@@ -9,6 +9,20 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   per insert. Suite unchanged (the known FishCodeLatinJson FAILs). **Applied to CTRL envionx and production** (2026-10-19;
   prod keeps PK 1231 MB, UK 280 MB, IDX_WaterData_dt 227 MB); the one-off script is deleted.
 
+- 2026-10-18: **`dbo.fn_river_search_json` ranks** (docapi 1.26.0 `GET /api/v1/river/search` + MCP
+  `search_water_bodies`). New parameters `@country, @state, @loc_type, @sort, @offset` (11 in all, `@limit` last),
+  incompatible both ways with the 6-argument version: country/state match the source (Tributaries side 16) OR mouth
+  (32) and are searches on their own; `@loc_type` only filters; `@sort` `name` | `length_desc` | `length_asc` |
+  `area_desc` | `depth_desc` (measure sorts drop NULL and 0; unknown -> `name`); returns `{total, limit, offset, items}`
+  with `length`, `lengthM`, `area`, `depth` per item. `lake.length` is whole km, so equal km are ordered by the
+  `Lake_Shape` type-1 line in metres, measured only for rows that can reach the page and with `FORCESEEK` (otherwise a
+  Canada-wide ranking scanned all of Lake_Shape, ~5 s on CTRL; now ~0.3 s). The name-only path is unchanged in cost.
+  New filtered index `IDX_Tributaries_region (State, Country) INCLUDE (Main_Lake_id) WHERE side IN (16, 32)`: a state
+  reads ~60 pages instead of ~7k. Tests: `unit_test@RiverSearchRank.sql` (10, all failed first) +
+  `unit_test@RiverSearch.sql` moved to the new signature and envelope. **Applied to production 2026-10-19** with
+  docapi 1.26.0 (rollback: docapi 1.25.0 + the 6-argument function from the previous commit); CTRL envionx has the
+  index only, the function there is still the 6-argument one. The one-off script is deleted.
+
 - 2026-10-18: **`CGNDB` / `CGNDM` widened `char(5)` -> `varchar(10)`** on `Lake`, `lake_waterfall` and `lake_dam`
   (and `sp_MergeLakes`' key table), so a US water body can carry its GNIS feature id (Maine import, first US state).
   Applied to CTRL envionx 2026-10-17 and production 2026-10-18; this brings the schema script in line.
