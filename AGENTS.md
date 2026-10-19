@@ -31,6 +31,13 @@ and [Structure unit tests](#structure-unit-tests) for how, and `mssql\UNIT_TESTS
   `scriptNN` files by `mssql/generate_db_script_ffi2.cmd` and is the image consumed by
   the database unit tests. Any manual edit to `ffi2.sql` is overwritten on the next build.
  
+## What a water body is — read `docs/water-bodies.md`
+
+[`docs/water-bodies.md`](docs/water-bodies.md) describes the water-body model: one `dbo.lake` row for every type,
+the `locType` bitmask, the three kinds of id (GUID / CGNDB-or-GNIS / `state_id`), source and mouth in
+`dbo.Tributaries` (where country and state live), shapes, units, fish evidence rows and known data oddities. Read it
+before changing any water-body object, and update it when the model changes.
+
 ## Important
 - The database is distributed, meaning there are several nodes connected through peer-to-peer replication
 - In most cases, the primary key is a GUID v7.
