@@ -1833,26 +1833,42 @@ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_river_search_json' AND xtyp
     DROP FUNCTION dbo.fn_river_search_json
 GO
 
--- Water-body lookup by any combination of: part of a name, either GUID, either CGNDB code, the
--- provincial/state id, or the MLI of a linked WaterStation. Called by docapi's RiverController
--- (GET /api/v1/river/search) and McpToolCatalog (search_water_bodies) via JdbcRiverQueryRepository.search.
+-- Water-body lookup and ranking by any combination of: part of a name, either GUID, either CGNDB code,
+-- the provincial/state id, the MLI of a linked WaterStation, a country/state and a type. Called by docapi's
+-- RiverController (GET /api/v1/river/search) and McpToolCatalog (search_water_bodies) via
+-- JdbcRiverQueryRepository.search.
 --   @name     - substring of lake_name, alt_name or french_name (case follows the column collation)
 --   @guid     - matches lake_id OR secondary_id
 --   @cgndb    - matches CGNDB OR CGNDM
 --   @state_id - matches state_id exactly (the province's/state's own id, e.g. a BC GNIS id)
 --   @mli      - WaterStation.MLI; matches the lake that station is linked to (WaterStation.lakeId)
--- Every supplied criterion must match (AND); NULL/blank criteria are ignored. All NULL -> '[]'.
--- The most selective supplied key drives the lookup (guid, then CGNDB, then state id, then MLI, then
--- name) so only a name-only search scans the table. Order: exact name, then name prefix, then the rest,
--- by lake_name.
--- @limit is clamped to 1..200 (NULL -> 50). Returns a JSON array, '[]' when nothing matches:
---   [{ "lakeId","secondaryId","lakeName","altName","frenchName","locType","CGNDB","CGNDM","stateId",
---      "country","state","mli":["02HC024", ...] }]
--- select dbo.fn_river_search_json(N'Humber', NULL, NULL, NULL, NULL, 10)
--- select dbo.fn_river_search_json(NULL, NULL, 'FEFUL', NULL, NULL, NULL)
--- select dbo.fn_river_search_json(NULL, NULL, NULL, '39325', NULL, NULL)
+--   @country/@state - ISO-2 codes, case-insensitive. A water body matches when its source (Tributaries
+--              side 16) OR its mouth (side 32) is there -- the rule of fn_fish_water_bodies_json, without
+--              its "a CGNDB code means Canada" clause (US water bodies carry GNIS ids in CGNDB).
+--   @loc_type - locType bitmask (1 lake, 2 river, 4 stream, 64 creek, ...); shares any bit. NULL/0 = any.
+--              A filter only: a type alone is not a search.
+--   @sort     - 'name' (default): exact name, then name prefix, then the rest, by lake_name.
+--              'length_desc' / 'length_asc' (lake.length, km), 'area_desc' (lake.surface, km2),
+--              'depth_desc' (lake.depth, m): these EXCLUDE water bodies whose value is NULL or 0. lake.length
+--              is whole km, so equal km are ordered by the river centre line (Lake_Shape type 1, metres;
+--              a water body without one comes last among its equals). Unknown -> 'name'.
+--   @offset   - rows skipped (NULL / < 0 -> 0); @limit is clamped to 1..200 (NULL -> 50).
+-- Every supplied criterion must match (AND); NULL/blank criteria are ignored. At least one of name, guid,
+-- cgndb, state_id, mli, country, state is needed, else total 0. The most selective supplied key drives the
+-- lookup (guid, then CGNDB, then state id, then MLI, then name, then region), so only a name-only search
+-- scans dbo.lake and a region-only one reads the Tributaries index IDX_Tributaries_region.
+-- Returns {"total":n,"limit":l,"offset":o,"items":[{ "lakeId","secondaryId","lakeName","altName","frenchName",
+--          "locType","CGNDB","CGNDM","stateId","country","state","length","lengthM","area","depth",
+--          "mli":["02HC024", ...] }]}; total counts every match. length km, lengthM the centre line in metres
+--          (NULL when there is none), area km2, depth m. country/state reported source-first (vw_lake).
+-- select dbo.fn_river_search_json(N'Humber', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 10)
+-- select dbo.fn_river_search_json(NULL, NULL, 'FEFUL', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+-- select dbo.fn_river_search_json(NULL, NULL, NULL, '39325', NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+-- select dbo.fn_river_search_json(NULL, NULL, NULL, NULL, NULL, 'US', 'ME', 2, 'length_desc', 0, 5)
 CREATE FUNCTION dbo.fn_river_search_json( @name nvarchar(64), @guid uniqueidentifier, @cgndb varchar(16)
-                                        , @state_id varchar(32), @mli varchar(64), @limit int )
+                                        , @state_id varchar(32), @mli varchar(64)
+                                        , @country varchar(8), @state varchar(8), @loc_type int
+                                        , @sort varchar(16), @offset int, @limit int )
 RETURNS nvarchar(max)
 AS
 BEGIN
@@ -1860,10 +1876,13 @@ BEGIN
     SET @cgndb    = NULLIF(UPPER(LTRIM(RTRIM(@cgndb))), '');
     SET @state_id = NULLIF(LTRIM(RTRIM(@state_id)), '');
     SET @mli      = NULLIF(LTRIM(RTRIM(@mli)), '');
-    SET @limit = CASE WHEN @limit IS NULL THEN 50 WHEN @limit < 1 THEN 1 WHEN @limit > 200 THEN 200 ELSE @limit END;
-
-    IF @name IS NULL AND @guid IS NULL AND @cgndb IS NULL AND @state_id IS NULL AND @mli IS NULL
-        RETURN N'[]';
+    SET @country  = NULLIF(UPPER(LTRIM(RTRIM(@country))), '');
+    SET @state    = NULLIF(UPPER(LTRIM(RTRIM(@state))), '');
+    SET @loc_type = NULLIF(@loc_type, 0);
+    SET @sort     = LOWER(LTRIM(RTRIM(@sort)));
+    SET @sort     = CASE WHEN @sort IN ('length_desc', 'length_asc', 'area_desc', 'depth_desc') THEN @sort ELSE 'name' END;
+    SET @offset   = CASE WHEN @offset IS NULL OR @offset < 0 THEN 0 ELSE @offset END;
+    SET @limit    = CASE WHEN @limit IS NULL THEN 50 WHEN @limit < 1 THEN 1 WHEN @limit > 200 THEN 200 ELSE @limit END;
 
     DECLARE @cand TABLE ( lake_id uniqueidentifier NOT NULL PRIMARY KEY );
 
@@ -1879,17 +1898,41 @@ BEGIN
         INSERT INTO @cand SELECT lake_id FROM dbo.lake WHERE state_id = @state_id;
     ELSE IF @mli IS NOT NULL
         INSERT INTO @cand SELECT DISTINCT lakeId FROM dbo.WaterStation WHERE MLI = @mli AND lakeId IS NOT NULL;
-    ELSE
+    ELSE IF @name IS NOT NULL
         INSERT INTO @cand
-            SELECT TOP (@limit) lake_id FROM dbo.lake
-             WHERE CHARINDEX(@name, lake_name) > 0 OR CHARINDEX(@name, alt_name) > 0 OR CHARINDEX(@name, french_name) > 0
-             ORDER BY CASE WHEN lake_name = @name THEN 0 WHEN LEFT(lake_name, LEN(@name)) = @name THEN 1 ELSE 2 END, lake_name;
+            SELECT lake_id FROM dbo.lake
+             WHERE CHARINDEX(@name, lake_name) > 0 OR CHARINDEX(@name, alt_name) > 0 OR CHARINDEX(@name, french_name) > 0;
+    ELSE IF @state IS NOT NULL
+        -- Region only: the type and the measure filter here already, so a ranking stores only the rows that can
+        -- rank. A state seeks IDX_Tributaries_region; the country (when given too) is re-checked below.
+        INSERT INTO @cand
+            SELECT DISTINCT t.Main_Lake_id
+              FROM dbo.Tributaries t JOIN dbo.lake l ON l.lake_id = t.Main_Lake_id
+             WHERE t.side IN (16, 32) AND t.State = @state
+               AND (@loc_type IS NULL OR (l.locType & @loc_type) <> 0)
+               AND (@sort = 'name' OR CASE @sort WHEN 'area_desc' THEN l.surface WHEN 'depth_desc' THEN l.depth
+                                                 ELSE l.length END > 0);
+    ELSE IF @country IS NOT NULL
+        INSERT INTO @cand
+            SELECT DISTINCT t.Main_Lake_id
+              FROM dbo.Tributaries t JOIN dbo.lake l ON l.lake_id = t.Main_Lake_id
+             WHERE t.side IN (16, 32) AND t.Country = @country
+               AND (@loc_type IS NULL OR (l.locType & @loc_type) <> 0)
+               AND (@sort = 'name' OR CASE @sort WHEN 'area_desc' THEN l.surface WHEN 'depth_desc' THEN l.depth
+                                                 ELSE l.length END > 0);
 
-    DECLARE @hit TABLE ( lake_id uniqueidentifier NOT NULL PRIMARY KEY, irank int NOT NULL, lake_name nvarchar(64) NOT NULL );
+    -- k1/k2: the sort keys, ascending. 'name': k1 = name rank. Measure sorts: k1 = the measure (negated for
+    -- *_desc), k2 = the centre line in metres (length sorts only) breaking equal whole km.
+    DECLARE @hit TABLE ( lake_id uniqueidentifier NOT NULL PRIMARY KEY, k1 float NOT NULL, k2 float NOT NULL
+                       , lake_name nvarchar(64) NOT NULL );
 
     INSERT INTO @hit
-        SELECT TOP (@limit) l.lake_id
-             , CASE WHEN @name IS NULL OR l.lake_name = @name THEN 0 WHEN LEFT(l.lake_name, LEN(@name)) = @name THEN 1 ELSE 2 END
+        SELECT l.lake_id
+             , CASE @sort WHEN 'length_desc' THEN -l.length WHEN 'length_asc' THEN l.length
+                          WHEN 'area_desc'   THEN -l.surface WHEN 'depth_desc' THEN -l.depth
+                          ELSE CASE WHEN @name IS NULL OR l.lake_name = @name THEN 0
+                                    WHEN LEFT(l.lake_name, LEN(@name)) = @name THEN 1 ELSE 2 END END
+             , 0
              , l.lake_name
           FROM @cand c JOIN dbo.lake l ON l.lake_id = c.lake_id
          WHERE (@guid  IS NULL OR @guid IN (l.lake_id, l.secondary_id))
@@ -1897,28 +1940,62 @@ BEGIN
            AND (@state_id IS NULL OR l.state_id = @state_id)
            AND (@mli   IS NULL OR EXISTS (SELECT 1 FROM dbo.WaterStation w WHERE w.MLI = @mli AND w.lakeId = l.lake_id))
            AND (@name  IS NULL OR CHARINDEX(@name, l.lake_name) > 0 OR CHARINDEX(@name, l.alt_name) > 0 OR CHARINDEX(@name, l.french_name) > 0)
-         ORDER BY 2, l.lake_name;
+           AND (@country IS NULL OR EXISTS (SELECT 1 FROM dbo.Tributaries t
+                                             WHERE t.Main_Lake_id = l.lake_id AND t.side IN (16, 32) AND t.Country = @country))
+           AND (@state   IS NULL OR EXISTS (SELECT 1 FROM dbo.Tributaries t
+                                             WHERE t.Main_Lake_id = l.lake_id AND t.side IN (16, 32) AND t.State = @state))
+           AND (@loc_type IS NULL OR (l.locType & @loc_type) <> 0)
+           AND (@sort = 'name' OR CASE @sort WHEN 'area_desc' THEN l.surface WHEN 'depth_desc' THEN l.depth
+                                             ELSE l.length END > 0);
 
-    RETURN ISNULL((
-        SELECT l.lake_id         AS lakeId
-             , l.secondary_id    AS secondaryId
-             , l.lake_name       AS lakeName
-             , l.alt_name        AS altName
-             , l.french_name     AS frenchName
-             , l.locType         AS locType
-             , RTRIM(l.CGNDB)    AS [CGNDB]
-             , RTRIM(l.CGNDM)    AS [CGNDM]
-             , l.state_id        AS stateId
-             , v.country         AS country
-             , v.state           AS state
-             , JSON_QUERY(ISNULL((SELECT N'[' + STRING_AGG(N'"' + STRING_ESCAPE(w.MLI, 'json') + N'"', N',') WITHIN GROUP (ORDER BY w.MLI) + N']'
-                                    FROM dbo.WaterStation w WHERE w.lakeId = l.lake_id), N'[]')) AS mli
+    -- Equal whole km: the centre line decides. A separate step, so name/area/depth searches never read Lake_Shape,
+    -- and only for rows that can reach the page: k1 at or before the k1 of its last row (@edge). A country-wide
+    -- ranking has thousands of rows; measuring every line would cost seconds. FORCESEEK: without it the plan
+    -- scans all of Lake_Shape (~50k pages + LOBs, ~5 s on CTRL) whatever @edge leaves.
+    IF @sort IN ('length_desc', 'length_asc')
+    BEGIN
+        DECLARE @edge float = (SELECT k1 FROM @hit ORDER BY k1 OFFSET @offset + @limit - 1 ROWS FETCH NEXT 1 ROWS ONLY);
+        UPDATE h SET k2 = CASE WHEN @sort = 'length_desc' THEN ISNULL(-ln.m, 0) ELSE ISNULL(ln.m, 1e15) END
           FROM @hit h
-          JOIN dbo.lake l ON l.lake_id = h.lake_id
-          OUTER APPLY (SELECT TOP 1 vl.country, vl.state FROM dbo.vw_lake vl WHERE vl.lake_id = h.lake_id) v
-         ORDER BY h.irank, h.lake_name
-        FOR JSON PATH, INCLUDE_NULL_VALUES
-    ), N'[]');
+          CROSS APPLY ( SELECT MAX(s.Lake_Shape_shape.STLength()) AS m FROM dbo.Lake_Shape s WITH (FORCESEEK)
+                         WHERE s.lake_id = h.lake_id AND s.Lake_Shape_type = 1 ) ln
+         WHERE @edge IS NULL OR h.k1 <= @edge;
+    END
+
+    RETURN (
+        SELECT (SELECT COUNT(*) FROM @hit) AS total
+             , @limit  AS [limit]
+             , @offset AS [offset]
+             , JSON_QUERY(ISNULL((
+                   SELECT l.lake_id         AS lakeId
+                        , l.secondary_id    AS secondaryId
+                        , l.lake_name       AS lakeName
+                        , l.alt_name        AS altName
+                        , l.french_name     AS frenchName
+                        , l.locType         AS locType
+                        , RTRIM(l.CGNDB)    AS [CGNDB]
+                        , RTRIM(l.CGNDM)    AS [CGNDM]
+                        , l.state_id        AS stateId
+                        , v.country         AS country
+                        , v.state           AS state
+                        , l.length          AS length
+                        , CAST(ROUND(ln.m, 0) AS int) AS lengthM
+                        , l.surface         AS area
+                        , l.depth           AS depth
+                        , JSON_QUERY(ISNULL((SELECT N'[' + STRING_AGG(N'"' + STRING_ESCAPE(w.MLI, 'json') + N'"', N',') WITHIN GROUP (ORDER BY w.MLI) + N']'
+                                               FROM dbo.WaterStation w WHERE w.lakeId = l.lake_id), N'[]')) AS mli
+                     FROM ( SELECT h.lake_id, h.k1, h.k2, h.lake_name FROM @hit h
+                             ORDER BY h.k1, h.k2, h.lake_name, h.lake_id
+                            OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY ) p
+                     JOIN dbo.lake l ON l.lake_id = p.lake_id
+                     OUTER APPLY (SELECT MAX(s.Lake_Shape_shape.STLength()) AS m FROM dbo.Lake_Shape s
+                                   WHERE s.lake_id = p.lake_id AND s.Lake_Shape_type = 1) ln
+                     OUTER APPLY (SELECT TOP 1 vl.country, vl.state FROM dbo.vw_lake vl WHERE vl.lake_id = p.lake_id) v
+                    ORDER BY p.k1, p.k2, p.lake_name, p.lake_id
+                   FOR JSON PATH, INCLUDE_NULL_VALUES
+               ), N'[]')) AS items
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    );
 END
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2604,15 +2681,13 @@ GO
 -- Matching is exact (not a substring) and case-insensitive by collation, so the echo may differ
 -- in case from the stored value.
 --
--- ONE ELEMENT PER MATCH, not per requested code. dbo.fish_code's primary key is
--- (fish_id, country, state, code), so a single code may legitimately name more than one species:
--- on the live database BC 'RB' is both Rock Bass and Rainbow Trout, 'LS' both Lake Sturgeon and
--- Largescale Sucker, 'WS' both White Sturgeon and White Sucker. Returning TOP 1 would hide half
--- of that behind an arbitrary pick, so an ambiguous code comes back as several elements sharing
--- the code. A code that matches nothing still yields exactly one element, with latin null, so it
+-- ONE ELEMENT PER MATCH, not per requested code. Since 2026-08-18 UK_fish_code (state, code) allows
+-- one species per code per province (BC 'RB' was both Rock Bass and Rainbow Trout before), so a
+-- code normally yields one element; the join is still not TOP 1, so if codes are ever shared
+-- across countries in one state each match comes back. A code that matches nothing still yields exactly one element, with latin null, so it
 -- never silently disappears from the caller's list.
 --
--- dbo.fish_code.code is char(16) and therefore BLANK-PADDED: every value is 16 bytes wide.
+-- dbo.fish_code.code is char(8) (char(16) on CTRL/prod) and therefore BLANK-PADDED to that width.
 -- It is RTRIMmed on the way out, or the document would carry "BURB            ".
 --
 -- SELECT dbo.fn_fish_code_latin_json('CA', 'AB', N'["BURB","WALL","nope"]')
@@ -6082,7 +6157,8 @@ GO
 -- fn_lake_view_json : the View tab (Resources/wfRiverViewer.aspx, public read-only) — the composed
 -- river-view data: the vw_lake row (source/mouth detail + resolved location) plus the assigned fish,
 -- the photo gallery (base64) and the water body's waterfalls and dams (the two arrays of
--- dbo.fn_lake_barriers_json; empty when none). Anchored on dbo.lake, so vw_lake columns are null for a
+-- dbo.fn_lake_barriers_json; empty when none). mouthRoad is the nearest named road to the mouth
+-- (dbo.Tributaries.road of the side-32 row, NRN / TIGER within 10 km; null when none). Anchored on dbo.lake, so vw_lake columns are null for a
 -- water body lacking its source/mouth Tributaries placeholders, but the core still exports.
 -- Callers: fishfind-frontend Editor/HandlerImage.ashx (?lakejson=<guid>&tab=view, the admin "Save JSON"
 -- export); docapi JdbcRiverQueryRepository.description (GET /api/v1/river/description/{guid}, MCP tool
@@ -6131,6 +6207,7 @@ BEGIN
             v.mouth_state                   AS mouthState,
             v.mouth_country                 AS mouthCountry,
             v.mouth_location                AS mouthLocation,
+            mt.road                         AS mouthRoad,
             v.lat                           AS lat,
             v.lon                           AS lon,
             v.city                          AS city,
@@ -6170,6 +6247,7 @@ BEGIN
             JSON_QUERY(b.doc, '$.dams')       AS dams
         FROM dbo.lake l
         LEFT JOIN dbo.vw_lake v ON v.lake_id = l.lake_id
+        LEFT JOIN dbo.Tributaries mt ON mt.Main_Lake_id = l.lake_id AND mt.side = 32
         OUTER APPLY (SELECT dbo.fn_lake_barriers_json(l.lake_id) AS doc) b
         WHERE l.lake_id = @lake_id
         FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES

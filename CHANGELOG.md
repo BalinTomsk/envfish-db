@@ -2,12 +2,40 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-19: **`unit_test@FishCodeLatinJson.sql` TEST 2 and 5 brought in line with 2026-08-18's `fish_code` change**
+  (4fa1532: `code` char(16) → char(8), `UK_fish_code (state, code)`). Both had failed since then. TEST 2 now expects the
+  column's own width (CTRL/prod still have char(16); the narrowing never reached them); TEST 5 asserts the index refuses
+  a second species under one code (Msg 2601) instead of expecting both back. `fn_fish_code_latin_json` itself is
+  unchanged; its header comment and the docapi/cproxy docs no longer say BC `RB` names two species (CTRL: Rainbow Trout
+  only). The whole suite is clean again.
+
+- 2026-10-19: **`mouthRoad` in `dbo.fn_lake_view_json`** (one field added, no signature change): `Tributaries.road` (the column, added on CTRL/prod by the
+  2026-10-19 roads fill, is now in `script01_createTable.sql`) of
+  the side-32 row, joined on `UK_Tributaries_Mouth`, `null` when none. Callers: docapi `GET /api/v1/river/description/{guid}`,
+  MCP `get_water_body`, Editor `HandlerImage.ashx?tab=view`. `vw_lake` is unchanged. Tests:
+  `unit_test@LakeMouthRoad.sql` (2, failing first). **Applied to CTRL envionx** (Wilton Creek → "Big Creek Road");
+  **applied to prod 2026-10-19** (verified via MCP; one-off script deleted).
+
 - 2026-10-19: **Dropped `IDX_TM_WaterData` and `IDX_PH_WaterData`** (index-only, no object signature change). Nothing
   filters `dbo.WaterData` by `temperature` or `ph`: the comment credited `spTotalUpdateProbability`, which reads
   `CurrentWaterState`; every reader goes by `mli` (`UK_WaterData_MLI_stamp`) or ages out by `stamp`
   (`IDX_WaterData_dt`, `sp_clean_old_water_data`), both kept. Saves ~465 MB on CTRL (8.86M rows) and two index writes
   per insert. Suite unchanged (the known FishCodeLatinJson FAILs). **Applied to CTRL envionx and production** (2026-10-19;
   prod keeps PK 1231 MB, UK 280 MB, IDX_WaterData_dt 227 MB); the one-off script is deleted.
+
+- 2026-10-18: **`dbo.fn_river_search_json` ranks** (docapi 1.26.0 `GET /api/v1/river/search` + MCP
+  `search_water_bodies`). New parameters `@country, @state, @loc_type, @sort, @offset` (11 in all, `@limit` last),
+  incompatible both ways with the 6-argument version: country/state match the source (Tributaries side 16) OR mouth
+  (32) and are searches on their own; `@loc_type` only filters; `@sort` `name` | `length_desc` | `length_asc` |
+  `area_desc` | `depth_desc` (measure sorts drop NULL and 0; unknown -> `name`); returns `{total, limit, offset, items}`
+  with `length`, `lengthM`, `area`, `depth` per item. `lake.length` is whole km, so equal km are ordered by the
+  `Lake_Shape` type-1 line in metres, measured only for rows that can reach the page and with `FORCESEEK` (otherwise a
+  Canada-wide ranking scanned all of Lake_Shape, ~5 s on CTRL; now ~0.3 s). The name-only path is unchanged in cost.
+  New filtered index `IDX_Tributaries_region (State, Country) INCLUDE (Main_Lake_id) WHERE side IN (16, 32)`: a state
+  reads ~60 pages instead of ~7k. Tests: `unit_test@RiverSearchRank.sql` (10, all failed first) +
+  `unit_test@RiverSearch.sql` moved to the new signature and envelope. **Applied to production 2026-10-19** with
+  docapi 1.26.0 (rollback: docapi 1.25.0 + the 6-argument function from the previous commit); CTRL envionx has the
+  index only, the function there is still the 6-argument one. The one-off script is deleted.
 
 - 2026-10-18: **`CGNDB` / `CGNDM` widened `char(5)` -> `varchar(10)`** on `Lake`, `lake_waterfall` and `lake_dam`
   (and `sp_MergeLakes`' key table), so a US water body can carry its GNIS feature id (Maine import, first US state).

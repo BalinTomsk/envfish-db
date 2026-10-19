@@ -1,11 +1,13 @@
 SET QUOTED_IDENTIFIER ON
 GO
 /*
-  Unit tests for dbo.fn_river_search_json(@name, @guid, @cgndb, @state_id, @mli, @limit):
+  Unit tests for dbo.fn_river_search_json(@name, @guid, @cgndb, @state_id, @mli, @country, @state, @loc_type,
+                          @sort, @offset, @limit):
     water-body lookup by part of a name, either GUID (lake_id / secondary_id), either CGNDB code
     (CGNDB / CGNDM), the provincial/state id (state_id) or a linked WaterStation MLI; every
-    supplied criterion must match. Served by
-    docapi's RiverController (GET /api/v1/river/search) via JdbcRiverQueryRepository.
+    supplied criterion must match. Returns {total, limit, offset, items}. Served by docapi's
+    RiverController (GET /api/v1/river/search) and MCP search_water_bodies via
+    JdbcRiverQueryRepository.search. Region, type, sort, paging: unit_test@RiverSearchRank.sql.
 
   Fixture notes: names carry the unique token 'utrsq' so seed data never matches; CGNDB is char(5).
 
@@ -34,7 +36,7 @@ SET @tStart = SYSUTCDATETIME();
 DECLARE @L uniqueidentifier = NEWID();
 INSERT INTO dbo.lake (lake_id, locType, lake_name, CGNDB, CGNDM, state_id) VALUES (@L, 2, N'Utrsq One River', 'RSQAA', 'RSQAB', 'RSQ-1');
 
-SET @json = dbo.fn_river_search_json(N'rsq one', NULL, NULL, NULL, NULL, NULL);
+SET @json = dbo.fn_river_search_json(N'rsq one', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
 END TRY
 BEGIN CATCH
@@ -43,12 +45,12 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF   (SELECT COUNT(*) FROM OPENJSON(@json)) <> 1
-  OR JSON_VALUE(@json, '$[0].lakeName') <> N'Utrsq One River'
-  OR JSON_VALUE(@json, '$[0].CGNDB')    <> 'RSQAA'
-  OR JSON_VALUE(@json, '$[0].CGNDM')    <> 'RSQAB'
-  OR JSON_VALUE(@json, '$[0].stateId')  <> 'RSQ-1'
-  OR JSON_VALUE(@json, '$[0].locType')  <> '2'
+IF   (SELECT COUNT(*) FROM OPENJSON(@json, '$.items')) <> 1
+  OR JSON_VALUE(@json, '$.items[0].lakeName') <> N'Utrsq One River'
+  OR JSON_VALUE(@json, '$.items[0].CGNDB')    <> 'RSQAA'
+  OR JSON_VALUE(@json, '$.items[0].CGNDM')    <> 'RSQAB'
+  OR JSON_VALUE(@json, '$.items[0].stateId')  <> 'RSQ-1'
+  OR JSON_VALUE(@json, '$.items[0].locType')  <> '2'
    RAISERROR ('TEST 1 FAIL [%dms]: name part must find the one lake', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 1 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: part of name found the lake'
@@ -68,7 +70,7 @@ SET @tStart = SYSUTCDATETIME();
 
 INSERT INTO dbo.lake (lake_id, locType, lake_name, secondary_id) VALUES (@L, 2, N'Utrsq Two River', @S);
 
-SET @json = dbo.fn_river_search_json(NULL, @S, NULL, NULL, NULL, NULL);
+SET @json = dbo.fn_river_search_json(NULL, @S, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
 END TRY
 BEGIN CATCH
@@ -77,9 +79,9 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF   (SELECT COUNT(*) FROM OPENJSON(@json)) <> 1
-  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$[0].lakeId'))      <> @L
-  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$[0].secondaryId')) <> @S
+IF   (SELECT COUNT(*) FROM OPENJSON(@json, '$.items')) <> 1
+  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$.items[0].lakeId'))      <> @L
+  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$.items[0].secondaryId')) <> @S
    RAISERROR ('TEST 2 FAIL [%dms]: secondary guid must find the lake', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 2 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: secondary guid found the lake'
@@ -99,7 +101,7 @@ SET @tStart = SYSUTCDATETIME();
 
 INSERT INTO dbo.lake (lake_id, locType, lake_name, CGNDB, CGNDM) VALUES (@L, 2, N'Utrsq Three River', 'RSQCA', 'RSQCB');
 
-SET @json = dbo.fn_river_search_json(NULL, NULL, 'rsqcb', NULL, NULL, NULL);
+SET @json = dbo.fn_river_search_json(NULL, NULL, 'rsqcb', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
 END TRY
 BEGIN CATCH
@@ -108,8 +110,8 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF   (SELECT COUNT(*) FROM OPENJSON(@json)) <> 1
-  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$[0].lakeId')) <> @L
+IF   (SELECT COUNT(*) FROM OPENJSON(@json, '$.items')) <> 1
+  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$.items[0].lakeId')) <> @L
    RAISERROR ('TEST 3 FAIL [%dms]: CGNDM code must find the lake', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 3 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: CGNDM code found the lake'
@@ -132,7 +134,7 @@ INSERT INTO dbo.WaterStation (MLI, lat, lon, country, locDesc, locType, locName,
 VALUES ('UT_RSQ_M1', 45.1, -75.1, 'CA', N'ut rsq station 1', 2, N'UT RSQ 1', N'', 991001, @L, N'Utrsq Four River', 1),
        ('UT_RSQ_M2', 45.2, -75.2, 'CA', N'ut rsq station 2', 2, N'UT RSQ 2', N'', 991002, @L, N'Utrsq Four River', 1);
 
-SET @json = dbo.fn_river_search_json(NULL, NULL, NULL, NULL, 'UT_RSQ_M2', NULL);
+SET @json = dbo.fn_river_search_json(NULL, NULL, NULL, NULL, 'UT_RSQ_M2', NULL, NULL, NULL, NULL, NULL, NULL);
 
 END TRY
 BEGIN CATCH
@@ -141,10 +143,10 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF   (SELECT COUNT(*) FROM OPENJSON(@json)) <> 1
-  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$[0].lakeId')) <> @L
-  OR JSON_VALUE(@json, '$[0].mli[0]') <> 'UT_RSQ_M1'
-  OR JSON_VALUE(@json, '$[0].mli[1]') <> 'UT_RSQ_M2'
+IF   (SELECT COUNT(*) FROM OPENJSON(@json, '$.items')) <> 1
+  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$.items[0].lakeId')) <> @L
+  OR JSON_VALUE(@json, '$.items[0].mli[0]') <> 'UT_RSQ_M1'
+  OR JSON_VALUE(@json, '$.items[0].mli[1]') <> 'UT_RSQ_M2'
    RAISERROR ('TEST 4 FAIL [%dms]: MLI must find the lake with both stations', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: MLI found the lake and its stations'
@@ -164,7 +166,7 @@ SET @tStart = SYSUTCDATETIME();
 INSERT INTO dbo.lake (lake_id, locType, lake_name, CGNDB) VALUES (NEWID(), 2, N'Utrsq Five River', 'RSQEA');
 INSERT INTO dbo.lake (lake_id, locType, lake_name, CGNDB) VALUES (NEWID(), 2, N'Other Five River', 'RSQEB');
 
-SET @json = dbo.fn_river_search_json(N'utrsq five', NULL, 'RSQEB', NULL, NULL, NULL);
+SET @json = dbo.fn_river_search_json(N'utrsq five', NULL, 'RSQEB', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
 END TRY
 BEGIN CATCH
@@ -173,7 +175,7 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF @json IS NULL OR @json <> N'[]'
+IF ISNULL(JSON_VALUE(@json, '$.total'), '') <> '0' OR (SELECT COUNT(*) FROM OPENJSON(@json, '$.items')) <> 0
    RAISERROR ('TEST 5 FAIL [%dms]: name and CGNDB of different lakes must match nothing', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: criteria are ANDed'
@@ -190,7 +192,7 @@ DECLARE @json nvarchar(max);
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
-SET @json = dbo.fn_river_search_json(N'  ', NULL, '', NULL, NULL, 10);
+SET @json = dbo.fn_river_search_json(N'  ', NULL, '', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 10);
 
 END TRY
 BEGIN CATCH
@@ -199,7 +201,7 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF @json IS NULL OR @json <> N'[]'
+IF ISNULL(JSON_VALUE(@json, '$.total'), '') <> '0' OR (SELECT COUNT(*) FROM OPENJSON(@json, '$.items')) <> 0
    RAISERROR ('TEST 6 FAIL [%dms]: blank criteria must return []', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 6 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: blank criteria return []'
@@ -220,7 +222,7 @@ INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (NEWID(), 2, N'Aaa Utr
 INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (NEWID(), 2, N'Utrsqseven River');
 INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (NEWID(), 2, N'Utrsqseven');
 
-SET @json = dbo.fn_river_search_json(N'Utrsqseven', NULL, NULL, NULL, NULL, NULL);
+SET @json = dbo.fn_river_search_json(N'Utrsqseven', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
 END TRY
 BEGIN CATCH
@@ -229,9 +231,9 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF   JSON_VALUE(@json, '$[0].lakeName') <> N'Utrsqseven'
-  OR JSON_VALUE(@json, '$[1].lakeName') <> N'Utrsqseven River'
-  OR JSON_VALUE(@json, '$[2].lakeName') <> N'Aaa Utrsqseven Creek'
+IF   JSON_VALUE(@json, '$.items[0].lakeName') <> N'Utrsqseven'
+  OR JSON_VALUE(@json, '$.items[1].lakeName') <> N'Utrsqseven River'
+  OR JSON_VALUE(@json, '$.items[2].lakeName') <> N'Aaa Utrsqseven Creek'
    RAISERROR ('TEST 7 FAIL [%dms]: expected exact, prefix, substring order', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: exact, prefix, substring order'
@@ -252,7 +254,7 @@ SET @tStart = SYSUTCDATETIME();
 INSERT INTO dbo.lake (lake_id, locType, lake_name, state_id) VALUES (@L, 1, N'Utrsq Eight Lake', '99887766');
 INSERT INTO dbo.lake (lake_id, locType, lake_name, state_id) VALUES (NEWID(), 1, N'Utrsq Eight Other Lake', '99887767');
 
-SET @json = dbo.fn_river_search_json(NULL, NULL, NULL, N' 99887766 ', NULL, NULL);
+SET @json = dbo.fn_river_search_json(NULL, NULL, NULL, N' 99887766 ', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
 END TRY
 BEGIN CATCH
@@ -261,9 +263,9 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF   (SELECT COUNT(*) FROM OPENJSON(@json)) <> 1
-  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$[0].lakeId')) <> @L
-  OR JSON_VALUE(@json, '$[0].stateId') <> '99887766'
+IF   (SELECT COUNT(*) FROM OPENJSON(@json, '$.items')) <> 1
+  OR TRY_CONVERT(uniqueidentifier, JSON_VALUE(@json, '$.items[0].lakeId')) <> @L
+  OR JSON_VALUE(@json, '$.items[0].stateId') <> '99887766'
    RAISERROR ('TEST 8 FAIL [%dms]: state id must find the one lake', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 8 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: state id found the lake'
@@ -283,7 +285,7 @@ SET @tStart = SYSUTCDATETIME();
 INSERT INTO dbo.lake (lake_id, locType, lake_name, state_id) VALUES (NEWID(), 1, N'Utrsq Nine Lake', '99887768');
 INSERT INTO dbo.lake (lake_id, locType, lake_name)           VALUES (NEWID(), 1, N'Utrsq Nine Other Lake');
 
-SET @json = dbo.fn_river_search_json(N'Utrsq Nine Other', NULL, NULL, '99887768', NULL, NULL);
+SET @json = dbo.fn_river_search_json(N'Utrsq Nine Other', NULL, NULL, '99887768', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
 END TRY
 BEGIN CATCH
@@ -292,7 +294,7 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF @json IS NULL OR @json <> N'[]'
+IF ISNULL(JSON_VALUE(@json, '$.total'), '') <> '0' OR (SELECT COUNT(*) FROM OPENJSON(@json, '$.items')) <> 0
    RAISERROR ('TEST 9 FAIL [%dms]: state id and another name must return []', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 9 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: state id and another name return []'

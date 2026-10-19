@@ -1042,6 +1042,7 @@ CREATE TABLE Tributaries
     side            int NOT NULL,                      -- 1 - link, 2 - lake Throw, 4 - Inflow Lake, 8 - outflow Lake, 16 - source, 32 - mouth, 64 - joined
 	coast           varchar(1),                       -- L - left, R- right
     Tributaries_stamp DATETIME2,
+    road            nvarchar(128),                     -- nearest named road to a mouth (side 32), NRN / TIGER, <= 10 km
     CONSTRAINT PK_Tributaries PRIMARY KEY CLUSTERED (id)
 );
 GO
@@ -1060,6 +1061,10 @@ GO
 CREATE NONCLUSTERED INDEX IDX_Tributaries_XY ON dbo.Tributaries (lat, lon) INCLUDE (Lake_id, main_lake_id);
 GO
 CREATE INDEX IDX_Tributaries_ML ON Tributaries(side) INCLUDE (main_lake_id, lake_id, lat, lon, country, state, county, city, location, district, zone, municipality, region);
+GO
+-- water bodies by the state/country of their source or mouth: dbo.fn_river_search_json's region-only lookup
+-- (docapi search_water_bodies "longest river in Maine"); a state reads ~60 pages instead of scanning ~7k
+CREATE NONCLUSTERED INDEX IDX_Tributaries_region ON Tributaries(State, Country) INCLUDE (Main_Lake_id) WHERE side IN (16, 32);
 GO
 -- update t set t.location = l.location from lake l join Tributaries t on l.lake_id=t.lake_id and t.Main_Lake_id=l.lake_id and side=16
 ALTER TABLE Tributaries ADD CONSTRAINT FK_Tributaries_lake FOREIGN KEY(Main_Lake_id) REFERENCES lake( Lake_id );

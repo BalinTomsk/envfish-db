@@ -21,10 +21,10 @@ GO
   rolled back at the end of its own GO batch - database state fully restored.
 
   TEST 1 - codes resolve to latin names, in the requested order, code echoed
-  TEST 2 - the stored char(16) padding never reaches the document
+  TEST 2 - the stored char padding never reaches the document
   TEST 3 - an unmatched code keeps its slot with latin null (1:1 with the request preserved)
   TEST 4 - the province scopes the lookup: the same code in another province is not returned
-  TEST 5 - an ambiguous code yields one element PER match, not an arbitrary single winner
+  TEST 5 - UK_fish_code: a code names one species per province; a second one is refused
   TEST 6 - @codes NULL publishes the whole province, ordered by code
   TEST 7 - @country NULL means any country; a wrong country matches nothing
   TEST 8 - guards: missing state, non-array @codes, blank element, empty array -> '[]', never NULL
@@ -71,8 +71,9 @@ ROLLBACK TRAN Test01FishCodeBasic
 GO
 
 -- ===================================================================================
--- TEST 2: char(16) padding. The stored value is 16 bytes wide; the document must not
---         carry the trailing blanks, and a caller must not have to trim them.
+-- TEST 2: char padding. The stored value is the column's full width (char(8) in the source
+--         scripts, still char(16) on CTRL/prod); the document must not carry the trailing
+--         blanks, and a caller must not have to trim them.
 -- ===================================================================================
 BEGIN TRAN Test02FishCodePadding
     DECLARE @test_name sysname = N'Test02FishCodePadding [fn_fish_code_latin_json] : char(16) padding trimmed'
@@ -85,7 +86,7 @@ DECLARE @f uniqueidentifier = NEWID();
 INSERT INTO dbo.fish (fish_id, fish_name, fish_latin) VALUES (@f, 'UT FCJ Pad', 'Ut fcj pad');
 INSERT INTO dbo.fish_code (fish_id, country, state, code) VALUES (@f, 'CA', 'ZZ', 'UTPAD');
 
-SELECT @stored = DATALENGTH(code) FROM dbo.fish_code WHERE fish_id = @f;   -- expect 16
+SELECT @stored = DATALENGTH(code) FROM dbo.fish_code WHERE fish_id = @f;   -- expect the column width
 
 SET @byList = dbo.fn_fish_code_latin_json('CA', 'ZZ', N'["UTPAD"]');
 SET @byAll  = dbo.fn_fish_code_latin_json('CA', 'ZZ', NULL);
@@ -100,8 +101,8 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF @stored = 16 AND @cList = N'UTPAD' AND @cAll = N'UTPAD'
-    PRINT 'TEST 2 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: the 16-byte stored code emerged trimmed in both modes';
+IF @stored = COL_LENGTH('dbo.fish_code', 'code') AND @stored > LEN(N'UTPAD') AND @cList = N'UTPAD' AND @cAll = N'UTPAD'
+    PRINT 'TEST 2 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: the padded stored code emerged trimmed in both modes';
 ELSE
     RAISERROR ('TEST 2 FAIL [%dms]: stored bytes=%d list code=[%s] all code=[%s]', 16, -1, @ElapsedMs, @stored, @cList, @cAll);
 
@@ -189,15 +190,14 @@ ROLLBACK TRAN Test04FishCodeProvinceScope
 GO
 
 -- ===================================================================================
--- TEST 5: an ambiguous code. dbo.fish_code's key is (fish_id, country, state, code), so
---         one code may legitimately name several species -- on the live database BC 'RB'
---         is both Rock Bass and Rainbow Trout. Returning TOP 1 would hide half the answer
---         behind an arbitrary pick, so every match is returned.
+-- TEST 5: one species per code per province. UK_fish_code (state, code), added 2026-08-18,
+--         refuses a second species under a code the province already uses (BC 'RB' used to
+--         be both Rock Bass and Rainbow Trout); the lookup then returns the one species.
 -- ===================================================================================
-BEGIN TRAN Test05FishCodeAmbiguous
-    DECLARE @test_name sysname = N'Test05FishCodeAmbiguous [fn_fish_code_latin_json] : ambiguous code returns every match'
+BEGIN TRAN Test05FishCodeUnique
+    DECLARE @test_name sysname = N'Test05FishCodeUnique [fn_fish_code_latin_json] : one species per code'
 DECLARE @tStart datetime2, @ElapsedMs int;
-DECLARE @json nvarchar(MAX), @n int, @latins nvarchar(400), @codes nvarchar(400);
+DECLARE @json nvarchar(MAX), @n int, @latin nvarchar(400), @err int = 0;
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
@@ -205,15 +205,17 @@ DECLARE @r1 uniqueidentifier = NEWID(), @r2 uniqueidentifier = NEWID();
 INSERT INTO dbo.fish (fish_id, fish_name, fish_latin) VALUES
   (@r1, 'UT FCJ Rock Bass',     'Ut fcj ambloplites'),
   (@r2, 'UT FCJ Rainbow Trout', 'Ut fcj oncorhynchus');
-INSERT INTO dbo.fish_code (fish_id, country, state, code) VALUES
-  (@r1, 'CA', 'ZZ', 'UTRB'), (@r2, 'CA', 'ZZ', 'UTRB');
+INSERT INTO dbo.fish_code (fish_id, country, state, code) VALUES (@r1, 'CA', 'ZZ', 'UTRB');
+BEGIN TRY
+    INSERT INTO dbo.fish_code (fish_id, country, state, code) VALUES (@r2, 'CA', 'ZZ', 'UTRB');
+END TRY
+BEGIN CATCH
+    SET @err = ERROR_NUMBER();   -- 2601: UK_fish_code
+END CATCH
 
 SET @json = dbo.fn_fish_code_latin_json('CA', 'ZZ', N'["UTRB"]');
-
 SELECT @n = COUNT(*) FROM OPENJSON(@json);
-SELECT @latins = STRING_AGG(CAST(JSON_VALUE(value, '$.latin') AS nvarchar(MAX)), ',')
-                   WITHIN GROUP (ORDER BY JSON_VALUE(value, '$.latin')) FROM OPENJSON(@json);
-SELECT @codes  = STRING_AGG(CAST(JSON_VALUE(value, '$.code') AS nvarchar(MAX)), ',') FROM OPENJSON(@json);
+SET @latin = JSON_VALUE(@json, '$[0].latin');
 
 END TRY
 BEGIN CATCH
@@ -222,12 +224,12 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
-IF @n = 2 AND @latins = N'Ut fcj ambloplites,Ut fcj oncorhynchus' AND @codes = N'UTRB,UTRB'
-    PRINT 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: an ambiguous code returned both species instead of an arbitrary one';
+IF @err = 2601 AND @n = 1 AND @latin = N'Ut fcj ambloplites'
+    PRINT 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: a second species under one code is refused';
 ELSE
-    RAISERROR ('TEST 5 FAIL [%dms]: n=%d latins=[%s] codes=[%s]', 16, -1, @ElapsedMs, @n, @latins, @codes);
+    RAISERROR ('TEST 5 FAIL [%dms]: err=%d n=%d latin=[%s]', 16, -1, @ElapsedMs, @err, @n, @latin);
 
-ROLLBACK TRAN Test05FishCodeAmbiguous
+ROLLBACK TRAN Test05FishCodeUnique
 GO
 
 -- ===================================================================================
