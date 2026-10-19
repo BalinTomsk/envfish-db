@@ -9,6 +9,14 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   Lake 6 MB → 9 KB. Tests: `unit_test@LakeShapeJson.sql` 1-6 now pass `NULL`, new TEST 7-8; 8 PASS on CTRL envionx.
   **Applied to CTRL envionx and production 2026-10-17**, verified on the live river viewer; the one-off script is deleted.
 
+- 2026-10-17: **`dbo.sp_lake_link_assign @lake_id, @side, @point_id`** — assigns another water body as a river's/creek's
+  source (side 16) or mouth (side 32), for docapi 1.25.0 `PATCH /api/v1/river/source|mouth/{guid}/point`. Mirrors the
+  `Editor/EditLakeLink.aspx` "Point" save: re-points the `Tributaries` row, runs `sp_assign_border`, and
+  `TR_UPD_Tributaries` sets `lake.source`/`lake.mouth`; a water body with no placeholder row gets one first. Errors
+  (`invalidSide`, `pointNotFound`, `selfPoint`) are returned inline and nothing is written; an unknown lake returns NULL.
+  Tests: `unit_test@LakeLinkAssign.sql` (8), all FAILED first, all PASS; full suite shows only the 2 known
+  FishCodeLatinJson FAILs. **Not applied to CTRL envionx or production.**
+
 - 2026-10-16: **Service status: `dbo.ServiceStatus`, `sp_service_status_report`, `sp_service_status_delete`,
   `fn_service_status_list`.** One row per (service, machine), written by efcs-backend `adminservice` from the
   RabbitMQ status messages every backend service publishes; read by fishfind-frontend `stats/Default.aspx`.

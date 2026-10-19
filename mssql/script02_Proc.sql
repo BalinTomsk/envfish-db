@@ -2385,6 +2385,89 @@ BEGIN CATCH
 END CATCH
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: docapi RiverController (PATCH /api/v1/river/source/{guid}/point and
+--   PATCH /api/v1/river/mouth/{guid}/point) via JdbcRiverLinkCommandRepository.assignPoint -- the
+--   "Point" relink of Editor/EditLakeLink.aspx?Type=16|32 (ButtonSubmit_Click, t_id <> old_point_id):
+--   re-points the single dbo.Tributaries row Main_Lake_id = @lake_id AND side = @side to @point_id,
+--   then runs dbo.sp_assign_border exactly as the page does. TR_UPD_Tributaries copies the new point
+--   into lake.source / lake.mouth.
+--
+--   A legacy water body with no side-16/32 placeholder row (TR_Lake_INS creates one for every new lake)
+--   gets one first, so the UPDATE path -- and its trigger -- is the same for every caller.
+--
+--   Results (one row, one column):
+--     NULL                                                    -- no water body @lake_id (-> 404)
+--     {lakeId, side, pointId, pointName, previousPointId, previousPointName, changed, error}
+--   error is NULL on success, else invalidSide (side not 16/32) / pointNotFound / selfPoint, and
+--   nothing was written.
+--
+--     EXEC dbo.sp_lake_link_assign 'a55caadf-2892-e811-9104-00155d007b12', 32,
+--          '0b7f3c1e-5d55-e811-80f0-00155d007b12';
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_lake_link_assign' AND type = 'P')
+    DROP PROCEDURE dbo.sp_lake_link_assign
+GO
+CREATE PROCEDURE dbo.sp_lake_link_assign
+    @lake_id  uniqueidentifier,
+    @side     int,
+    @point_id uniqueidentifier
+WITH EXEC AS CALLER
+AS
+SET NOCOUNT ON
+BEGIN TRY
+    IF NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake_id)
+    BEGIN
+        SELECT CAST(NULL AS nvarchar(max)) AS results;
+        RETURN;
+    END
+
+    DECLARE @error varchar(32) =
+        CASE WHEN @side IS NULL OR @side NOT IN (16, 32)                           THEN 'invalidSide'
+             WHEN @point_id IS NULL
+               OR NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @point_id)    THEN 'pointNotFound'
+             WHEN @point_id = @lake_id                                             THEN 'selfPoint'
+        END;
+
+    DECLARE @previous uniqueidentifier, @changed bit = 0;
+
+    IF @error IS NULL
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM dbo.Tributaries WHERE Main_Lake_id = @lake_id AND side = @side)
+            INSERT INTO dbo.Tributaries (Main_Lake_id, Lake_id, side) VALUES (@lake_id, @lake_id, @side);
+
+        SELECT @previous = Lake_id FROM dbo.Tributaries WHERE Main_Lake_id = @lake_id AND side = @side;
+
+        IF @previous <> @point_id
+        BEGIN
+            UPDATE dbo.Tributaries SET Lake_id = @point_id, Tributaries_stamp = getutcdate()
+            WHERE Main_Lake_id = @lake_id AND side = @side;
+
+            EXEC dbo.sp_assign_border @lake_id;
+            SET @changed = 1;
+        END
+    END
+    ELSE
+        SELECT @previous = Lake_id FROM dbo.Tributaries
+        WHERE Main_Lake_id = @lake_id AND side = @side AND @side IN (16, 32);
+
+    SELECT (
+        SELECT
+            CONVERT(varchar(36), @lake_id) AS lakeId,
+            @side AS side,
+            CONVERT(varchar(36), CASE WHEN @error IS NULL THEN @point_id ELSE @previous END) AS pointId,
+            (SELECT lake_name FROM dbo.lake WHERE lake_id = CASE WHEN @error IS NULL THEN @point_id ELSE @previous END) AS pointName,
+            CONVERT(varchar(36), @previous) AS previousPointId,
+            (SELECT lake_name FROM dbo.lake WHERE lake_id = @previous) AS previousPointName,
+            CAST(@changed AS bit) AS changed,
+            @error AS error
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES
+    ) AS results;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER()    AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , ERROR_PROCEDURE() AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 -- Called by: docapi RegulationController (PATCH /api/v1/regulation) via
 --   JdbcRegulationCommandRepository -- the write counterpart of Editor/LakeRegulation.aspx
 --   (ButtonSubmit_Click / FindExistingRegId). Upserts ONE row of dbo.regulations, matched by the same
