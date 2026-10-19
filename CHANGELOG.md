@@ -2,6 +2,18 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-19: **Dropped `IDX_TM_WaterData` and `IDX_PH_WaterData`** (index-only, no object signature change). Nothing
+  filters `dbo.WaterData` by `temperature` or `ph`: the comment credited `spTotalUpdateProbability`, which reads
+  `CurrentWaterState`; every reader goes by `mli` (`UK_WaterData_MLI_stamp`) or ages out by `stamp`
+  (`IDX_WaterData_dt`, `sp_clean_old_water_data`), both kept. Saves ~465 MB on CTRL (8.86M rows) and two index writes
+  per insert. Suite unchanged (the known FishCodeLatinJson FAILs). **Applied to CTRL envionx and production** (2026-10-19;
+  prod keeps PK 1231 MB, UK 280 MB, IDX_WaterData_dt 227 MB); the one-off script is deleted.
+
+- 2026-10-18: **`CGNDB` / `CGNDM` widened `char(5)` -> `varchar(10)`** on `Lake`, `lake_waterfall` and `lake_dam`
+  (and `sp_MergeLakes`' key table), so a US water body can carry its GNIS feature id (Maine import, first US state).
+  Applied to CTRL envionx 2026-10-17 and production 2026-10-18; this brings the schema script in line.
+  `docs/water-bodies.md` (new) describes the water-body model; `AGENTS.md` points to it.
+
 - 2026-10-17: **`fn_lake_shape_geojson` gets a `@detail` argument and its first caller** (fishfind-frontend
   `Resources/wfRiverViewer.aspx.cs GetShapeGeoJson`, the river-viewer map, `@detail` 3000). NULL/<=0 = shapes as
   stored; otherwise every shape is `Reduce`d with one tolerance per water body (total length + perimeter / `@detail`

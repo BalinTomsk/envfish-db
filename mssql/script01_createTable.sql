@@ -778,8 +778,8 @@ CREATE TABLE Lake
     Volume      int,                    -- km^3
     Shoreline   int,                    -- km
     surface     int,                    -- km^2
-    CGNDB       char(5),                -- unique id on http://www4.rncan.gc.ca/search-place-names/unique
-    CGNDM       char(5),                -- secondary CGNDB-style id, edited on Editor/LakeEditor.aspx
+    CGNDB       varchar(10),            -- national non-GUID id: CGNDB key (Canada, 5 letters, http://www4.rncan.gc.ca/search-place-names/unique) or GNIS feature id (USA)
+    CGNDM       varchar(10),            -- secondary CGNDB-style id, edited on Editor/LakeEditor.aspx
     secondary_id uniqueidentifier,      -- secondary GUID (edited under GUID on Editor/LakeEditor.aspx), searchable by SearchLakeList
     state_id    varchar(32),            -- the province's/state's own id for the water body (BC: BC Geographical Names
                                         -- feature id = FWA GNIS_ID; AB: FWMIS waterbody id), edited under Mouth on
@@ -2118,15 +2118,7 @@ GO
 -- DROP INDEX UK_WaterData_MLI_stamp ON dbo.WaterData
 CREATE UNIQUE NONCLUSTERED INDEX UK_WaterData_MLI_stamp ON dbo.WaterData(MLI, stamp);
 GO
-
--- used in [spTotalUpdateProbability]  update fish probabilty based on water temperature
--- DROP INDEX IDX_TM_WaterData ON dbo.WaterData
-CREATE NONCLUSTERED INDEX IDX_TM_WaterData ON [dbo].[WaterData] ([temperature]) INCLUDE ([mli])
-GO
-
--- DROP INDEX IDX_PH_WaterData ON dbo.WaterData
-CREATE NONCLUSTERED INDEX IDX_PH_WaterData ON [dbo].[WaterData] ([ph]) INCLUDE ([mli])
-GO
+-- no index on temperature/ph: nothing filters WaterData by a reading - spTotalUpdateProbability reads CurrentWaterState
 -- EXEC sp_updatestats;
 -- UPDATE STATISTICS dbo.WaterData 
 --------------------------------------------------------------------------------------------
@@ -3483,7 +3475,7 @@ BEGIN
         lake_id              UNIQUEIDENTIFIER NULL,
         lake_waterfall_name  NVARCHAR(128)    NULL,       -- official CGNDB name; NULL for an unnamed CHN point
         lake_waterfall_type  NVARCHAR(64)     NULL,       -- CGNDB generic term: Falls, Waterfall, Cascade, Hydrographic Sill, ...
-        CGNDB                CHAR(5)          NULL,       -- CGNDB key (as Lake.CGNDB)
+        CGNDB                VARCHAR(10)      NULL,       -- CGNDB key / GNIS id (as Lake.CGNDB)
         chn_feature_id       UNIQUEIDENTIFIER NULL,       -- CHN hydrolocation feature_id
         cabd_id              VARCHAR(64)      NULL,       -- Canadian Aquatic Barriers Database obstacle id
         lat                  FLOAT            NOT NULL,
@@ -3516,7 +3508,7 @@ BEGIN
         lake_id              UNIQUEIDENTIFIER NULL,
         lake_dam_name        NVARCHAR(128)    NULL,       -- official CGNDB name; NULL for an unnamed CHN point
         lake_dam_type        NVARCHAR(64)     NULL,       -- CGNDB generic term: Dam, Spillway Dam, Regulating Dam, ...
-        CGNDB                CHAR(5)          NULL,
+        CGNDB                VARCHAR(10)      NULL,
         chn_feature_id       UNIQUEIDENTIFIER NULL,
         cabd_id              VARCHAR(64)      NULL,
         lat                  FLOAT            NOT NULL,

@@ -1226,7 +1226,7 @@ SET NOCOUNT ON
     -- CGNDB keys (one per province): the target keeps its own, then takes the source's into the empty slots,
     -- CGNDB first, then CGNDM (Reindeer Lake: MB GAWWT + SK HAINF). The source's keys are cleared first --
     -- UK_lake_CGNDB / UK_lake_CGNDM refuse one key on two rows. A third distinct key cannot be kept.
-    DECLARE @codes TABLE (ord int IDENTITY, code char(5));
+    DECLARE @codes TABLE (ord int IDENTITY, code varchar(10));
     INSERT INTO @codes (code)
         SELECT v.code FROM lake l CROSS APPLY (VALUES (1, l.CGNDB), (2, l.CGNDM)) v(n, code)
          WHERE l.lake_id = @toLake AND NULLIF(RTRIM(v.code), '') IS NOT NULL ORDER BY v.n;
