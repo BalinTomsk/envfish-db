@@ -975,8 +975,6 @@ CREATE TABLE Lake_Shape
     Lake_Shape_type     int,                       -- NULL legacy (sp_add_lake_shape line), 1 river centre line, 2 water-body outline
                                                    -- (1/2 loaded from the Canadian Hydrospatial Network; read by fn_lake_shape_geojson)
     Lake_Shape_stamp    datetime2 NOT NULL,
-    Lake_Shape_idx      geometry,                  -- store box with boundaries
-    Lake_Shape_hash     bigint,
     CONSTRAINT PK_Lake_Shape PRIMARY KEY CLUSTERED (Lake_id, Lake_Shape_id)
 );
 GO
@@ -985,35 +983,10 @@ CREATE NONCLUSTERED INDEX IDX_Lake_Shape ON  Lake_Shape (lake_id);
 GO
 ALTER TABLE Lake_Shape ADD CONSTRAINT FK_Lake_Shape FOREIGN KEY (lake_id) REFERENCES lake(lake_id) ON DELETE CASCADE ON UPDATE CASCADE;
 GO
-CREATE UNIQUE NONCLUSTERED INDEX UK_Lake_Shape ON Lake_Shape(Lake_Shape_hash)
-GO
 -- ALTER TABLE Lake_Shape ADD CONSTRAINT PK_Lake_Shape PRIMARY KEY CLUSTERED (lake_id, Lake_Shape_id);
 GO
 ALTER TABLE Lake_Shape add constraint DF_Lake_Shape_Lake_Shape_stamp default(GETUTCDATE()) for Lake_Shape_stamp
 GO
-------------------------------------------------------------------------------
-
-CREATE TRIGGER TR_UPD_Lake_Shape ON Lake_Shape
- FOR  INSERT, UPDATE 
-AS 
-SET NOCOUNT ON
-BEGIN
-    WITH cte AS
-    (
-        SELECT l.Lake_Shape_id, l.lake_id, geometry::STGeomFromWKB(l.Lake_Shape_shape.STAsBinary(), l.Lake_Shape_shape.STSrid).STEnvelope() AS box 
-            FROM Lake_Shape l JOIN inserted i ON l.lake_id = i.lake_id AND l.Lake_Shape_id = i.Lake_Shape_id WHERE l.Lake_Shape_shape IS NOt NULL
-    )
-    UPDATE t SET t.Lake_Shape_idx = box, t.Lake_Shape_hash = COALESCE(t.Lake_Shape_hash,  CAST(HashBytes('MD5', t.Lake_Shape_shape.ToString()) AS bigint))
-        FROM Lake_Shape t JOIN cte ON cte.lake_id = t.lake_id AND cte.Lake_Shape_id = t.Lake_Shape_id
-END
-GO
-/*
-update Lake_Shape set Lake_Shape_hash = CAST(HashBytes('MD5', Lake_Shape_shape.ToString()) AS bigint)
-
-DECLARE @g geography;  
-SET @g = geography::STGeomFromText('LINESTRING(-122.360 47.656, -122.343 47.656)', 4326);  
-SELECT @g.ToString();  
-*/
 ------------------------------------------------------------------------------
 ------------------------------------------------------------------------------
 -- each object from lake has mouth record with side=32 and source record with side=16 and Main_Lake_id=Lake_id

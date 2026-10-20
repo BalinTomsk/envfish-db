@@ -2009,9 +2009,9 @@ GO
 --   @fish_id         - the species (dbo.fish.fish_id); NULL -> empty result
 --   @country/@state  - ISO-2 codes, case-insensitive; NULL/blank = any. A water body matches when its source
 --                      (Tributaries side 16) OR its mouth (side 32) is there, read through the two unique
---                      (Main_Lake_id, side) indexes rather than vw_lake. For 'CA' a CGNDB / CGNDM code also counts --
---                      the same "Canadian" rule as dbo.fn_lake_canadian_ids_json. The country/state REPORTED
---                      per item stay source-first (vw_lake's precedence).
+--                      (Main_Lake_id, side) indexes rather than vw_lake. For 'CA' a Canadian CGNDB / CGNDM key
+--                      (5 letters) also counts; US water bodies keep numeric GNIS ids in CGNDB, so those do not.
+--                      The country/state REPORTED per item stay source-first (vw_lake's precedence).
 --   @loc_type        - locType bitmask (1 lake, 2 river, 4 stream, 8 pond, 64 creek, 8192 reservoir, ...);
 --                      a water body matches when it shares any bit. NULL/0 = any type.
 --   @min_probability - 0..100 (NULL -> 0). lake_fish's key is (lake_Id, fish_Id, probability), so a water
@@ -2054,7 +2054,7 @@ BEGIN
          WHERE f.probability >= @min_probability
            AND (@loc_type IS NULL OR (l.locType & @loc_type) <> 0)
            AND (@country  IS NULL OR @country IN (loc.src_country, loc.mouth_country)
-                OR (@country = 'CA' AND (NULLIF(RTRIM(l.CGNDB), '') IS NOT NULL OR NULLIF(RTRIM(l.CGNDM), '') IS NOT NULL)))
+                OR (@country = 'CA' AND (RTRIM(l.CGNDB) LIKE '[A-Z][A-Z][A-Z][A-Z][A-Z]' OR RTRIM(l.CGNDM) LIKE '[A-Z][A-Z][A-Z][A-Z][A-Z]')))
            AND (@state    IS NULL OR @state IN (loc.src_state, loc.mouth_state));
 
     RETURN (
@@ -2087,9 +2087,9 @@ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_canadian_ids_json' AND
 GO
 
 -- Which of the given water bodies count as CANADIAN. The FishFind MCP server shows only these (docapi
--- McpToolCatalog via JdbcRiverQueryRepository.canadianIds). A water body is Canadian when it has a CGNDB or CGNDM code,
--- OR its source (Tributaries side 16) OR its mouth (side 32) is in country 'CA' -- either end is enough, so a
--- river rising in the US and ending in Canada counts.
+-- McpToolCatalog via JdbcRiverQueryRepository.canadianIds). A water body is Canadian when it has a Canadian CGNDB or
+-- CGNDM key (5 letters; US water bodies keep numeric GNIS ids in CGNDB), OR its source (Tributaries side 16) OR its
+-- mouth (side 32) is in country 'CA' -- either end is enough, so a river rising in the US and ending in Canada counts.
 --   @lake_ids - JSON array of lake_id GUID strings; NULL / not JSON / no valid GUIDs -> '[]'
 -- Returns a JSON array of the qualifying lake_id strings, each once (order not guaranteed).
 -- select dbo.fn_lake_canadian_ids_json(N'["4094E667-BBE3-11D8-92E2-080020A0F4C9"]')
@@ -2105,8 +2105,8 @@ BEGIN
           FROM ( SELECT DISTINCT TRY_CONVERT(uniqueidentifier, j.value) AS lake_id
                    FROM OPENJSON(@lake_ids) j ) x
           JOIN dbo.lake l ON l.lake_id = x.lake_id
-         WHERE NULLIF(RTRIM(l.CGNDB), '') IS NOT NULL
-            OR NULLIF(RTRIM(l.CGNDM), '') IS NOT NULL
+         WHERE RTRIM(l.CGNDB) LIKE '[A-Z][A-Z][A-Z][A-Z][A-Z]'
+            OR RTRIM(l.CGNDM) LIKE '[A-Z][A-Z][A-Z][A-Z][A-Z]'
             OR EXISTS ( SELECT 1 FROM dbo.Tributaries t
                          WHERE t.Main_Lake_id = l.lake_id AND t.side IN (16, 32) AND t.Country = 'CA' )
     ), N'[]');

@@ -198,7 +198,6 @@ SET @tStart = SYSUTCDATETIME();
 INSERT INTO dbo.lake (lake_id, locType, lake_name, length)
 VALUES (@A, 2, N'Utrsr6 A River', 1), (@B, 2, N'Utrsr6 B River', 1), (@C, 2, N'Utrsr6 C River', 3);
 UPDATE dbo.Tributaries SET Country = 'ZZ', State = 'QQ' WHERE Main_Lake_id IN (@A, @B, @C) AND side = 16;
--- one row per INSERT: TR_UPD_Lake_Shape fills Lake_Shape_hash after the insert, and UK_Lake_Shape refuses two NULLs
 INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type)
 VALUES (@A, geography::STGeomFromText('LINESTRING(-70.5 45, -70.5 45.02)', 4326), 1);
 INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type)

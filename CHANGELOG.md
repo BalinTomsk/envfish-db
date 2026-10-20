@@ -2,6 +2,58 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-20: **`Lake_Shape` loses `Lake_Shape_hash`, `Lake_Shape_idx`, `UK_Lake_Shape` and `TR_UPD_Lake_Shape`**
+  (`script01_createTable.sql`). Nothing read them: no app, view, function or procedure (searched every repo and
+  `sys.sql_modules` on CTRL); the box was used only by two `us_import` scripts, which now compute it inline
+  (`mouth_gap_ca.sql`, `dup_check_shape.sql`). The hash also went stale on a shape UPDATE (`COALESCE` kept the old one)
+  and made multi-row inserts fail on duplicate NULLs (Msg 2601). **`sp_add_lake_shape`** (`script02_Proc.sql`) now
+  skips a line the water body already has (`STEquals`) instead of failing on `UK_Lake_Shape`; that failure used to roll
+  back the caller's transaction too. Import generators (`gen_us_scripts.py`, `gen_bad_points_fix.py`, `merge_template.sql`)
+  no longer write the hash; within a batch they dedupe on the WKB. Tests: new `unit_test@LakeShape.sql` 3/3, all seen
+  failing first; hash removed from `unit_test@LakeShapeJson.sql` / `unit_test@RiverSearchRank.sql`; full suite 651
+  PASS, no FAIL. **Applied to CTRL envionx and production 2026-10-20** (prod: 138,719 shapes; verified via the run log +
+  MCP river search; one-off script deleted).
+
+- 2026-10-20: **US namesake cleanup, ME / NH / NY** (data only, no object change; `us_import/new_hampshire.md`
+  "Namesake cleanup"). The stage's "only namesake within 25 km" rule had matched 46 state features to ANOTHER water body
+  of the same name (NH 27 -> Maine / Vermont rows, NY 6 -> Vermont / Ontario rows, ME 13 -> New Brunswick / Quebec
+  rows) and filled that row with the feature's data. Removed exactly what those runs wrote, where unchanged (65 fish
+  pairs, 3 state ids, 13 rows' surface / Shoreline / map point, 12 ME map shapes); the 46 features got their own rows
+  (fish 93, state ids 7, points with State / county / municipality / road / 3DEP height, city where one is within
+  10 km); 20 tributaries + 1 falls moved to them. NH's Laurel Lake (867958) has a row again. **Applied to CTRL envionx**
+  (+ 46 map shapes, CTRL-only). **Applied to production 2026-10-20** (all but the shapes; every count identical to CTRL,
+  verified via MCP; one-off scripts deleted).
+
+- 2026-10-20: **Massachusetts water bodies** (data only, no object change; `us_import/massachusetts.md`). USGS NHD +
+  GNIS: 4,284 new (2,453 lakes, 1,831 rivers), 114 filled, 44 falls / rapids + 428 dams; 2,530 fish pairs (MassWildlife
+  brook trout habitat, diadromous habitat, fishing sites, the season's trout stocking, GBIF); `state_id` = PALIS on
+  2,087 lakes and SARIS on 1,397 rivers; Laurel Lake (MA) given back its own ids / fish after the NH import had matched
+  NH's Laurel Lake to it; 66 points of older rows inside MA with State NULL / a wrong code -> MA; city / county
+  subdivision / mouth road / 3DEP heights filled. **Applied to CTRL envionx**, incl. 4,373 map shapes that stay
+  CTRL-only. Production: pending.
+
+- 2026-10-20: **New Hampshire water bodies** (data only, no object change; `us_import/new_hampshire.md`). USGS NHD +
+  GNIS: 2,831 new (1,203 lakes, 1,628 rivers), 42 filled, 52 falls / rapids + 15 dams; 8,641 fish pairs (NH Fish and
+  Game survey sites, Freshwater Fishing Guide, stocked waters + stocking cards, wild brook trout, GBIF); `state_id` =
+  NHDES assessment unit id on 1,005 lakes; 34 points with a wrong / missing state code fixed (incl. NY's Hudson River
+  source 'NJ'); one mouth loop (East Branch Mohawk River NH / Mohawk River NY); city / county subdivision / mouth road /
+  3DEP heights filled. **Applied to CTRL envionx**, incl. 2,869 map shapes that stay CTRL-only. **Applied to production
+  2026-10-20** (all but the shapes; verified via MCP; one-off scripts deleted).
+
+- 2026-10-20: **New York water bodies** (data only, no object change; `us_import/new_york.md`). USGS NHD + GNIS: 7,894
+  new (3,676 lakes, 4,218 rivers), 291 filled (Lake Ontario and the Delaware River matched by hand, no partial measures),
+  286 falls / rapids + 881 dams; 9,576 fish pairs (NYSDEC stocking 2011+, trout-stream reaches, presence records, GBIF);
+  `state_id` = NYSDEC Priority Waterbody List id on 1,613 lakes; 3 Quebec border rivers merged (Chateauguay, des Anglais,
+  aux Saumons); 14 points with another state's code fixed (whole envionx); city / county subdivision / mouth road /
+  3DEP heights filled; one mouth loop (Oswegatchie). **Applied to CTRL envionx**, incl. 8,172 map shapes that stay
+  CTRL-only. **Applied to production 2026-10-20** (all but the shapes; verified via MCP; one-off scripts deleted).
+
+- 2026-10-19: **Vermont water bodies** (data only, no object change; `us_import/vermont.md`). USGS NHD + GNIS: 1,849
+  new (600 lakes, 1,249 rivers), 45 filled, 28 falls + 6 dams; 5,621 fish pairs (VT F&W access areas, stocking 2021,
+  Brook Trout Waters, GBIF); `state_id` = VT DEC Lakes Inventory LAKEID on 530 lakes; 2 Quebec border streams merged;
+  city / county subdivision / mouth road filled. **Applied to CTRL envionx**, incl. 1,895 map shapes that stay
+  CTRL-only by decision. **Applied to production 2026-10-19** (all but the shapes; verified via MCP; one-off scripts deleted). Then source / mouth heights from USGS 3DEP (3,665 points) and 3 Virginia points State VT -> VA, CTRL + production.
+
 - 2026-10-19: **`unit_test@FishCodeLatinJson.sql` TEST 2 and 5 brought in line with 2026-08-18's `fish_code` change**
   (4fa1532: `code` char(16) → char(8), `UK_fish_code (state, code)`). Both had failed since then. TEST 2 now expects the
   column's own width (CTRL/prod still have char(16); the narrowing never reached them); TEST 5 asserts the index refuses
@@ -16,12 +68,36 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   `unit_test@LakeMouthRoad.sql` (2, failing first). **Applied to CTRL envionx** (Wilton Creek → "Big Creek Road");
   **applied to prod 2026-10-19** (verified via MCP; one-off script deleted).
 
+- 2026-10-19: **Source/mouth places filled; new `Tributaries.road`** (one column added, no object signature change).
+  Empty values only, side 16/32 rows, `TR_UPD_Tributaries` off inside each 5,000-row transaction (one 390k-row update
+  filled CTRL's 1 GB log):
+  - `city`: nearest `dbo.City.place` within 10 km — 143,331 points (`ADMIN_WRITE_fill_city_10km.sql`, computed in SQL).
+  - `county` / `region` / `municipality` / `district`: point-in-polygon on StatCan 2021 digital boundaries (CD, ER, CSD
+    from geo.statcan.gc.ca; www12 refuses scripts) and Census TIGER 2024 county / county subdivision — 393,763 points
+    (`ADMIN_WRITE_admin_areas.sql`, from `roads_import/bounds_assign.py`). `district` follows each province's existing
+    convention, measured on its filled rows: QC = CSD, ON/NS/NB/PE = CD; BC copies the Land District of the nearest BC
+    point within 10 km; other provinces and the US are left empty. 'Division No. n' names are skipped.
+  - `road` (new, `nvarchar(128)`, mouths only): nearest named road within 10 km (geodesic) from NRCan's National Road
+    Network and TIGER roads of the 1,544 counties within 10 km of a mouth — 143,360 mouths, average 2.5 km
+    (`ADMIN_WRITE_mouth_road.sql`, from `roads_import/roads_nearest.py`; adds the column when missing).
+  Described in `docs/water-bodies.md`. **Applied to CTRL envionx and production** (2026-10-19; prod: city 143,321,
+  admin areas 393,759, road 143,358); the one-off scripts are deleted, the generators stay in `roads_import/`.
+
 - 2026-10-19: **Dropped `IDX_TM_WaterData` and `IDX_PH_WaterData`** (index-only, no object signature change). Nothing
   filters `dbo.WaterData` by `temperature` or `ph`: the comment credited `spTotalUpdateProbability`, which reads
   `CurrentWaterState`; every reader goes by `mli` (`UK_WaterData_MLI_stamp`) or ages out by `stamp`
   (`IDX_WaterData_dt`, `sp_clean_old_water_data`), both kept. Saves ~465 MB on CTRL (8.86M rows) and two index writes
   per insert. Suite unchanged (the known FishCodeLatinJson FAILs). **Applied to CTRL envionx and production** (2026-10-19;
   prod keeps PK 1231 MB, UK 280 MB, IDX_WaterData_dt 227 MB); the one-off script is deleted.
+
+- 2026-10-19: **A numeric CGNDB is not Canadian** (no signature change). Since the Maine import US water bodies keep
+  GNIS feature ids (digits) in `lake.CGNDB`, but `dbo.fn_fish_water_bodies_json` (`@country='CA'`) and
+  `dbo.fn_lake_canadian_ids_json` counted any CGNDB/CGNDM as Canada. Both now accept only a 5-letter key
+  (`LIKE '[A-Z][A-Z][A-Z][A-Z][A-Z]'`); on CTRL every non-blank CGNDB is 5 letters (169,018) or digits (7,130). Tests:
+  `unit_test@FishWaterBodies.sql` TEST 10 and `unit_test@LakeCanadian.sql` TEST 6 (both failed first); the older
+  fixtures `ZFWB9`/`ZLCA1`/`ZLCA2` held a digit and became `ZFWBN`/`ZLCAA`/`ZLCAB`. Rest of the suite unchanged (the
+  known FishCodeLatinJson FAILs). **Applied to CTRL envionx; production not applied** —
+  `ADMIN_WRITE_cgndb_gnis_not_canada.sql` (untracked) recreates both functions.
 
 - 2026-10-18: **`dbo.fn_river_search_json` ranks** (docapi 1.26.0 `GET /api/v1/river/search` + MCP
   `search_water_bodies`). New parameters `@country, @state, @loc_type, @sort, @offset` (11 in all, `@limit` last),
@@ -36,6 +112,17 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   `unit_test@RiverSearch.sql` moved to the new signature and envelope. **Applied to production 2026-10-19** with
   docapi 1.26.0 (rollback: docapi 1.25.0 + the 6-argument function from the previous commit); CTRL envionx got the
   11-argument function from main the same day (index already there). The one-off script is deleted.
+
+- 2026-10-18: **21 more two-province / two-record water bodies merged** (data only, no schema change): the pairs left out
+  of the 2026-10-10 shared-GUID merge (CTRL `nt.dbo.dup_plan`) — 19 marine features (Hudson Strait, Davis Strait, Parry
+  Channel, Juan de Fuca Strait, …) plus Irons Creek (YT/BC) and Manuel Creek (YT/NT), whose rows meet at the border.
+  `ADMIN_WRITE_lake_merge_two_province.sql` (untracked) wraps `sp_MergeLakes` per pair: survivor's fields kept, source =
+  survivor's, mouth = the dropped row's (its province), dropped GUID -> `secondary_id`, dropped name -> native /
+  french_name / alt_name, errors roll the pair back. Dry-run (rolled back) then **applied to CTRL envionx**: 204,593 ->
+  204,572 rows, no references left to the dropped GUIDs, a second run skips all 21. Left split on purpose: the 7
+  features with 3-7 keys, Almstrom and Anderson Creek (rows 32-40 km apart). **Production needed nothing:** the run there
+  skipped all 21 because prod already had them merged (row stamps 2026-10-13, Irons Creek's mouth linked to the Liard
+  River) -- CTRL had lagged. Script deleted. Described in `docs/water-bodies.md`.
 
 - 2026-10-18: **`CGNDB` / `CGNDM` widened `char(5)` -> `varchar(10)`** on `Lake`, `lake_waterfall` and `lake_dam`
   (and `sp_MergeLakes`' key table), so a US water body can carry its GNIS feature id (Maine import, first US state).

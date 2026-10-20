@@ -19,6 +19,7 @@ GO
   TEST 7 - NULL fish                             -> total 0, items []
   TEST 8 - country/state match the source OR the mouth
   TEST 9 - country CA also matches a water body that only has a CGNDB code
+  TEST 10 - a numeric CGNDB (US GNIS id) does not make a water body Canadian
 */
 PRINT 'Unit tests for fn_fish_water_bodies_json (water bodies by species)';
 GO
@@ -332,7 +333,7 @@ SET @tStart = SYSUTCDATETIME();
 INSERT INTO dbo.fish_family (Family_id, Family_name, fid, created) VALUES (@Fam, N'ut-family-fwb9', 900309, SYSUTCDATETIME());
 INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, family_Id, created, stamp)
 VALUES (@F, N'Utfwb-fish9', N'Utfwb nine', @Fam, SYSUTCDATETIME(), SYSUTCDATETIME());
-INSERT INTO dbo.Lake (Lake_id, locType, lake_name, CGNDB) VALUES (@L, 1, N'Utfwb Code Lake', 'ZFWB9');
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name, CGNDB) VALUES (@L, 1, N'Utfwb Code Lake', 'ZFWBN');
 INSERT INTO dbo.lake_fish (lake_Id, fish_Id, created, probability, lake_fish_id) VALUES (@L, @F, SYSUTCDATETIME(), 100, NEWID());
 
 SET @json = dbo.fn_fish_water_bodies_json(@F, 'CA', NULL, NULL, NULL, NULL);
@@ -350,4 +351,40 @@ ELSE
     print 'TEST 9 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: CGNDB-only lake counts for CA'
 
 ROLLBACK TRAN FWB_Test9
+GO
+-- ============================================================================
+-- TEST 10: a numeric CGNDB (a US GNIS feature id since the Maine import) is not Canadian
+-- ============================================================================
+BEGIN TRAN FWB_Test10
+    declare @test_name sysname = N'FWB_Test10 [fn_fish_water_bodies_json] : GNIS id is not Canadian'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(max), @jsonZz nvarchar(max);
+DECLARE @F uniqueidentifier = NEWID(), @Fam uniqueidentifier = NEWID(), @L uniqueidentifier = NEWID();
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+INSERT INTO dbo.fish_family (Family_id, Family_name, fid, created) VALUES (@Fam, N'ut-family-fwb10', 900310, SYSUTCDATETIME());
+INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, family_Id, created, stamp)
+VALUES (@F, N'Utfwb-fish10', N'Utfwb ten', @Fam, SYSUTCDATETIME(), SYSUTCDATETIME());
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name, CGNDB) VALUES (@L, 1, N'Utfwb Gnis Lake', '570304');
+UPDATE dbo.Tributaries SET Country = 'ZZ', State = 'QQ' WHERE Main_Lake_id = @L AND side = 16;
+INSERT INTO dbo.lake_fish (lake_Id, fish_Id, created, probability, lake_fish_id) VALUES (@L, @F, SYSUTCDATETIME(), 100, NEWID());
+
+SET @json   = dbo.fn_fish_water_bodies_json(@F, 'CA', NULL, NULL, NULL, NULL);
+SET @jsonZz = dbo.fn_fish_water_bodies_json(@F, 'ZZ', NULL, NULL, NULL, NULL);
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF   ISNULL(JSON_VALUE(@json, '$.total'), '') <> '0'
+  OR ISNULL(JSON_VALUE(@jsonZz, '$.total'), '') <> '1'
+   RAISERROR ('TEST 10 FAIL [%dms]: a numeric CGNDB must not count as Canada', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 10 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: GNIS-id lake is not CA'
+
+ROLLBACK TRAN FWB_Test10
 GO

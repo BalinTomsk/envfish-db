@@ -60,7 +60,8 @@ sources (CGNDB, the provincial hydro data) record it once **per province** — s
 rows, one for each province. Sooner or later the two are **merged into a single row** with `exec dbo.sp_MergeLakes`,
 which exists for exactly this operation: the survivor keeps its own GUID and CGNDB key and takes the other row's as its
 second ones (`secondary_id`, `CGNDM`), so both old ids still find it (Reindeer Lake: MB `GAWWT` + SK `HAINF`). 521
-such pairs were merged on 2026-10-10 and 21 more on 2026-10-18.
+such pairs were merged on 2026-10-10; 21 more (19 marine features, Irons Creek, Manuel Creek) were already merged on
+production by 2026-10-13 and CTRL caught up on 2026-10-18.
 
 **Never call `sp_MergeLakes` bare for a batch** — wrap it, as both batches did. It (1) overwrites the survivor's lake
 fields with the merged row's (`link` always, the rest where the merged row has a value); (2) copies the merged row's
@@ -69,8 +70,7 @@ the other row's source point; (3) moves the CGNDB key to `CGNDM` but does **not*
 `secondary_id` (the 2026-10-10 batch left it empty; the 2026-10-18 one fills it); (4) swallows its own errors, so a
 failed merge can look like a success. A one-row-per-pair transaction with `XACT_ABORT ON`, then restoring the
 survivor's fields, setting source = survivor's and mouth = the merged row's (the other province's end, so "source OR
-mouth in a state" finds it in both), is the pattern; `ADMIN_WRITE_lake_merge_two_province.sql` (2026-10-18, deleted
-once applied) was its latest form.
+mouth in a state" finds it in both), is the pattern (last used for CTRL on 2026-10-18; that script is deleted).
 
 - **`lake_id`** — the GUID; **`secondary_id`** — the merged row's GUID. Both are searchable (`guid=` matches either).
 - **`CGNDB` / `CGNDM`** (`varchar(10)`) — the national non-GUID id. In Canada the 5-letter Canadian Geographical
@@ -107,7 +107,10 @@ A water body has no country or state column of its own. Location lives on its li
 - The source/mouth row carries `lat`, `lon`, `elevation` (m), `Country`, `State`, county, city, district, region,
   municipality, zone. `TR_UPD_Tributaries` fills `Country` from a Canadian province code, else `US`. `city` is the
   nearest `dbo.City` place within 10 km where none was given; the mouth row's `road` is the nearest named road within
-  10 km (NRCan National Road Network / US Census TIGER).
+  10 km (NRCan National Road Network / US Census TIGER), returned as `mouthRoad` by `fn_lake_view_json` (docapi
+  `/river/description`, MCP `get_water_body`). Empty county / region / municipality were filled from StatCan
+  census division / economic region / subdivision (US: TIGER county / county subdivision). `district` means different
+  things by province: QC a subdivision (CSD), ON/NS/NB/PE a census division, BC a Land District ("Cassiar Land").
 - **"In a state" means the source OR the mouth is there** (`fn_fish_water_bodies_json`, `fn_river_search_json`). A
   river rising in one province and ending in another is in both. `vw_lake` *reports* country/state source-first.
 - `lake.geom` is a **point** (the label point), not a shape. Coordinates for ends come from Tributaries.
@@ -121,8 +124,8 @@ Indexes worth knowing: `UK_Tributaries_Source` / `UK_Tributaries_Mouth` (`Main_L
 ## Shape: `dbo.Lake_Shape`
 
 Geography rows per water body: `Lake_Shape_type` **1 = river centre line**, **2 = water-body outline** (both from the
-Canadian Hydrospatial Network / provincial hydro), NULL = legacy line. `Lake_Shape_hash` is unique and filled by the
-trigger *after* the insert, so insert one shape per statement. `fn_lake_shape_geojson` serves them to the river map.
+Canadian Hydrospatial Network / provincial hydro), NULL = legacy line. No trigger and no dedupe key: an insert skips a
+shape the water body already has. `fn_lake_shape_geojson` serves them to the river map.
 `STLength()` of the type-1 line is a river's length in metres (`lengthM` in search results) — it can be shorter than
 the true river when only part is mapped (Saint John River: line 366 km, `length` 673 km).
 
