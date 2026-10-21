@@ -7,13 +7,14 @@ GO
     country 'CA'. Served by docapi's McpToolCatalog via JdbcRiverQueryRepository.canadianIds.
 
   Fixture notes: inserting a lake creates its source/mouth Tributaries rows by trigger; fixtures UPDATE
-  them. CGNDB values start with 'Z' (char(5)) so they never collide with seed codes.
+  them. CGNDB values are 5 letters starting with 'Z' so they never collide with seed codes.
 
   TEST 1 - CGNDB code, no country anywhere          -> Canadian
   TEST 2 - source in US, mouth in CA                -> Canadian (either end is enough)
   TEST 3 - source and mouth in US, no CGNDB         -> not Canadian
   TEST 4 - mixed list                               -> exactly the Canadian ids, each once
   TEST 5 - NULL, empty, not JSON, unknown id        -> []
+  TEST 6 - numeric CGNDB (US GNIS id), US ends      -> not Canadian
 */
 PRINT 'Unit tests for fn_lake_canadian_ids_json (Canadian water bodies)';
 GO
@@ -28,7 +29,7 @@ DECLARE @L uniqueidentifier = NEWID();
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
-INSERT INTO dbo.Lake (Lake_id, locType, lake_name, CGNDB) VALUES (@L, 1, N'Utlca Code Lake', 'ZLCA1');
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name, CGNDB) VALUES (@L, 1, N'Utlca Code Lake', 'ZLCAA');
 
 SET @json = dbo.fn_lake_canadian_ids_json(N'["' + CONVERT(nvarchar(36), @L) + N'"]');
 
@@ -120,7 +121,7 @@ BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Ca, 1, N'Utlca CA Lake'), (@Us, 1, N'Utlca US Lake');
-INSERT INTO dbo.Lake (Lake_id, locType, lake_name, CGNDB) VALUES (@Code, 1, N'Utlca Code Two', 'ZLCA2');
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name, CGNDB) VALUES (@Code, 1, N'Utlca Code Two', 'ZLCAB');
 UPDATE dbo.Tributaries SET Country = 'CA', State = 'QC' WHERE Main_Lake_id = @Ca AND side = 16;
 UPDATE dbo.Tributaries SET Country = 'US', State = 'NY' WHERE Main_Lake_id = @Us AND side IN (16, 32);
 
@@ -171,4 +172,34 @@ ELSE
     print 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: bad input -> empty array'
 
 ROLLBACK TRAN LCA_Test5
+GO
+-- ============================================================================
+-- TEST 6: a numeric CGNDB (a US GNIS feature id since the Maine import) is not Canadian
+-- ============================================================================
+BEGIN TRAN LCA_Test6
+    declare @test_name sysname = N'LCA_Test6 [fn_lake_canadian_ids_json] : GNIS id'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(max);
+DECLARE @L uniqueidentifier = NEWID();
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name, CGNDB) VALUES (@L, 1, N'Utlca Gnis Lake', '570304');
+UPDATE dbo.Tributaries SET Country = 'US', State = 'ME' WHERE Main_Lake_id = @L AND side IN (16, 32);
+
+SET @json = dbo.fn_lake_canadian_ids_json(N'["' + CONVERT(nvarchar(36), @L) + N'"]');
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF   ISNULL(@json, N'x') <> N'[]'
+   RAISERROR ('TEST 6 FAIL [%dms]: a numeric CGNDB must not count as Canadian', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 6 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: GNIS-id water body excluded'
+
+ROLLBACK TRAN LCA_Test6
 GO

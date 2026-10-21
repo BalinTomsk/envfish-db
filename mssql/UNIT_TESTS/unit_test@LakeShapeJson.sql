@@ -84,9 +84,8 @@ BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 2, N'Utlsj River');
--- Lake_Shape_hash is supplied (as sp_add_lake_shape does): UK_Lake_Shape is unique and the trigger fills it only after insert
-INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
-SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
+INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp)
+SELECT v.id, v.g, v.t, GETUTCDATE()
 FROM (VALUES (@L, geography::STGeomFromText('LINESTRING(-66.5 46.1, -66.4 46.2, -66.3 46.25)', 4326), 1)) v(id, g, t);
 SET @json = dbo.fn_lake_shape_geojson(@L, NULL);
 
@@ -123,8 +122,8 @@ BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 1, N'Utlsj Island Lake');
-INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
-SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
+INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp)
+SELECT v.id, v.g, v.t, GETUTCDATE()
 FROM (VALUES (@L, geography::STGeomFromText('POLYGON((-66 46, -65.9 46, -65.9 46.1, -66 46.1, -66 46), (-65.97 46.03, -65.97 46.06, -65.93 46.06, -65.93 46.03, -65.97 46.03))', 4326), 2)) v(id, g, t);
 SET @json = dbo.fn_lake_shape_geojson(@L, NULL);
 
@@ -159,8 +158,8 @@ BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 2, N'Utlsj Braided River');
-INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
-SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
+INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp)
+SELECT v.id, v.g, v.t, GETUTCDATE()
 FROM (VALUES (@L, geography::STGeomFromText('MULTILINESTRING((-66.5 46.1, -66.4 46.2), (-66.3 46.3, -66.2 46.4, -66.1 46.45))', 4326), 1),
              (@L, geography::STGeomFromText('MULTIPOLYGON(((-66 46, -65.9 46, -65.9 46.1, -66 46.1, -66 46)), ((-65 47, -64.9 47, -64.9 47.1, -65 47.1, -65 47)))', 4326), 2)) v(id, g, t);
 SET @json = dbo.fn_lake_shape_geojson(@L, NULL);
@@ -197,8 +196,8 @@ BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 2, N'Utlsj Own River'), (@Other, 2, N'Utlsj Other River');
-INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
-SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
+INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp)
+SELECT v.id, v.g, v.t, GETUTCDATE()
 FROM (VALUES (@L, geography::STGeomFromText('LINESTRING(-66.5 46.1, -66.4 46.2)', 4326), 1),
              (@Other, geography::STGeomFromText('LINESTRING(-67.5 46.1, -67.4 46.2)', 4326), 1)) v(id, g, t);
 SET @json = dbo.fn_lake_shape_geojson(@L, NULL);

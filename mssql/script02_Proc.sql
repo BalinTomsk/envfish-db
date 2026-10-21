@@ -1911,9 +1911,11 @@ BEGIN TRY
 
   IF DATALENGTH(@shape) > 1 AND @num > 2
   BEGIN
-    insert into Lake_Shape (lake_id, Lake_Shape_stamp, Lake_Shape_shape, Lake_Shape_hash)
-        SELECT lake_id, getdate(), Lake_Shape_shape, CAST(HashBytes('MD5', Lake_Shape_shape.ToString()) as bigint)
+    -- a repeated call with the same line adds nothing
+    insert into Lake_Shape (lake_id, Lake_Shape_stamp, Lake_Shape_shape)
+        SELECT lake_id, getdate(), Lake_Shape_shape
             FROM (SELECT @lake_id AS lake_id, geography::STGeomFromText( 'LINESTRING('+ @shape + ')' , 4326) AS Lake_Shape_shape)x
+            WHERE NOT EXISTS (SELECT 1 FROM Lake_Shape s WHERE s.lake_id = x.lake_id AND s.Lake_Shape_shape.STEquals(x.Lake_Shape_shape) = 1)
   END
   COMMIT TRANSACTION;
 END TRY
