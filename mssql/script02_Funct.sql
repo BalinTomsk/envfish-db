@@ -6902,3 +6902,149 @@ RETURN
                                         OR s.lastSeenUtc < DATEADD(second, -@deadAfterSeconds, SYSUTCDATETIME())
                                       THEN 'dead' ELSE 'alive' END) x;
 GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_info_json' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_fish_info_json
+GO
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_rule_conditions_json' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_fish_rule_conditions_json
+GO
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_bitmask_labels_json' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_bitmask_labels_json
+GO
+
+-- The labels of the bits set in @bits, as a JSON array in key order; '[]' when none or NULL.
+-- @labels is a JSON object {"<bit value>":"<label>"}. A label is listed when ALL bits of its key are set,
+-- the rule FishTracker.Resources.wfFishViewer.DecodeBitmask uses: the editor stores some composite values
+-- (Ocean = 16385, Caddisflies = 16394), and this keeps the MCP answer identical to the viewer page.
+-- Called by dbo.fn_fish_info_json and dbo.fn_fish_rule_conditions_json.
+-- SELECT dbo.fn_bitmask_labels_json(5, N'{"1":"Sport","2":"Commercial","4":"Invading","8":"Aquarium"}')
+CREATE FUNCTION dbo.fn_bitmask_labels_json( @bits int, @labels nvarchar(max) )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    RETURN ISNULL(( SELECT '[' + STRING_AGG('"' + STRING_ESCAPE(l.[value], 'json') + '"', ',')
+                               WITHIN GROUP (ORDER BY TRY_CONVERT(int, l.[key])) + ']'
+                      FROM OPENJSON(@labels) l
+                     WHERE @bits & TRY_CONVERT(int, l.[key]) = TRY_CONVERT(int, l.[key]) AND TRY_CONVERT(int, l.[key]) > 0 ), '[]');
+END
+GO
+
+-- The water-condition intervals of one dbo.fish_Rule row as a JSON object, one key per measure that has a value:
+-- {"temperature":{"min","low","avg","high","max"}, ...}, values as decimal(18,2), empty measures left out.
+-- dbo.real_interval.ri_type is the measure's base code plus @offset: the habitat rule (periodStart = -1) uses
+-- base + 1 (see dbo.fn_read_fish_edit_list), spawn rules use the base (see dbo.vw_read_fish_spawn).
+-- Called by dbo.fn_fish_info_json.
+CREATE FUNCTION dbo.fn_fish_rule_conditions_json( @rule_id uniqueidentifier, @offset tinyint )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    RETURN ISNULL(( SELECT '{' + STRING_AGG('"' + m.name + '":' + v.js, ',') WITHIN GROUP (ORDER BY m.base) + '}'
+                      FROM ( VALUES (2, 'depth'), (8, 'ph'), (16, 'temperature'), (24, 'turbidity'), (32, 'oxygen')
+                                  , (40, 'velocity'), (48, 'salinity'), (56, 'phosphate'), (64, 'nitrate'), (72, 'hardness') ) m(base, name)
+                      JOIN dbo.real_interval ri ON ri.ri_parent_id = @rule_id AND ri.ri_type = m.base + @offset
+                     CROSS APPLY ( SELECT CAST(ri.ri_min AS decimal(18,2)) AS [min], CAST(ri.ri_low AS decimal(18,2)) AS low, CAST(ri.ri_avg AS decimal(18,2)) AS [avg]
+                                        , CAST(ri.ri_high AS decimal(18,2)) AS high, CAST(ri.ri_max AS decimal(18,2)) AS [max]
+                                   FOR JSON PATH, WITHOUT_ARRAY_WRAPPER ) v(js)
+                     WHERE COALESCE(ri.ri_min, ri.ri_low, ri.ri_avg, ri.ri_high, ri.ri_max) IS NOT NULL ), '{}');
+END
+GO
+
+-- Everything known about one fish species, WITHOUT images: no dbo.fish.img, no dbo.fish_image row, no
+-- fish_zoo_image id, no document bytes (dbo.fish_document gives its label only). NULL for an unknown/NULL fish.
+-- Called by docapi's MCP tool get_fish (McpToolCatalog) via JdbcFishQueryRepository.info.
+-- Sections follow FishTracker.Resources.wfFishViewer (General, Habitat, Zoology, Spawn, Food), with the
+-- viewer's bitmask labels; then regional codes, top-species ranks, the monthly catch index (baseline month
+-- 100) and 28-day lunar catch probability (1 = new moon, 14 = full), predators / prey, record catches and
+-- documents. Units are in the key names (cm, kg, years; record catches lb and in); temperature C, depth m, hardness dH.
+-- moonSensitive / migrates are dbo.fish.fish_moon_sensitive / fish_migrate_pattern; `abilities` is the
+-- fish_ability bitmask the editor sets.
+-- SELECT dbo.fn_fish_info_json('2CFFB500-3E59-4120-9460-055856E9AC5C')
+CREATE FUNCTION dbo.fn_fish_info_json( @fish_id uniqueidentifier )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    IF @fish_id IS NULL OR NOT EXISTS (SELECT 1 FROM dbo.fish WHERE fish_id = @fish_id)
+        RETURN NULL;
+
+    DECLARE @waterType   nvarchar(400) = N'{"1":"Freshwater","2":"Saltwater","4":"Clear water","8":"Low velocity","16":"Moderate velocity","32":"High velocity","64":"Turbid waters","128":"Moderately Turbid waters","256":"Coldstream"}';
+    DECLARE @habitat     nvarchar(400) = N'{"1":"Lake","2":"River","4":"Stream","8":"Pond","16":"Backwater","32":"Creek","64":"Canal","128":"Estuary","256":"Reservoir","16385":"Ocean","1024":"Drain","2048":"Ditch","4096":"Swamp"}';
+    DECLARE @bottom      nvarchar(400) = N'{"1":"Rock","2":"Gravel","4":"Sand","8":"Mud","16":"Grass","32":"Rubble","64":"Boulder","128":"Silt","256":"Cobble","1024":"LimeStone","2048":"Clay"}';
+    DECLARE @fishType    nvarchar(400) = N'{"1":"Sport","2":"Commercial","4":"Invading","8":"Aquarium"}';
+    DECLARE @ability     nvarchar(400) = N'{"1":"Moon Sensitive","2":"Migration Pattern"}';
+    DECLARE @color       nvarchar(400) = N'{"1":"white","2":"yellow","4":"beige","8":"purple","16":"peach","32":"blue","64":"green","128":"black"}';
+    DECLARE @spawnHab    nvarchar(400) = N'{"1":"Lake","2":"River","4":"Stream","8":"Pond","16":"Marsh","32":"Backwater","64":"Creek","128":"Canal","256":"Estuary","512":"Shore","2048":"Ocean","8192":"Reservoir"}';
+    DECLARE @foodHabit   nvarchar(400) = N'{"1":"Bottom Feeder","2":"Predator","4":"Fish Eggs","8":"Kannibal"}';
+    DECLARE @foodType    nvarchar(400) = N'{"1":"Aquatic Insects","2":"Terrestrial Insects","4":"Fish eggs","8":"Crustaceans","16":"Small Fish","32":"Terrestrial Animals","64":"Cannibals"}';
+    DECLARE @insects     nvarchar(600) = N'{"1":"Silverfish","2":"Dragonflies","4":"Crickets","8":"Earwigs","16":"Cicadas","32":"True Bugs","64":"Lacewings","128":"Beetles","256":"Butterflies","512":"Flies","1024":"Sawflies","2048":"Corixidae","4096":"Mayfly","8192":"Nymphs","16394":"Caddisflies","32768":"Stoneflies"}';
+    DECLARE @crustaceans nvarchar(600) = N'{"1":"Crabs","2":"Lobsters","4":"Crayfish","8":"Shrimp","16":"Krill","32":"Barnacles","64":"Larvae","128":"Woodlice","256":"Sandhoppers","512":"Amphipods","1024":"Conchostraca","2048":"Clam","4096":"Plankton","8192":"Salamander"}';
+    DECLARE @animals     nvarchar(400) = N'{"1":"Birds","2":"Snakes","4":"Snails","8":"Slugs","16":"Leeches","32":"Worms","64":"Frogs","128":"Bats","256":"Mammal","512":"Mouse","1024":"Turtle"}';
+
+    RETURN (
+    SELECT f.fish_id AS fishId, f.fish_name AS [name], f.fish_latin AS latin, NULLIF(f.alt_Name, '') AS altNames
+         , fam.Family_name AS [family.name], NULLIF(fam.link, '') AS [family.link], NULLIF(fam.descr, '') AS [family.description]
+         , NULLIF(f.descrip, '') AS [description], NULLIF(f.uses, '') AS uses, NULLIF(f.fish_distribution_area, '') AS distributionArea, NULLIF(f.aep, '') AS aepCode
+         , CAST(f.fish_home_range AS decimal(18,2)) AS homeRange
+         , f.fish_moon_sensitive AS moonSensitive, f.fish_migrate_pattern AS migrates
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(f.fish_Type, @fishType))     AS types
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(f.water_type, @waterType))   AS waterTypes
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(f.fish_ability, @ability))   AS abilities
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(hr.habitat, @habitat))       AS [habitat.waterBodies]
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(hr.feedsOver, @bottom))      AS [habitat.feedsOver]
+         , JSON_QUERY(dbo.fn_fish_rule_conditions_json(hr.id, 1))             AS [habitat.conditions]
+         , CAST(z.fish_max_length AS decimal(18,2)) AS [zoology.maxLengthCm], CAST(z.fish_avg_length AS decimal(18,2)) AS [zoology.avgLengthCm]
+         , CAST(z.fish_max_weight AS decimal(18,2)) AS [zoology.maxWeightKg], CAST(z.fish_avg_weight AS decimal(18,2)) AS [zoology.avgWeightKg]
+         , z.Longevity AS [zoology.longevityYears]
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(z.natural_color, @color))    AS [zoology.colors]
+         , NULLIF(z.coloration, '') AS [zoology.coloration], NULLIF(z.shape, '') AS [zoology.shape], NULLIF(z.body, '') AS [zoology.body], NULLIF(z.fin, '') AS [zoology.fin]
+         , NULLIF(z.Counts, '') AS [zoology.counts], NULLIF(z.external_morphology, '') AS [zoology.externalMorphology]
+         , NULLIF(z.internal_morphology, '') AS [zoology.internalMorphology], NULLIF(z.link, '') AS [zoology.link]
+         , sp.fish_spawn_age_female AS [spawn.maturityAgeFemaleYears], sp.fish_spawn_age_male AS [spawn.maturityAgeMaleYears]
+         , sp.fish_spawn_eggs_min AS [spawn.eggsMin], sp.fish_spawn_eggs_max AS [spawn.eggsMax]
+         , NULLIF(sp.reproductive_strategy, '') AS [spawn.reproductiveStrategy], NULLIF(sp.fish_spawn_description, '') AS [spawn.description]
+         , NULLIF(sp.fish_spawn_location, '') AS [spawn.location]
+         , JSON_QUERY(ISNULL(( SELECT r.periodStart AS monthStart, r.periodEnd AS monthEnd, r.hatch_egg_month AS hatchEggMonth
+                                    , JSON_QUERY(dbo.fn_bitmask_labels_json(r.habitat, @spawnHab)) AS habitat
+                                    , JSON_QUERY(dbo.fn_bitmask_labels_json(r.spawnsOver, @bottom)) AS spawnsOver
+                                    , JSON_QUERY(dbo.fn_fish_rule_conditions_json(r.id, 0)) AS conditions
+                                 FROM dbo.fish_Rule r
+                                WHERE r.fish_Id = f.fish_id AND r.periodStart <> -1 AND r.periodEnd <> -1
+                                ORDER BY r.periodStart, r.periodEnd
+                                  FOR JSON PATH ), '[]'))                     AS [spawn.periods]
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(f.food_habitat, @foodHabit))        AS [food.habits]
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(f.food_Type, @foodType))            AS [food.types]
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(f.terrestrial_insects, @insects))   AS [food.insects]
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(f.crustaceans, @crustaceans))       AS [food.crustaceans]
+         , JSON_QUERY(dbo.fn_bitmask_labels_json(f.terrestrial_animals, @animals))   AS [food.animals]
+         , NULLIF(f.node_food_habitat, '') AS [food.note]
+         , JSON_QUERY(ISNULL(( SELECT c.country, c.state, RTRIM(c.code) AS code FROM dbo.fish_code c
+                                WHERE c.fish_id = f.fish_id ORDER BY c.country, c.state, c.code FOR JSON PATH ), '[]')) AS codes
+         , JSON_QUERY(ISNULL(( SELECT t.country, t.state, t.top_rank AS [rank], t.common_name AS commonName FROM dbo.fish_region_top t
+                                WHERE t.fish_id = f.fish_id ORDER BY t.country, t.state FOR JSON PATH ), '[]')) AS topRanks
+         , JSON_QUERY(ISNULL(( SELECT p.[month], p.probability AS [index] FROM dbo.fish_catch_probability p
+                                WHERE p.fish_id = f.fish_id ORDER BY p.[month] FOR JSON PATH ), '[]')) AS catchByMonth
+         , JSON_QUERY(ISNULL(( SELECT p.[day], p.probability FROM dbo.fish_lunar_catch_probability p
+                                WHERE p.fish_id = f.fish_id ORDER BY p.[day] FOR JSON PATH ), '[]')) AS catchByMoonDay
+         , JSON_QUERY(ISNULL(( SELECT pf.fish_id AS fishId, pf.fish_name AS [name], p.age_year AS ageYear
+                                 FROM dbo.fish_predator p JOIN dbo.fish pf ON pf.fish_id = p.predator_id
+                                WHERE p.fish_id = f.fish_id ORDER BY pf.fish_name FOR JSON PATH ), '[]')) AS predators
+         , JSON_QUERY(ISNULL(( SELECT pf.fish_id AS fishId, pf.fish_name AS [name], p.age_year AS ageYear
+                                 FROM dbo.fish_predator p JOIN dbo.fish pf ON pf.fish_id = p.fish_id
+                                WHERE p.predator_id = f.fish_id ORDER BY pf.fish_name FOR JSON PATH ), '[]')) AS prey
+         , JSON_QUERY(ISNULL(( SELECT CONVERT(char(10), r.stamp, 23) AS [date], r.lake_id AS lakeId, l.lake_name AS lakeName
+                                    , NULLIF(r.angler, '') AS angler, CAST(r.weight AS decimal(18,2)) AS weightLb, CAST(r.[length] AS decimal(18,2)) AS lengthIn, CAST(r.Girth AS decimal(18,2)) AS girthIn, NULLIF(r.lure, '') AS lure, NULLIF(r.link, '') AS link
+                                 FROM dbo.fish_record r LEFT JOIN dbo.Lake l ON l.Lake_id = r.lake_id
+                                WHERE r.fish_id = f.fish_id ORDER BY r.weight DESC, r.stamp FOR JSON PATH ), '[]')) AS records
+         , JSON_QUERY(ISNULL(( SELECT d.fish_document_label AS label, d.fish_document_stamp AS stamp FROM dbo.fish_document d
+                                WHERE d.fish_id = f.fish_id ORDER BY d.fish_document_id FOR JSON PATH ), '[]')) AS documents
+         , f.created, f.stamp
+      FROM dbo.fish f
+      LEFT JOIN dbo.fish_family fam ON fam.Family_id = f.family_Id
+      OUTER APPLY ( SELECT TOP 1 r.id, r.habitat, r.feedsOver FROM dbo.fish_Rule r
+                     WHERE r.fish_Id = f.fish_id AND r.periodStart = -1 AND r.periodEnd = -1 ) hr
+      OUTER APPLY ( SELECT TOP 1 * FROM dbo.fish_zoo WHERE fish_id = f.fish_id ) z
+      OUTER APPLY ( SELECT TOP 1 * FROM dbo.fish_spawn WHERE fish_id = f.fish_id ) sp
+     WHERE f.fish_id = @fish_id
+       FOR JSON PATH, WITHOUT_ARRAY_WRAPPER );
+END
+GO
