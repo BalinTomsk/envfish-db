@@ -2,6 +2,13 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-20: **Rhode Island water bodies** (data only, no object change; `us_import/rhode_island.md`). USGS NHD +
+  GNIS: 609 new (375 lakes / ponds / reservoirs, 234 rivers), 34 filled (Westconnaug Brook by hand onto the older
+  WESTCONNAUG STREAM row), 5 falls + 112 dams; 333 fish pairs (RIDEM essential anadromous habitat, EBTJV 2024 wild
+  brook trout patches, GBIF); `state_id` = RIDEM assessment unit id (WBID) on 219 lakes and 186 rivers; 26 older points
+  inside RI State NULL -> RI. Finishing fills: city, county / municipality, mouth road, 3DEP heights (+ the new rows'
+  25 points in CT / MA). **Applied to CTRL envionx** (+ 635 map shapes, CTRL-only). Production: pending.
+
 - 2026-10-20: **`Lake_Shape` loses `Lake_Shape_hash`, `Lake_Shape_idx`, `UK_Lake_Shape` and `TR_UPD_Lake_Shape`**
   (`script01_createTable.sql`). Nothing read them: no app, view, function or procedure (searched every repo and
   `sys.sql_modules` on CTRL); the box was used only by two `us_import` scripts, which now compute it inline
@@ -30,7 +37,7 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   2,087 lakes and SARIS on 1,397 rivers; Laurel Lake (MA) given back its own ids / fish after the NH import had matched
   NH's Laurel Lake to it; 66 points of older rows inside MA with State NULL / a wrong code -> MA; city / county
   subdivision / mouth road / 3DEP heights filled. **Applied to CTRL envionx**, incl. 4,373 map shapes that stay
-  CTRL-only. Production: pending.
+  CTRL-only. **Applied to production 2026-10-20** (all but the shapes; verified via MCP; one-off scripts deleted).
 
 - 2026-10-20: **New Hampshire water bodies** (data only, no object change; `us_import/new_hampshire.md`). USGS NHD +
   GNIS: 2,831 new (1,203 lakes, 1,628 rivers), 42 filled, 52 falls / rapids + 15 dams; 8,641 fish pairs (NH Fish and
