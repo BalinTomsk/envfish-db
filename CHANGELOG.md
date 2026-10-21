@@ -2,12 +2,27 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-21: **Moon sensitivity per species** (data only). `dbo.fish.fish_moon_sensitive` and `fish_ability` bit 1
+  (the editor / fish viewer "Moon Sensitive") set together from a per-species literature check: 30 species with a
+  published lunar effect = 1, every other fish 0 (`ADMIN_WRITE_fish_moon_review.sql`). **Applied to CTRL envionx**
+  (170 rows changed, columns agree on all 1,052). **Applied to production 2026-10-21** (same counts; checked via get_fish; one-off scripts deleted).
+
+- 2026-10-21: **`dbo.fn_fish_info_json(@fish_id)`** + helpers **`dbo.fn_bitmask_labels_json`** and
+  **`dbo.fn_fish_rule_conditions_json`** (`script02_Funct.sql`): everything about one species, no images, for
+  docapi 1.27.0's MCP tool `get_fish`. Sections and bitmask labels follow `Resources/wfFishViewer.aspx` (incl. its
+  composite Ocean / Caddisflies values); habitat reads the `fish_Rule` -1/-1 row directly, not the 1 s
+  `fn_read_fish_edit_list`; measurements `decimal(18,2)` with units in the key names; empty strings dropped.
+  `fish_zoo.fish_max_girth` / `fish_avg_girth` are left out: on CTRL but not in `script01`. Tests:
+  `unit_test@FishInfoJson.sql` (7, failing first). **Applied to CTRL envionx** (all 1,052 fish valid JSON, max 7.4 KB,
+  ~110 ms). **Applied to production 2026-10-21** (check `fn_fish_info_json OK`; one-off scripts deleted).
+
 - 2026-10-20: **Rhode Island water bodies** (data only, no object change; `us_import/rhode_island.md`). USGS NHD +
   GNIS: 609 new (375 lakes / ponds / reservoirs, 234 rivers), 34 filled (Westconnaug Brook by hand onto the older
   WESTCONNAUG STREAM row), 5 falls + 112 dams; 333 fish pairs (RIDEM essential anadromous habitat, EBTJV 2024 wild
   brook trout patches, GBIF); `state_id` = RIDEM assessment unit id (WBID) on 219 lakes and 186 rivers; 26 older points
   inside RI State NULL -> RI. Finishing fills: city, county / municipality, mouth road, 3DEP heights (+ the new rows'
-  25 points in CT / MA). **Applied to CTRL envionx** (+ 635 map shapes, CTRL-only). Production: pending.
+  25 points in CT / MA). **Applied to CTRL envionx** (+ 635 map shapes, CTRL-only). **Applied to production
+  2026-10-21** (all but the shapes; every count identical to CTRL, verified via MCP; one-off scripts deleted).
 
 - 2026-10-20: **`Lake_Shape` loses `Lake_Shape_hash`, `Lake_Shape_idx`, `UK_Lake_Shape` and `TR_UPD_Lake_Shape`**
   (`script01_createTable.sql`). Nothing read them: no app, view, function or procedure (searched every repo and
