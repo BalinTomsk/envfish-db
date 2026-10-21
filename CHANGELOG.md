@@ -2,6 +2,24 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-21: **Alaska water bodies** (data only, no object change; `us_import/alaska.md`). USGS NHD + GNIS: 11,267
+  new (2,862 lakes, 8,405 rivers), 77 filled (Nushagak River's placeholder row by hand), 608 falls / rapids + 51 dams;
+  12,857 fish pairs (ADF&G Anadromous Waters Catalog, Alaska Freshwater Fish Inventory, pike waters, surveyed lakes,
+  GBIF); `state_id` = ADF&G AWC code on 531 lakes and 2,779 rivers; 106 points of older rows inside AK given State
+  'AK' (were NULL / 'AL' / blank / 'BC' / 'YT' well inside AK), Lee Creek's 'AK' point (in Arkansas) -> 'AR'; city,
+  county / municipality, mouth road and 3DEP heights on AK points. **Applied to CTRL envionx** (+ 11,343 map shapes,
+  CTRL-only). **Applied to production 2026-10-21** (all but the shapes; every count identical to CTRL, verified from
+  the run output + MCP; one-off scripts deleted).
+
+- 2026-10-20: **Connecticut water bodies** (data only, no object change; `us_import/connecticut.md`). USGS NHD + GNIS:
+  2,737 new (1,381 lakes, 1,356 rivers), 75 filled, 16 falls / rapids + 863 dams; 12,329 fish pairs (CT DEEP fish
+  community surveys, Fisheries Management Areas naming a species, GBIF); `state_id` = CT DEEP LAKE_NO on 1,301 lakes and
+  STREAM_NO on 1,330 rivers; 48 points of older rows inside CT given State 'CT' (were NULL / 'AL' / 'NY'); city, county /
+  municipality, mouth road and 3DEP heights on every CT point. Three NHD flowlines carried the wrong GNIS id (Roaring
+  Brook x2, Willow Brook) and were retagged before the build. **Applied to CTRL envionx** (+ 2,782 map shapes,
+  CTRL-only). **Applied to production 2026-10-20** (all but the shapes; every count identical to CTRL, verified from the
+  run output; one-off scripts deleted).
+
 - 2026-10-20: **`Lake_Shape` loses `Lake_Shape_hash`, `Lake_Shape_idx`, `UK_Lake_Shape` and `TR_UPD_Lake_Shape`**
   (`script01_createTable.sql`). Nothing read them: no app, view, function or procedure (searched every repo and
   `sys.sql_modules` on CTRL); the box was used only by two `us_import` scripts, which now compute it inline
@@ -30,7 +48,7 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   2,087 lakes and SARIS on 1,397 rivers; Laurel Lake (MA) given back its own ids / fish after the NH import had matched
   NH's Laurel Lake to it; 66 points of older rows inside MA with State NULL / a wrong code -> MA; city / county
   subdivision / mouth road / 3DEP heights filled. **Applied to CTRL envionx**, incl. 4,373 map shapes that stay
-  CTRL-only. Production: pending.
+  CTRL-only. **Applied to production 2026-10-20** (all but the shapes; verified via MCP; one-off scripts deleted).
 
 - 2026-10-20: **New Hampshire water bodies** (data only, no object change; `us_import/new_hampshire.md`). USGS NHD +
   GNIS: 2,831 new (1,203 lakes, 1,628 rivers), 42 filled, 52 falls / rapids + 15 dams; 8,641 fish pairs (NH Fish and
