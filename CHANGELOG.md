@@ -2,6 +2,17 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-22: **Forecast-map probability reworked.** `spTotalUpdateProbability` recomputes `fish_location.today` from
+  `probability` on every run in one UPDATE from the new `dbo.fn_fish_location_today(@month, @moon_day)`: probability x
+  month factor (month / the fish's peak month) x lunar factor (curve day from the new `dbo.fn_moon_day`, / the fish's
+  peak day) x temperature x oxygen (the new `dbo.fn_habitat_koef`, one definition for both), clamped 0..100, each
+  factor 1 when unknown. Fixes: lunar row picked by calendar day not moon age; factors overwritten or compounding run
+  after run; the 100-500 monthly index copied into `today` (values to 302). `spTotalUpdateCatch`, `spTotalUpdateLunar`,
+  `sp_upsert_fish_temperature_probability`, `sp_upsert_fish_oxygen_probability` removed. Tests:
+  `unit_test@FishLocationToday.sql` (7, failing first), WaterDataService and FishSpawnProbability test 7 rewritten;
+  suite 665 PASS. **Applied to CTRL envionx** (86,275 rows changed; above 100: 1,866 -> 0; a rerun changes 0).
+  **Applied to production 2026-10-22** (75,948 rows changed, moon day 10, none out of range, old procedures gone; one-off scripts deleted).
+
 - 2026-10-21: **Moon sensitivity per species** (data only). `dbo.fish.fish_moon_sensitive` and `fish_ability` bit 1
   (the editor / fish viewer "Moon Sensitive") set together from a per-species literature check: 30 species with a
   published lunar effect = 1, every other fish 0 (`ADMIN_WRITE_fish_moon_review.sql`). **Applied to CTRL envionx**
