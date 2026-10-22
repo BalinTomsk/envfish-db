@@ -7048,3 +7048,101 @@ BEGIN
        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER );
 END
 GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_location_today' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_fish_location_today
+GO
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_habitat_koef' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_habitat_koef
+GO
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_moon_day' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_moon_day
+GO
+
+-- The day of the 28-day lunar curve (dbo.fish_lunar_catch_probability.day) for a UTC time: 1 = new moon,
+-- 14 = full moon, 28 = the day before the next new moon. Moon age is measured from the new moon of
+-- 2000-01-06 18:14 UTC with a 29.530588853-day synodic month (the calculation Forecast/TMoonData.MoonAge makes);
+-- the waxing half maps to days 1..14, the waning half to 14..28.
+-- Called by dbo.spTotalUpdateProbability.
+-- SELECT dbo.fn_moon_day(SYSUTCDATETIME())
+CREATE FUNCTION dbo.fn_moon_day( @dt datetime2 )
+RETURNS tinyint
+AS
+BEGIN
+    DECLARE @synodic float = 29.530588853;
+    DECLARE @half float = @synodic / 2;
+    DECLARE @age float = DATEDIFF_BIG(SECOND, CONVERT(datetime2, '2000-01-06T18:14:00'), @dt) / 86400.0;
+    SET @age = @age - @synodic * FLOOR(@age / @synodic);
+    DECLARE @day int = CASE WHEN @age < @half THEN 1 + ROUND(@age * 13 / @half, 0)
+                            ELSE 14 + ROUND((@age - @half) * 14 / @half, 0) END;
+    RETURN CASE WHEN @day > 28 THEN 28 WHEN @day < 1 THEN 1 ELSE @day END;
+END
+GO
+
+-- How well a water reading suits a fish, 0..1, from its habitat interval (dbo.real_interval min / low / avg / high /
+-- max): 0 outside min..max, 0.80 at min or max, 0.90 at low or high, 1 at avg, linear in between. 1 when the
+-- reading or the min / max is unknown. Used for temperature (ri_type 17) and dissolved oxygen (ri_type 33).
+-- Called by dbo.fn_fish_location_today.
+CREATE FUNCTION dbo.fn_habitat_koef( @v float, @mn float, @lo float, @av float, @hi float, @mx float )
+RETURNS TABLE
+AS
+RETURN
+    SELECT CAST(
+        CASE
+            WHEN @v IS NULL OR @mn IS NULL OR @mx IS NULL THEN 1.00
+            WHEN @v < @mn OR @v > @mx THEN 0.00
+            WHEN @v >= @mn AND @v < ISNULL(@lo, @av) THEN
+                0.80 + (0.10 * (@v - @mn) / NULLIF(ISNULL(@lo, @av) - @mn, 0))
+            WHEN @v >= ISNULL(@lo, @av) AND @v < @av THEN
+                0.90 + (0.10 * (@v - ISNULL(@lo, @av)) / NULLIF(@av - ISNULL(@lo, @av), 0))
+            WHEN @v = @av THEN 1.00
+            WHEN @v > @av AND @v <= ISNULL(@hi, @av) THEN
+                1.00 - (0.10 * (@v - @av) / NULLIF(ISNULL(@hi, @av) - @av, 0))
+            WHEN @v > ISNULL(@hi, @av) AND @v <= @mx THEN
+                0.90 - (0.10 * (@v - ISNULL(@hi, @av)) / NULLIF(@mx - ISNULL(@hi, @av), 0))
+            ELSE 1.00
+        END AS decimal(5,2)) AS koef
+GO
+
+-- The forecast-map probability of every fish at every water station (dbo.fish_location), recomputed from the base
+-- probability: newToday = probability x monthFactor x lunarFactor x temperatureFactor x oxygenFactor, rounded and
+-- clamped 0..100 (a NULL probability counts as 100). Each factor is 0..1 and 1 when unknown:
+--   monthFactor       - the month's dbo.fish_catch_probability / the fish's highest month (its peak month = 1)
+--   lunarFactor       - the moon day's dbo.fish_lunar_catch_probability / the fish's highest day (its best day = 1)
+--   temperatureFactor - dbo.fn_habitat_koef of the station's CurrentWaterState temperature, habitat rule ri_type 17
+--   oxygenFactor      - the same for dissolved oxygen, ri_type 33
+-- @month 1..12 and @moon_day 1..28 (dbo.fn_moon_day) are parameters so a run uses one value for every row.
+-- Called by dbo.spTotalUpdateProbability.
+-- SELECT TOP 10 * FROM dbo.fn_fish_location_today(MONTH(SYSUTCDATETIME()), dbo.fn_moon_day(SYSUTCDATETIME()))
+CREATE FUNCTION dbo.fn_fish_location_today( @month tinyint, @moon_day tinyint )
+RETURNS TABLE
+AS
+RETURN
+    WITH habitat AS
+    (
+        SELECT r.fish_Id, ri.ri_type, ri.ri_min, ri.ri_low, ri.ri_avg, ri.ri_high, ri.ri_max
+          FROM dbo.fish_Rule r
+          JOIN dbo.real_interval ri ON ri.ri_parent_id = r.id AND ri.ri_type IN (17, 33)
+         WHERE r.periodStart = -1 AND r.periodEnd = -1
+    )
+    SELECT fl.id, fl.station_Id, fl.fish_Id, fl.probability, fl.today
+         , m.f AS monthFactor, l.f AS lunarFactor
+         , ISNULL(t.koef, 1.00) AS temperatureFactor, ISNULL(o.koef, 1.00) AS oxygenFactor
+         , CAST(CASE WHEN x.v > 100 THEN 100 WHEN x.v < 0 THEN 0 ELSE x.v END AS int) AS newToday
+      FROM dbo.fish_location fl
+      LEFT JOIN dbo.WaterStation ws ON ws.id = fl.station_Id
+      LEFT JOIN dbo.CurrentWaterState cws ON cws.mli = ws.mli
+     CROSS APPLY ( SELECT ISNULL(MAX(CASE WHEN p.[month] = @month THEN p.probability END) * 1.0
+                                 / NULLIF(MAX(p.probability), 0), 1.0) AS f
+                     FROM dbo.fish_catch_probability p WHERE p.fish_id = fl.fish_Id ) m
+     CROSS APPLY ( SELECT ISNULL(MAX(CASE WHEN p.[day] = @moon_day THEN p.probability END) * 1.0
+                                 / NULLIF(MAX(p.probability), 0), 1.0) AS f
+                     FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = fl.fish_Id ) l
+     OUTER APPLY ( SELECT TOP 1 k.koef FROM habitat h
+                    CROSS APPLY dbo.fn_habitat_koef(cws.temperature, h.ri_min, h.ri_low, h.ri_avg, h.ri_high, h.ri_max) k
+                    WHERE h.fish_Id = fl.fish_Id AND h.ri_type = 17 ) t
+     OUTER APPLY ( SELECT TOP 1 k.koef FROM habitat h
+                    CROSS APPLY dbo.fn_habitat_koef(cws.oxygen, h.ri_min, h.ri_low, h.ri_avg, h.ri_high, h.ri_max) k
+                    WHERE h.fish_Id = fl.fish_Id AND h.ri_type = 33 ) o
+     CROSS APPLY ( SELECT ROUND(ISNULL(fl.probability, 100) * m.f * l.f * ISNULL(t.koef, 1.00) * ISNULL(o.koef, 1.00), 0) AS v ) x
+GO

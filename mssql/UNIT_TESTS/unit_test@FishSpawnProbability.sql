@@ -1,7 +1,7 @@
 SET QUOTED_IDENTIFIER ON
 GO
 /*
-  Unit tests for dbo.sp_upsert_fish_catch_probability and dbo.spTotalUpdateCatch.
+  Unit tests for dbo.sp_upsert_fish_catch_probability and the month factor of dbo.spTotalUpdateProbability.
   Uses real tables dbo.fish, dbo.fish_catch_probability, dbo.WaterStation, dbo.fish_location.
   Transaction is rolled back at end - database state restored.
 
@@ -16,7 +16,7 @@ GO
   TEST  4 - sp_upsert_fish_catch_probability processes all months atomically
   TEST  5 - sp_upsert_fish_catch_probability with a real fish from the database
   TEST  6 - sp_upsert_fish_catch_probability performance (10 upserts < 1000ms)
-  TEST  7 - spTotalUpdateCatch updates fish_location.today from current month probability
+  TEST  7 - spTotalUpdateProbability applies the month factor (this month / peak month)
   TEST  8 - (duplicate of TEST 1)
   TEST  9 - (duplicate of TEST 2)
   TEST 10 - (duplicate of TEST 3)
@@ -171,40 +171,39 @@ BEGIN TRY
     DELETE FROM dbo.fish_catch_probability WHERE fish_id = @TestFishId;
 
     -- ----------------------------------------------------------------
-    -- TEST 7: spTotalUpdateCatch updates fish_location.today from current month probability
+    -- TEST 7: spTotalUpdateProbability applies the month factor (this month / peak month) to probability
     -- ----------------------------------------------------------------
     SET @tStart = SYSUTCDATETIME();
-    DECLARE @RealFishId7   uniqueidentifier;
+    DECLARE @Fish7         uniqueidentifier = NEWID();
     DECLARE @Station7      uniqueidentifier = NEWID();
     DECLARE @Month7        tinyint = DATEPART(MONTH, GETUTCDATE());
     DECLARE @OldStamp7     datetime2(7) = DATEADD(DAY, -10, SYSUTCDATETIME());
     DECLARE @BeforeExec7   datetime2(7) = SYSUTCDATETIME();
     DECLARE @ReturnValue7  int;
 
-    SELECT TOP 1 @RealFishId7 = fish_id FROM dbo.fish ORDER BY fish_name;
-
+    INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, family_Id, stamp, numRuls, locked, fish_moon_sensitive, fish_migrate_pattern, fish_ability)
+    VALUES (@Fish7, 'Test Fish Month 7', 'Testus mensis7', (SELECT TOP 1 Family_id FROM dbo.fish_family), GETUTCDATE(), 0, 0, 0, 0, 0);
     INSERT INTO dbo.WaterStation
         (MLI, id, state, lat, lon, tz, country, locDesc, locType, agency, county, locName, sid, lakeName, stamp, supported)
     VALUES
         ('UT_' + REPLACE(CONVERT(varchar(36), @Station7), '-', ''), @Station7, 'ON', 43.4516, -80.4925, -5, 'CA',
          'Unit test water station', 1, 'UNIT_TEST', 'WATERLOO', 'Unit Test Station', 999001, N'Unit Test Lake', SYSUTCDATETIME(), 1);
 
-    DELETE FROM dbo.fish_catch_probability WHERE fish_id = @RealFishId7 AND [month] = @Month7;
-    DELETE FROM dbo.fish_location WHERE station_Id = @Station7 AND fish_Id = @RealFishId7;
+    -- this month 85, peak month 170 -> factor 0.5
+    INSERT INTO dbo.fish_catch_probability (fish_id, [month], probability)
+    VALUES (@Fish7, @Month7, 85), (@Fish7, CASE WHEN @Month7 = 12 THEN 1 ELSE @Month7 + 1 END, 170);
+    INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp, probability)
+    VALUES (@Station7, @Fish7, 77, @OldStamp7, 20);
 
-    INSERT INTO dbo.fish_catch_probability (fish_id, [month], probability) VALUES (@RealFishId7, @Month7, 85);
-    INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp, probability, id)
-    VALUES (@Station7, @RealFishId7, 10, @OldStamp7, 20, 999001);
-
-    EXEC @ReturnValue7 = dbo.spTotalUpdateCatch;
+    EXEC @ReturnValue7 = dbo.spTotalUpdateProbability;
 
     DECLARE @ActualToday7 int, @ActualProbability7 int, @ActualStamp7 datetime2(7);
     SELECT @ActualToday7 = today, @ActualProbability7 = probability, @ActualStamp7 = stamp
-    FROM dbo.fish_location WHERE station_Id = @Station7 AND fish_Id = @RealFishId7;
+    FROM dbo.fish_location WHERE station_Id = @Station7 AND fish_Id = @Fish7;
 
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-    IF @ReturnValue7 = 1 AND @ActualToday7 = 85 AND @ActualProbability7 = 20 AND @ActualStamp7 >= @BeforeExec7
-        PRINT 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: spTotalUpdateCatch set today=85, left probability=20, refreshed stamp';
+    IF @ReturnValue7 >= 1 AND @ActualToday7 = 10 AND @ActualProbability7 = 20 AND @ActualStamp7 >= @BeforeExec7
+        PRINT 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: month 85 of peak 170 -> 20 x 0.5 = 10';
     ELSE
         PRINT 'TEST 7 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: return=' + ISNULL(CAST(@ReturnValue7 AS varchar),'NULL')
             + ' today=' + ISNULL(CAST(@ActualToday7 AS varchar),'NULL') + ' probability=' + ISNULL(CAST(@ActualProbability7 AS varchar),'NULL');

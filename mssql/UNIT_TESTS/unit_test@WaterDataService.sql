@@ -1,7 +1,8 @@
 SET QUOTED_IDENTIFIER ON
 GO
 /*
-  Unit tests for dbo.sp_upsert_fish_temperature_probability, dbo.sp_upsert_fish_oxygen_probability.
+  Unit tests for the temperature and oxygen factors of dbo.spTotalUpdateProbability (dbo.fn_habitat_koef via
+  dbo.fn_fish_location_today; the fixture fish have no month or lunar curve, so only these factors apply).
   Uses real tables dbo.fish, dbo.fish_Rule, dbo.real_interval, dbo.WaterStation,
   dbo.CurrentWaterState, dbo.fish_location - each test uses a fresh fish/station id and a
   unique mli value, so merging into one shared transaction does not create cross-test
@@ -10,7 +11,7 @@ GO
   TEST 1 - temperature at optimal -> 100% coefficient
   TEST 2 - temperature outside viable range -> 0% coefficient
   TEST 3 - temperature at minimum threshold -> 80% coefficient
-  TEST 4 - missing temperature data -> no update (stays at prior value)
+  TEST 4 - missing temperature data -> factor 1 (today = probability)
   TEST 5 - oxygen at optimal -> 100% coefficient
   TEST 6 - oxygen outside viable range -> 0% coefficient
   TEST 7 - oxygen at 90% zone
@@ -42,7 +43,7 @@ BEGIN TRY
     VALUES (@Mli1, 15.0, GETUTCDATE(), GETUTCDATE(), 999);
     INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp)
     VALUES (@StationId1, @FishId1, 100, 100, GETUTCDATE());
-    EXEC dbo.sp_upsert_fish_temperature_probability;
+    EXEC dbo.spTotalUpdateProbability;
     DECLARE @R1 int; SELECT @R1 = today FROM dbo.fish_location WHERE station_Id = @StationId1 AND fish_Id = @FishId1;
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R1 = 100 PRINT 'TEST 1 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: temperature at optimal -> 100% coefficient';
@@ -67,7 +68,7 @@ BEGIN TRY
     VALUES (@Mli2, 5.0, GETUTCDATE(), GETUTCDATE(), 999);
     INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp)
     VALUES (@StationId2, @FishId2, 100, 100, GETUTCDATE());
-    EXEC dbo.sp_upsert_fish_temperature_probability;
+    EXEC dbo.spTotalUpdateProbability;
     DECLARE @R2 int; SELECT @R2 = today FROM dbo.fish_location WHERE station_Id = @StationId2 AND fish_Id = @FishId2;
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R2 = 0 PRINT 'TEST 2 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: temperature outside viable range -> 0% coefficient';
@@ -92,7 +93,7 @@ BEGIN TRY
     VALUES (@Mli3, 10.0, GETUTCDATE(), GETUTCDATE(), 999);
     INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp)
     VALUES (@StationId3, @FishId3, 100, 100, GETUTCDATE());
-    EXEC dbo.sp_upsert_fish_temperature_probability;
+    EXEC dbo.spTotalUpdateProbability;
     DECLARE @R3 int; SELECT @R3 = today FROM dbo.fish_location WHERE station_Id = @StationId3 AND fish_Id = @FishId3;
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R3 = 80 PRINT 'TEST 3 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: temperature at minimum threshold -> 80% coefficient';
@@ -117,10 +118,10 @@ BEGIN TRY
     VALUES (@Mli4, NULL, GETUTCDATE(), GETUTCDATE(), 999);
     INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp)
     VALUES (@StationId4, @FishId4, 100, 100, GETUTCDATE());
-    EXEC dbo.sp_upsert_fish_temperature_probability;
+    EXEC dbo.spTotalUpdateProbability;
     DECLARE @R4 int; SELECT @R4 = today FROM dbo.fish_location WHERE station_Id = @StationId4 AND fish_Id = @FishId4;
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-    IF @R4 = 100 PRINT 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: missing temperature data -> no update';
+    IF @R4 = 100 PRINT 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: missing temperature data -> factor 1';
     ELSE PRINT 'TEST 4 FAIL [' + CAST(@ElapsedMs AS varchar) + 'ms]: expected 100, got ' + CAST(ISNULL(@R4, -999) AS varchar);
 
     -- ----------------------------------------------------------------
@@ -142,7 +143,7 @@ BEGIN TRY
     VALUES (@Mli5, 8.0, GETUTCDATE(), GETUTCDATE(), 999);
     INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp)
     VALUES (@StationId5, @FishId5, 100, 100, GETUTCDATE());
-    EXEC dbo.sp_upsert_fish_oxygen_probability;
+    EXEC dbo.spTotalUpdateProbability;
     DECLARE @R5 int; SELECT @R5 = today FROM dbo.fish_location WHERE station_Id = @StationId5 AND fish_Id = @FishId5;
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R5 = 100 PRINT 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: oxygen at optimal -> 100% coefficient';
@@ -167,7 +168,7 @@ BEGIN TRY
     VALUES (@Mli6, 4.0, GETUTCDATE(), GETUTCDATE(), 999);
     INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp)
     VALUES (@StationId6, @FishId6, 100, 100, GETUTCDATE());
-    EXEC dbo.sp_upsert_fish_oxygen_probability;
+    EXEC dbo.spTotalUpdateProbability;
     DECLARE @R6 int; SELECT @R6 = today FROM dbo.fish_location WHERE station_Id = @StationId6 AND fish_Id = @FishId6;
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R6 = 0 PRINT 'TEST 6 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: oxygen outside viable range -> 0% coefficient';
@@ -192,7 +193,7 @@ BEGIN TRY
     VALUES (@Mli7, 7.0, GETUTCDATE(), GETUTCDATE(), 999);
     INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp)
     VALUES (@StationId7, @FishId7, 100, 100, GETUTCDATE());
-    EXEC dbo.sp_upsert_fish_oxygen_probability;
+    EXEC dbo.spTotalUpdateProbability;
     DECLARE @R7 int; SELECT @R7 = today FROM dbo.fish_location WHERE station_Id = @StationId7 AND fish_Id = @FishId7;
     SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
     IF @R7 = 90 PRINT 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: oxygen at 90% zone';
