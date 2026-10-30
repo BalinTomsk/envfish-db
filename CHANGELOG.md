@@ -2,6 +2,117 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-30: **Pennsylvania imported** (data only; `us_import/pennsylvania.md`). USGS NHD + GNIS: 8,347 new water
+  bodies (1,531 lakes, 6,816 rivers), 197 existing rows filled (Delaware / Ohio / Genesee partial, Cheat River and three
+  reservoirs matched by hand), 8,614 shapes (CTRL only), 110 waterfalls + 1,255 dams, 6,686 fish pairs (PFBC Class A
+  wild trout sections and Wilderness Trout Streams via the DCNR / Wildlife Action Map mirrors, GBIF), 264 PFBC WRDS
+  stream codes as state_id, rivers through lakes (560 side-2 rows), State fix of 173 older points, 25 Delaware
+  tributaries' mouths set to PA; city / county subdivision / road / 3DEP height fills; 8 reservoir heights corrected
+  (Allegheny, Pymatuning, Raystown, Prompton, Tionesta, Curwensville, Cowanesque, Woodcock Creek). **Applied to CTRL
+  envionx and production 2026-10-30** (all but the shapes; log `F:\envionx\data\prod_pa.log` = CTRL's counts, one older
+  row one fewer; verified via MCP; CLOSED; scripts deleted).
+
+- 2026-10-29: **Rhode Island gaps closed** (data only; `us_import/rhode_island.md`). RI was imported 2026-10-20 (609
+  new, 34 filled, 340 fish pairs, 405 RIDEM assessment unit ids; CTRL + production) without a runbook here. A re-stage
+  on fresh NHD / GNIS found nothing new (all 651 features matched). Added: 651 shapes (CTRL only; never applied
+  before), rivers through lakes (114 side-2 rows, 114 lake sources, 161 lake mouths, 46 river sources, 36 tributary
+  mouths), city on 4 points. **Applied to CTRL envionx and production 2026-10-29** (prod log
+  `J:\envionx\data\prod_ri.log` = CTRL's counts, verified via MCP; CLOSED; scripts deleted).
+
+- 2026-10-29: **California imported** (data only; `us_import/california.md`). USGS NHD + GNIS: 15,177 new water
+  bodies (lakes, rivers / canals; 54 border creeks already there from Nevada were skipped, no duplicate), 305 existing
+  rows filled, 15,470 shapes (CTRL only), 549 waterfalls + 1,034 dams, 1,499 fish pairs (CDFW High Mountain Lakes;
+  GBIF not yet: its download stalled, a separate fish script follows), 3,111 CDFW DFGWATERIDs as state_id, 658
+  rivers-through-lakes rows, State fix of 294 older points, Lake McClure's points moved out of Pardee Reservoir; city /
+  county subdivision / road / 3DEP height fills; 6 reservoir heights corrected (Stampede, Hetch Hetchy, Casitas,
+  Amador, Boca, Success); mouth loops Oxalis Drain / Owens Lake fixed. **Applied to CTRL envionx and production
+  2026-10-29** (all but the shapes; the run log `J:\envionx\data\prod_ca.log` shows the same counts as CTRL, verified
+  via MCP; CLOSED; scripts deleted). GBIF fish followed as a second `ADMIN_WRITE_lake_fish_ca.sql`: 3,137 pairs on
+  1,136 water bodies, **applied to CTRL envionx 2026-10-29**, production pending (log `J:\envionx\data\prod_ca_gbif.log`).
+
+- 2026-10-29: **Mouth link fix, Lake Mead + Pinhook Creek** (data only; `ADMIN_WRITE_mouth_link_fix_nv_al.sql`).
+  Lake Mead's mouth point (Hoover Dam) linked to the Virgin River, State 'NE', 'Hoover Dum' -> Colorado River, NV,
+  'Hoover Dam' (Lake.mouth follows through TR_UPD_Tributaries). Pinhook Creek's mouth point still linked to West Fork
+  Pinhook Creek after the 2026-10-21 loop fix, which had changed only Lake.mouth -> Huntsville Spring Branch (the only
+  row in envionx where the two disagreed). **Applied to CTRL envionx and production 2026-10-29** (2 points each; rehearsal re-run 0; prod log `J:\envionx\data\prod_mouth_fix.log` + MCP; script deleted).
+
+- 2026-10-28: **Nevada imported** (data only; `us_import/nevada.md`). USGS NHD + GNIS: 3,182 new water bodies (630
+  lakes, 2,552 rivers / channels), 79 existing rows filled (Colorado / Carson / Walker / Reese River matched by hand),
+  3,259 shapes (CTRL only), 111 falls / dams, 1,406 fish pairs (NDOW Fishable Waters, NDOW Lahontan cutthroat waters,
+  GBIF), 319 NDEP waterbody codes as state_id, 104 rivers-through-lakes rows, State fix of 95 older points, Reese
+  River's source moved; city / county subdivision / road / 3DEP height fills; Lake Mead / Walker Lake / Ruby Lake
+  heights corrected. **Applied to CTRL envionx 2026-10-28 and to production 2026-10-29 (verified from the run's log
+  and over MCP; CLOSED).** Nevada went in before California: CA's generated scripts must be re-staged before they
+  are applied.
+
+- 2026-10-26: **Florida imported** (data only; `us_import/florida.md`). USGS NHD + GNIS: 7,202 new water bodies (4,017
+  lakes, 3,185 rivers / canals), 202 existing rows filled, 7,453 shapes (CTRL only), 45 falls / dams, 7,210 fish pairs
+  (FWC fishing sites + GBIF), 2,682 FDEP WBIDs as state_id, 166 rivers-through-lakes rows, State fix of 225 older
+  points; city / county subdivision / road / 3DEP height fills; Lake Talquin height 13 -> 21 m. New: GNIS 'Swamp' /
+  'Bay' / 'Gut' / 'Canal' features that NHD draws as water are taken (`us_gnis_reclass.sql`; Lake Apopka is a GNIS
+  swamp). **Applied to CTRL envionx and production 2026-10-27** (all but the shapes; the run log shows the end state identical to CTRL, verified via MCP; scripts deleted).
+
+- 2026-10-26: **Alaska rivers through lakes** (data only; `us_import/alaska.md`). 288 side-2 rows, 289 lake sources,
+  529 lake mouths (Iliamna Lake -> Kvichak River, Lake Clark -> Newhalen River ...), 241 river sources, 200 tributary
+  mouths re-pointed; Copper River skipped (typed as a lake). **Applied to CTRL envionx and production** (identical
+  counts, run log + MCP; script deleted). With it, every imported US state (CT, MA, NH, VT, ME, NY, AL, AK) has the
+  rivers-through-lakes links on CTRL and production.
+
+- 2026-10-26: **Alabama rivers through lakes** (data only; `us_import/alabama.md`). 290 side-2 rows, 286 lake sources,
+  360 lake mouths, 73 river sources, 561 tributary mouths re-pointed to their reservoir; West Point Lake held back (wrong
+  stored height, `al.dbo.us_through_skip`). **Applied to CTRL envionx and production** (identical counts, run log + MCP;
+  script deleted). AK: not yet.
+
+- 2026-10-26: **New York rivers through lakes** (data only; `us_import/new_york.md`). 640 side-2 rows, 640 lake sources,
+  1,015 lake mouths, 365 river sources, 306 tributary mouths re-pointed to their lake, 1 mouth restored (Oak Orchard
+  Creek); Keuka Lake Outlet skipped (typed as a lake). **Applied to CTRL envionx and production** (identical counts, run log + MCP; script deleted). AK / AL: not yet.
+
+- 2026-10-26: **US rivers through lakes, GNIS-mouth correction** (data only; ME / CT / MA / NH / VT runbooks). NHD also
+  draws a river's named line on DOWNSTREAM across the lake it ends in; 37 pairs (ME 15, CT 7, MA 6, NH 6, VT 3) written
+  as "flows through" now have the river's mouth = the lake, the side-2 row removed and the lake's source / mouth reset.
+  Rule: GNIS's mouth within 300 m of the lake and nearer to it than to the river's receiver, NHD's line > 300 m beyond.
+  New hand table `<st>.dbo.us_through_manual` (ME Rangeley River: GNIS points swapped). **Applied to CTRL envionx
+  and production** (one run for the five states, verified from the run log and via MCP on every corrected pair; scripts
+  deleted).
+
+- 2026-10-21: **US rivers through lakes linked** (data only, no object change; `us_import/connecticut.md` "Rivers
+  through lakes backfill"). The US imports had linked no river to the lakes it flows through (no side-2 row, lakes'
+  source / mouth left as placeholders). New `us_import/build_us_through.sql` (also run by `build_us_stage.sql`) and
+  `ADMIN_WRITE_lake_through_<st>.sql` from `gen_us_scripts.py`, Canadian convention: side-2 row river -> lake, lake
+  source / mouth = the river (one river per lake only), river source = the lake it starts at, a tributary ending in the
+  lake re-pointed from the river crossing it to the lake. **Connecticut on CTRL envionx**: 669 side-2 rows, 665 lake
+  sources, 744 lake mouths, 80 river sources, 114 tributary mouths; re-run 0. **Applied to production 2026-10-21**
+  (same end state; one pair was already there; verified via the run output and MCP; script deleted). **Massachusetts
+  on CTRL envionx** (`us_import/massachusetts.md`): 744 side-2 rows, 742 lake sources, 921 lake mouths, 179 river
+  sources, 138 tributary mouths; the writer now skips a river row typed as a lake (MA 'Sandy brook', whose trigger
+  side effect would have reset linked streams' heights). **Applied to production 2026-10-21** (same end state; one
+  outlet pair was already linked; verified via the run output and MCP on all 179 outlet pairs; script deleted).
+  **New Hampshire on CTRL envionx** (`us_import/new_hampshire.md`): 325 side-2 rows, 325 lake sources, 448 lake mouths,
+  125 river sources, 103 tributary mouths. **Applied to production 2026-10-21** (same end state; one outlet pair was
+  already linked; verified via the run output and MCP on every outlet pair; script deleted). **Vermont on CTRL
+  envionx** (`us_import/vermont.md`): 199 side-2 rows, 199 lake sources, 231 lake mouths, 32 river sources, 2
+  tributary mouths; the staging now maps a feature whose row was merged away to the survivor (Averill Creek ->
+  Ruisseau Averill). **Applied to production 2026-10-21** (every count identical; verified via the run output and MCP;
+  script deleted). **Maine on CTRL envionx** (`us_import/maine.md`): 566 side-2 rows, 1,062 lakes linked to their
+  river, 473 river sources, 478 tributary mouths. Two rules added there: GNIS's source point decides where a river
+  starts (NHD draws some rivers on across the lake they leave: Presumpscot River across Sebago Lake), one source per
+  river; and a hand list `<st>.dbo.us_through_skip` for lakes with a wrong height (McKeon Pond). The same script
+  corrected the pairs CT / MA / NH / VT had written as "flows through" (29 / 71 / 32 / 53 side-2 rows removed, lake
+  sources reset, river sources set) on CTRL. **Applied to production** (one run for all five; verified via MCP on all 1,102
+  starts-at-lake pairs; scripts deleted). NY / AK / AL: not yet.
+
+- 2026-10-21: **Alabama water bodies** (data only, no object change; `us_import/alabama.md`). USGS NHD + GNIS: 8,351
+  new (2,041 lakes, 6,310 rivers), 124 filled (Tennessee River and Shechi Lake by hand), 59 falls / rapids + 330 dams;
+  26,144 fish pairs (ADCNR State Public Fishing Lakes, GBIF); `state_id` = ADEM assessment unit id (AU_ID) on 52 lakes
+  and 893 rivers covered by exactly one unit; 95 points of older rows inside AL given State 'AL' (were NULL / 'TN'),
+  76 points of older rows OUTSIDE Alabama that carried 'AL' given their real state / province (TIGER 2024; Canadian
+  rows: their other point's province); one two-way mouth loop fixed (Pinhook Creek -> Huntsville Spring Branch); city, county / municipality,
+  mouth road and 3DEP heights on AL points (+ the new rows' points in TN / GA / MS / FL). Two NHD flowline GNIS tags
+  fixed before the build (Uphapee Creek under Chewacla Creek's id, Noxubee River under two ids). **Applied to CTRL
+  envionx** (+ 8,472 map shapes, CTRL-only). **Production: applied; verified 2026-10-29 over MCP** (8,465 AL water
+  bodies = CTRL; state ids, fish pairs, roads, heights and the Pinhook Creek fix present). CLOSED; scripts and downloads
+  deleted.
+
 - 2026-10-21: **Alaska water bodies** (data only, no object change; `us_import/alaska.md`). USGS NHD + GNIS: 11,267
   new (2,862 lakes, 8,405 rivers), 77 filled (Nushagak River's placeholder row by hand), 608 falls / rapids + 51 dams;
   12,857 fish pairs (ADF&G Anadromous Waters Catalog, Alaska Freshwater Fish Inventory, pike waters, surveyed lakes,
