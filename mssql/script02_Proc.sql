@@ -4353,6 +4353,7 @@ CREATE OR ALTER PROCEDURE dbo.sp_add_catch_memo
     @userid      UNIQUEIDENTIFIER,
     @fish_id     UNIQUEIDENTIFIER = NULL,
     @species     NVARCHAR(120)    = NULL,
+    @angler      NVARCHAR(200)    = NULL,   -- who caught it, when not the author; NULL on update keeps it
     @title       NVARCHAR(200)    = NULL,
     @text        NVARCHAR(MAX)    = NULL,
     @lat         FLOAT            = NULL,
@@ -4382,6 +4383,7 @@ BEGIN
         UPDATE dbo.catch_memo
         SET catch_memo_fish_id     = @fish_id,
             catch_memo_species     = @species,
+            catch_memo_angler      = COALESCE(@angler, catch_memo_angler),
             catch_memo_title       = @title,
             catch_memo_text        = @text,
             catch_memo_lat         = @lat,
@@ -4411,7 +4413,7 @@ BEGIN
     BEGIN
         INSERT INTO dbo.catch_memo
             (catch_memo_id, catch_memo_lake_id, catch_memo_userid, catch_memo_fish_id,
-             catch_memo_species, catch_memo_title, catch_memo_text, catch_memo_lat, catch_memo_lon,
+             catch_memo_species, catch_memo_angler, catch_memo_title, catch_memo_text, catch_memo_lat, catch_memo_lon,
              catch_memo_method, catch_memo_tackle, catch_memo_lure, catch_memo_catch_date,
              catch_memo_weight, catch_memo_weight_unit, catch_memo_length, catch_memo_length_unit,
              catch_memo_released, catch_memo_private,
@@ -4419,7 +4421,7 @@ BEGIN
              catch_memo_water_temp)
         VALUES
             (@id, @lake_id, @userid, @fish_id,
-             @species, @title, @text, @lat, @lon,
+             @species, @angler, @title, @text, @lat, @lon,
              @method, @tackle, @lure, @catch_date,
              @weight, @weight_unit, @length, @length_unit,
              @released, ISNULL(@private, 0),

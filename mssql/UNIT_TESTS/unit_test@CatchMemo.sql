@@ -1976,3 +1976,130 @@ ELSE
 
 ROLLBACK TRAN CM_Test40
 GO
+
+-- ============================================================================
+-- TEST 41: angler is stored and returned by list, get and json
+-- ============================================================================
+BEGIN TRAN CM_Test41
+    declare @test_name sysname = N'CM_Test41 [sp_add_catch_memo] : angler stored, returned by list/get/json'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @AList nvarchar(200), @AGet nvarchar(200), @AJson nvarchar(200);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+DECLARE @Lake41   uniqueidentifier = NEWID();
+DECLARE @Author41 uniqueidentifier = NEWID();
+DECLARE @Memo41   uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@Memo41, @lake_id=@Lake41, @userid=@Author41,
+    @species=N'Largemouth Bass', @angler=N'Jane Doe', @catch_date='2026-05-03';
+
+-- 2. execute unit test
+
+SELECT @AList = catch_memo_angler FROM dbo.fn_catch_memo_list(@Lake41, NULL, 1) WHERE catch_memo_id = @Memo41;
+SELECT @AGet  = catch_memo_angler FROM dbo.fn_catch_memo_get(@Memo41, @Author41, 0);
+SET @AJson = JSON_VALUE(dbo.fn_catch_memo_json(@Memo41, 0), '$.catch_memo_angler');
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF ISNULL(@AList, N'') <> N'Jane Doe' OR ISNULL(@AGet, N'') <> N'Jane Doe' OR ISNULL(@AJson, N'') <> N'Jane Doe'
+   RAISERROR ('TEST 41 FAIL [%dms]: angler not returned by list/get/json', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 41 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: angler in list/get/json'
+
+ROLLBACK TRAN CM_Test41
+GO
+
+-- ============================================================================
+-- TEST 42: an update that does not pass @angler keeps it (the portal editor has no angler field)
+-- ============================================================================
+BEGIN TRAN CM_Test42
+    declare @test_name sysname = N'CM_Test42 [sp_add_catch_memo] : update without @angler keeps the angler'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Angler nvarchar(200), @Species nvarchar(120);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+DECLARE @Lake42   uniqueidentifier = NEWID();
+DECLARE @Author42 uniqueidentifier = NEWID();
+DECLARE @Memo42   uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@Memo42, @lake_id=@Lake42, @userid=@Author42,
+    @species=N'Walleye', @angler=N'Jane Doe';
+
+-- 2. execute unit test
+
+EXEC dbo.sp_add_catch_memo @id=@Memo42, @lake_id=@Lake42, @userid=@Author42, @species=N'Sauger';
+SELECT @Angler = catch_memo_angler, @Species = catch_memo_species FROM dbo.catch_memo WHERE catch_memo_id = @Memo42;
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF ISNULL(@Angler, N'') <> N'Jane Doe' OR ISNULL(@Species, N'') <> N'Sauger'
+   RAISERROR ('TEST 42 FAIL [%dms]: update dropped the angler or skipped the species', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 42 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: update kept the angler'
+
+ROLLBACK TRAN CM_Test42
+GO
+
+-- ============================================================================
+-- TEST 43: fn_catch_log_write_state flags missing lake/fish/memo and counts visible photos
+-- ============================================================================
+BEGIN TRAN CM_Test43
+    declare @test_name sysname = N'CM_Test43 [fn_catch_log_write_state] : existence flags + visible photo count'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @L bit, @F bit, @M bit, @P int, @L0 bit, @M0 bit, @P0 int;
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+DECLARE @Lake43 uniqueidentifier = (SELECT TOP 1 lake_id FROM dbo.lake);
+DECLARE @Fish43 uniqueidentifier = (SELECT TOP 1 fish_id FROM dbo.fish);
+DECLARE @Memo43 uniqueidentifier = NEWID();
+DECLARE @User43 uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@Memo43, @lake_id=@Lake43, @userid=@User43, @species=N'Walleye';
+EXEC dbo.sp_add_catch_memo_photo @memo_id=@Memo43, @userid=@User43, @pic=0xFFD8FF01;
+EXEC dbo.sp_add_catch_memo_photo @memo_id=@Memo43, @userid=@User43, @pic=0xFFD8FF02;
+DECLARE @Hidden43 uniqueidentifier = (SELECT TOP 1 catch_memo_photo_id FROM dbo.catch_memo_photo WHERE catch_memo_photo_memoid = @Memo43);
+UPDATE dbo.catch_memo_photo SET catch_memo_photo_hidden = 1 WHERE catch_memo_photo_id = @Hidden43;
+
+-- 2. execute unit test
+
+SELECT @L = lake_exists, @F = fish_exists, @M = memo_exists, @P = visible_photos
+FROM dbo.fn_catch_log_write_state(@Lake43, @Fish43, @Memo43);
+SELECT @L0 = lake_exists, @M0 = memo_exists, @P0 = visible_photos
+FROM dbo.fn_catch_log_write_state(NEWID(), NULL, NEWID());
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @L <> 1 OR @F <> 1 OR @M <> 1 OR @P <> 1 OR @L0 <> 0 OR @M0 <> 0 OR @P0 <> 0
+   RAISERROR ('TEST 43 FAIL [%dms]: unexpected write-state flags or photo count', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 43 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: write-state flags and photo count'
+
+ROLLBACK TRAN CM_Test43
+GO

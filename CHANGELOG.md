@@ -2,6 +2,20 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-30: **catch_memo_angler** (for docapi 1.29.0 MCP `add_catch_log`): `dbo.catch_memo.catch_memo_angler`
+  NVARCHAR(200) NULL (who caught it, when not the author), `sp_add_catch_memo @angler` (NULL on update keeps it), the
+  column in `fn_catch_memo_list` / `fn_catch_memo_json` / `fn_catch_memo_get`, and new `fn_catch_log_write_state`
+  (existence flags + visible photo count, so docapi reads no table). Tests: `unit_test@CatchMemo.sql` 41-43.
+  Applied local only; prod via `ADMIN_WRITE_catch_memo_angler.sql` (uncommitted, delete once applied). CTRL not
+  applied (did not resolve 2026-10-30). Pre-existing local failures: CatchMemo 8, 11, 15 (fish_moon_sensitive NOT NULL)
+  and 12, 17 (WaterStation identity insert).
+- 2026-10-22: **`dbo.fn_fish_reasoning_json(@sid, @fish_id, @at)`** (`script02_Funct.sql`) for the forecast Reasoning tab
+  (FishTracker `Forecast/Reasoning.aspx`): today's value and its four factors from `dbo.fn_fish_location_today`, what
+  each was made from (moon day, curve value and peak; month index, peak and peak month; spawn months; water readings;
+  temperature / oxygen habitat ranges; the day's weather), and the same for 7 days from @at (day 0 = today). NULL for
+  an unknown station or a fish not listed there. Tests: `unit_test@FishReasoningJson.sql` (5, failing first).
+  **Applied to CTRL envionx and production 2026-10-22** (walleye document 2,186 chars; one-off scripts deleted).
+
 - 2026-10-22: **Forecast-map probability reworked.** `spTotalUpdateProbability` recomputes `fish_location.today` from
   `probability` on every run in one UPDATE from the new `dbo.fn_fish_location_today(@month, @moon_day)`: probability x
   month factor (month / the fish's peak month) x lunar factor (curve day from the new `dbo.fn_moon_day`, / the fish's
