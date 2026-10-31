@@ -4887,6 +4887,8 @@ GO
 --    @viewer_id NULL  => guest (coordinates are returned as NULL).
 --    Private memos are returned only to their author and to admins.
 --    can_edit reflects author + 60-day lock (admins always 1).
+--    catch_memo_angler: who caught it when not the author (set by docapi's MCP add_catch_log).
+--    Called by: FishTracker wfRiverViewFishing.aspx.cs (Catch Log cards), aspcore WaterRepository.
 CREATE OR ALTER FUNCTION dbo.fn_catch_memo_list
 (
     @lake_id   UNIQUEIDENTIFIER,
@@ -4903,6 +4905,7 @@ RETURN
         m.catch_memo_userid,
         m.catch_memo_fish_id,
         COALESCE(NULLIF(m.catch_memo_species, N''), f.fish_name) AS catch_memo_species,
+        m.catch_memo_angler,
         f.fish_latin AS catch_memo_fish_latin,
         m.catch_memo_title,
         m.catch_memo_text,
@@ -4987,6 +4990,9 @@ GO
 --     n (> 1)        -> the top n photos by that same "best" ranking, if that many exist.
 -- For any positive @top_photos only NON-hidden photos are eligible (matching the public gallery);
 -- NULL still returns everything so an admin can audit hidden/removed photos.
+-- Called by: FishTracker wfCatchMemoJson.aspx.cs (admin export); docapi JdbcCatchLogCommandRepository reads a
+-- memo back with @top_photos = 0 after the MCP add_catch_log / add_catch_log_photo write it, and (.find) reads the
+-- stored memo that update_catch_log changes.
 CREATE OR ALTER FUNCTION dbo.fn_catch_memo_json (@memo_id UNIQUEIDENTIFIER, @top_photos INT = NULL)
 RETURNS NVARCHAR(MAX)
 AS
@@ -5002,6 +5008,7 @@ BEGIN
             f.fish_name  AS catch_memo_fish_name,
             f.fish_latin AS catch_memo_fish_latin,
             m.catch_memo_species,
+            m.catch_memo_angler,
             m.catch_memo_title,
             m.catch_memo_text,
             m.catch_memo_lat,
@@ -5082,10 +5089,44 @@ GO
 
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_catch_log_write_state' AND xtype = 'IF')
+    DROP function dbo.fn_catch_log_write_state
+GO
+-- What a catch-log write must check first, in one row, because dbo.sp_add_catch_memo and
+-- dbo.sp_add_catch_memo_photo skip silently: a memo for a missing water body would still be inserted (no
+-- foreign key), and a fourth photo is simply not stored. Any argument may be NULL (its flag is then 0).
+--   lake_exists    @lake_id is a dbo.lake row
+--   fish_exists    @fish_id is a dbo.fish row
+--   memo_exists    @memo_id is a dbo.catch_memo row
+--   visible_photos non-hidden photos on @memo_id (sp_add_catch_memo_photo allows 3)
+-- Called by: docapi JdbcCatchLogCommandRepository (fishExists, photoCount, add, addPhoto) for the MCP tools
+-- add_catch_log / add_catch_log_photo.
+CREATE OR ALTER FUNCTION dbo.fn_catch_log_write_state
+(
+    @lake_id UNIQUEIDENTIFIER,
+    @fish_id UNIQUEIDENTIFIER,
+    @memo_id UNIQUEIDENTIFIER
+)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT
+        CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.lake l WHERE l.lake_id = @lake_id) THEN 1 ELSE 0 END AS BIT) AS lake_exists,
+        CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.fish f WHERE f.fish_id = @fish_id) THEN 1 ELSE 0 END AS BIT) AS fish_exists,
+        CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.catch_memo m WHERE m.catch_memo_id = @memo_id) THEN 1 ELSE 0 END AS BIT) AS memo_exists,
+        (SELECT COUNT(*) FROM dbo.catch_memo_photo p
+          WHERE p.catch_memo_photo_memoid = @memo_id AND p.catch_memo_photo_hidden = 0) AS visible_photos
+);
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_catch_memo_get' AND xtype = 'IF')
     DROP function dbo.fn_catch_memo_get
 GO
 -- 5. fn_catch_memo_get : single memo for the edit form -----------------------
+-- Called by: FishTracker wfCatchMemoEdit.aspx.cs, aspcore CatchMemoEditorRepository. Returns catch_memo_angler
+-- for display; the editors do not change it (sp_add_catch_memo keeps it when @angler is NULL).
 CREATE OR ALTER FUNCTION dbo.fn_catch_memo_get
 (
     @memo_id   UNIQUEIDENTIFIER,
@@ -5102,6 +5143,7 @@ RETURN
         m.catch_memo_userid,
         m.catch_memo_fish_id,
         m.catch_memo_species,
+        m.catch_memo_angler,
         m.catch_memo_title,
         m.catch_memo_text,
         m.catch_memo_lat,
@@ -5174,6 +5216,8 @@ GO
 -- yesterday -- otherwise a backdated catch would silently get today's water temp misattributed
 -- to it. Returns zero rows only when the lake has no station at all -- caller treats a missing
 -- row as "no snapshot".
+-- Called by: FishTracker wfCatchMemoEdit.aspx.cs GetWeatherSnapshot (catch form); docapi
+-- JdbcCatchLogCommandRepository.stationWeather (MCP add_catch_log fills weather values not given).
 CREATE OR ALTER FUNCTION dbo.fn_catch_weather_snapshot
 (
     @lake_id    UNIQUEIDENTIFIER,
@@ -7145,4 +7189,106 @@ RETURN
                     CROSS APPLY dbo.fn_habitat_koef(cws.oxygen, h.ri_min, h.ri_low, h.ri_avg, h.ri_high, h.ri_max) k
                     WHERE h.fish_Id = fl.fish_Id AND h.ri_type = 33 ) o
      CROSS APPLY ( SELECT ROUND(ISNULL(fl.probability, 100) * m.f * l.f * ISNULL(t.koef, 1.00) * ISNULL(o.koef, 1.00), 0) AS v ) x
+GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_reasoning_json' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_fish_reasoning_json
+GO
+
+-- Why one fish has its forecast-map probability at one water station, and the same calculation for the 7 days from
+-- @at. The value is dbo.fn_fish_location_today's (probability x month x lunar x temperature x oxygen, 0..100); this
+-- adds what each factor was made from so a page can explain it:
+--   factors   - the four factors (0..1); base = fish_location.probability, today = the computed value
+--   moon      - curve day (dbo.fn_moon_day), the fish's curve value that day and its best day (null without a curve)
+--   month     - this month's catch index, the fish's peak index and peak month (null without monthly rows)
+--   spawn     - spawn months (fish_Rule periods), inSpawnSeason = this month falls in one
+--   water     - the station's latest readings (CurrentWaterState); ranges = the fish's temperature / oxygen habitat
+--   weather   - the station's weather row for that day (weather_Forecast), absent when there is none
+--   week      - 7 days from @at, each at @at's time of day (so day 0 = today): date, moonDay, the four factors,
+--               probability, weather. Water readings are carried
+--               forward unchanged (they are not forecast); the month and moon factors change day by day.
+-- NULL for an unknown station, or a fish not listed at that station (dbo.fish_location).
+-- Called by FishTracker Forecast/Reasoning.aspx.cs (LoadReasoning).
+-- SELECT dbo.fn_fish_reasoning_json(266353, '2CFFB500-3E59-4120-9460-055856E9AC5C', SYSUTCDATETIME())
+CREATE FUNCTION dbo.fn_fish_reasoning_json( @sid int, @fish_id uniqueidentifier, @at datetime2 )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    DECLARE @station uniqueidentifier = (SELECT TOP 1 id FROM dbo.WaterStation WHERE sid = @sid);
+    IF @station IS NULL OR @fish_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM dbo.fish_location WHERE station_Id = @station AND fish_Id = @fish_id)
+        RETURN NULL;
+
+    DECLARE @day0 date = CAST(@at AS date);
+    DECLARE @month tinyint = MONTH(@at);
+    DECLARE @moon_day tinyint = dbo.fn_moon_day(@at);
+
+    RETURN (
+    SELECT ws.sid, COALESCE(NULLIF(ws.locName, ''), NULLIF(ws.locDesc, ''), 'station ' + ws.mli) AS station, ISNULL(l.lake_name, ws.lakeName) AS lakeName, ws.lakeId
+         , ws.country, ws.state
+         , f.fish_id AS fishId, f.fish_name AS fish
+         , f.fish_moon_sensitive AS moonSensitive, f.fish_migrate_pattern AS migrates
+         , t.probability AS base, t.newToday AS today
+         , CAST(t.monthFactor AS decimal(6,3))       AS [factors.month]
+         , CAST(t.lunarFactor AS decimal(6,3))       AS [factors.lunar]
+         , CAST(t.temperatureFactor AS decimal(6,3)) AS [factors.temperature]
+         , CAST(t.oxygenFactor AS decimal(6,3))      AS [factors.oxygen]
+         , @moon_day AS [moon.day]
+         , (SELECT p.probability FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = f.fish_id AND p.[day] = @moon_day) AS [moon.value]
+         , (SELECT MAX(p.probability) FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = f.fish_id) AS [moon.peak]
+         , @month AS [month.month]
+         , (SELECT p.probability FROM dbo.fish_catch_probability p WHERE p.fish_id = f.fish_id AND p.[month] = @month) AS [month.index]
+         , (SELECT MAX(p.probability) FROM dbo.fish_catch_probability p WHERE p.fish_id = f.fish_id) AS [month.peak]
+         , (SELECT TOP 1 p.[month] FROM dbo.fish_catch_probability p WHERE p.fish_id = f.fish_id ORDER BY p.probability DESC, p.[month]) AS [month.peakMonth]
+         , JSON_QUERY(ISNULL(( SELECT r.periodStart AS monthStart, r.periodEnd AS monthEnd FROM dbo.fish_Rule r
+                                WHERE r.fish_Id = f.fish_id AND r.periodStart > 0 AND r.periodEnd > 0
+                                ORDER BY r.periodStart FOR JSON PATH ), '[]')) AS spawn
+         , CAST(CASE WHEN EXISTS ( SELECT 1 FROM dbo.fish_Rule r WHERE r.fish_Id = f.fish_id AND r.periodStart > 0 AND r.periodEnd > 0
+                                     AND (    (r.periodStart <= r.periodEnd AND @month BETWEEN r.periodStart AND r.periodEnd)
+                                           OR (r.periodStart >  r.periodEnd AND (@month >= r.periodStart OR @month <= r.periodEnd)) ) )
+                     THEN 1 ELSE 0 END AS bit) AS inSpawnSeason
+         , cws.stamp AS [water.stamp]
+         , CAST(cws.temperature AS decimal(9,2)) AS [water.temperature], CAST(cws.oxygen AS decimal(9,2)) AS [water.oxygen]
+         , CAST(cws.discharge AS decimal(12,3)) AS [water.discharge], CAST(cws.turbidity AS decimal(9,2)) AS [water.turbidity]
+         , CAST(cws.ph AS decimal(5,2)) AS [water.ph], CAST(cws.velocity AS decimal(9,3)) AS [water.velocity]
+         , JSON_QUERY(( SELECT CAST(ri.ri_min AS decimal(9,2)) AS [min], CAST(ri.ri_low AS decimal(9,2)) AS low
+                             , CAST(ri.ri_avg AS decimal(9,2)) AS [avg], CAST(ri.ri_high AS decimal(9,2)) AS high
+                             , CAST(ri.ri_max AS decimal(9,2)) AS [max]
+                          FROM dbo.fish_Rule r JOIN dbo.real_interval ri ON ri.ri_parent_id = r.id AND ri.ri_type = 17
+                         WHERE r.fish_Id = f.fish_id AND r.periodStart = -1 AND r.periodEnd = -1
+                           FOR JSON PATH, WITHOUT_ARRAY_WRAPPER )) AS [ranges.temperature]
+         , JSON_QUERY(( SELECT CAST(ri.ri_min AS decimal(9,2)) AS [min], CAST(ri.ri_low AS decimal(9,2)) AS low
+                             , CAST(ri.ri_avg AS decimal(9,2)) AS [avg], CAST(ri.ri_high AS decimal(9,2)) AS high
+                             , CAST(ri.ri_max AS decimal(9,2)) AS [max]
+                          FROM dbo.fish_Rule r JOIN dbo.real_interval ri ON ri.ri_parent_id = r.id AND ri.ri_type = 33
+                         WHERE r.fish_Id = f.fish_id AND r.periodStart = -1 AND r.periodEnd = -1
+                           FOR JSON PATH, WITHOUT_ARRAY_WRAPPER )) AS [ranges.oxygen]
+         , JSON_QUERY(( SELECT TOP 1 wf.shortText AS conditions, CAST(wf.tmHigh AS decimal(5,1)) AS airHigh
+                             , CAST(wf.tmLow AS decimal(5,1)) AS airLow, wf.pop AS precipChance, wf.rain_today AS precipMm
+                             , CAST(wf.wind_max_speed AS decimal(5,1)) AS wind, wf.wind_direction AS windDirection
+                          FROM dbo.weather_Forecast wf WHERE wf.link = @station AND wf.dt = @day0
+                         ORDER BY wf.tm DESC FOR JSON PATH, WITHOUT_ARRAY_WRAPPER )) AS weather
+         , JSON_QUERY(( SELECT CONVERT(char(10), d.dt, 23) AS [date], d.md AS moonDay
+                             , CAST(w.monthFactor AS decimal(6,3)) AS monthFactor, CAST(w.lunarFactor AS decimal(6,3)) AS lunarFactor
+                             , CAST(w.temperatureFactor AS decimal(6,3)) AS temperatureFactor
+                             , CAST(w.oxygenFactor AS decimal(6,3)) AS oxygenFactor, w.newToday AS probability
+                             , JSON_QUERY(( SELECT TOP 1 wf.shortText AS conditions, CAST(wf.tmHigh AS decimal(5,1)) AS airHigh
+                                                 , CAST(wf.tmLow AS decimal(5,1)) AS airLow, wf.pop AS precipChance
+                                              FROM dbo.weather_Forecast wf WHERE wf.link = @station AND wf.dt = d.dt
+                                             ORDER BY wf.tm DESC FOR JSON PATH, WITHOUT_ARRAY_WRAPPER )) AS weather
+                          FROM ( VALUES (0), (1), (2), (3), (4), (5), (6) ) n(i)
+                         CROSS APPLY ( SELECT DATEADD(DAY, n.i, @day0) AS dt ) d0
+                         CROSS APPLY ( SELECT d0.dt, dbo.fn_moon_day(DATEADD(DAY, n.i, @at)) AS md ) d
+                         CROSS APPLY ( SELECT x.* FROM dbo.fn_fish_location_today(MONTH(d.dt), d.md) x
+                                        WHERE x.station_Id = @station AND x.fish_Id = @fish_id ) w
+                         ORDER BY n.i FOR JSON PATH )) AS week
+      FROM dbo.WaterStation ws
+      JOIN dbo.fish f ON f.fish_id = @fish_id
+      LEFT JOIN dbo.Lake l ON l.Lake_id = ws.lakeId
+      LEFT JOIN dbo.CurrentWaterState cws ON cws.mli = ws.mli
+     CROSS APPLY ( SELECT TOP 1 x.* FROM dbo.fn_fish_location_today(@month, @moon_day) x
+                    WHERE x.station_Id = @station AND x.fish_Id = @fish_id ) t
+     WHERE ws.id = @station
+       FOR JSON PATH, WITHOUT_ARRAY_WRAPPER );
+END
 GO

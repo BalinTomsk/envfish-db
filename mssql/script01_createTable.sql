@@ -2872,6 +2872,7 @@ CREATE TABLE dbo.catch_memo
         catch_memo_userid     UNIQUEIDENTIFIER NOT NULL,   -- author      (Session["user"])
         catch_memo_fish_id    UNIQUEIDENTIFIER NULL,       -- resolved species (dbo.fish.fish_id)
         catch_memo_species    NVARCHAR(120)    NULL,        -- free-text species as typed
+        catch_memo_angler     NVARCHAR(200)    NULL,        -- who caught it, when not the author (a news report's angler)
         catch_memo_title      NVARCHAR(200)    NULL,
         catch_memo_text       NVARCHAR(MAX)    NULL,        -- free notes / message
         catch_memo_lat        FLOAT            NULL,        -- catch point (hidden from guests)
