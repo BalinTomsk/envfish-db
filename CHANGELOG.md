@@ -2,6 +2,30 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-10-30: **North Dakota imported** (data only; `us_import/north_dakota.md`). USGS NHD + GNIS: 1,456 new water
+  bodies (857 lakes, 599 rivers), 54 existing rows filled (Missouri River, Red River of the North -> 'Red River' and
+  Souris River -> the Canadian row, partial, by hand), 1,500 shapes (CTRL only), 2 waterfalls + 165 dams, 1,378 fish
+  pairs (NDGF Fishing Waters: sport fish lists, stocking 2016+, net survey catch records; GBIF), 185 NDGF lake codes as
+  state_id, rivers through lakes (66 side-2 rows), State fix of 33 older points; city / county subdivision / road /
+  3DEP height fills; 8 lake heights corrected (Pelican, Tschida, Pipestem, Arrowwood, Isabel, Belcourt, Upsilon,
+  Richard). **Applied to CTRL envionx 2026-10-30**; **production 2026-10-30** (all but the shapes; the run log
+  `F:\envionx\data\nhd_nd\logs\prod_nd.log` shows the same counts as CTRL, verified via MCP; CLOSED; scripts deleted).
+
+- 2026-10-30: **South Dakota imported** (data only; `us_import/south_dakota.md`). USGS NHD + GNIS: 2,276 new water
+  bodies (738 lakes, 1,538 rivers), 70 existing rows filled (Missouri River and Rock River partial, Lake Francis Case =
+  older 'Francis Lake' row, by hand), 2,343 shapes (CTRL only), 7 waterfalls + 323 dams, 1,490 fish pairs (SD GFP
+  annual stocking reports 2016-2026 read from PDF, GBIF), 242 SD DANR assessment unit ids (EPA ATTAINS) as state_id,
+  rivers through lakes (134 side-2 rows), State fix of 53 older points; city / county subdivision / road / 3DEP height
+  fills; 8 lake heights corrected (Lake Sharpe, Lewis and Clark Lake, Kampeska, Roy, Spirit, Badger, Horseshoe,
+  Spring). **Applied to CTRL envionx and production 2026-10-30** (production counts = CTRL; shapes CTRL only).
+- 2026-10-30: **South Dakota merge list + merges** (`us_import/merge_list.py` -> `us_import/south_dakota.html`, now a
+  step of the add-us-state skill). 5 bare 2020 point rows merged into the full rows (Big Sioux, Cheyenne, White,
+  Little White River, Red River of the North -> Red River): 11 fish copied, 5 rows deleted
+  (`ADMIN_WRITE_lake_merge_sd.sql`). **Applied to CTRL envionx and production 2026-10-30** (production counts = CTRL).
+- 2026-10-30: **South Dakota river sources** (`ADMIN_WRITE_sd_source_fix.sql`): Big Sioux, Little White, Cheyenne and
+  White River kept 2018 source points far down the river; moved to GNIS's source with state / county / subdivision /
+  3DEP height / city. **Applied to CTRL envionx and production 2026-10-30.**
+
 - 2026-10-30: **Pennsylvania imported** (data only; `us_import/pennsylvania.md`). USGS NHD + GNIS: 8,347 new water
   bodies (1,531 lakes, 6,816 rivers), 197 existing rows filled (Delaware / Ohio / Genesee partial, Cheat River and three
   reservoirs matched by hand), 8,614 shapes (CTRL only), 110 waterfalls + 1,255 dams, 6,686 fish pairs (PFBC Class A
