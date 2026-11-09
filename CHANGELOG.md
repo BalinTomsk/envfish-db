@@ -2,6 +2,13 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-09: **`fn_forecast_plot_json` no longer returns NULL for a station without readings.** `"stamp"` read the
+  latest `dbo.WaterData` row and was concatenated into the document, so a station that never reported (1,108 supported
+  stations on CTRL) - or one without a `lakeid` - got a NULL document, and FishTracker `Forecast/Plot.aspx`
+  `GetJsonPlot` threw "Data is Null" on its station-map pin (prod 04AA004 / sid 268044). Both now default to `""`.
+  Test: `unit_test@ForecastPlotJson.sql` 4 (failed first, passes now). Pre-existing, not caused by the water
+  temperature removal. Existing databases: `F:\logs\water_tempix_forecast_plot_json.sql` replaces only this function.
+
 - 2026-11-08: **`dbo.WaterData.air`, `.Cyanobacteria` and `.Orthophosphate` dropped.** air and Cyanobacteria were
   NULL/0 for every station (USGS unit `air, °C` never matched `sp_push_us_water_data`'s `'Air'` check; no
   cyanobacteria code was mapped); Orthophosphate reached 4 of 10,611 stations on CTRL and none on production.

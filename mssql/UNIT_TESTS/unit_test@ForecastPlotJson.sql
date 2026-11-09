@@ -20,6 +20,7 @@ GO
   TEST 1 - Station whose lakeid resolves     -> "lakename" carries lake.lake_name, "lakeid" matches
   TEST 2 - Station whose lakeid is an orphan -> "lakename" is empty, document still valid JSON
   TEST 3 - A lake name containing a double quote is escaped, so the document stays parseable
+  TEST 4 - Station with no WaterData row and no lakeid -> valid document, "stamp" and "lakeid" empty
 */
 
 -- ===================================================================================
@@ -153,4 +154,44 @@ ELSE
     RAISERROR ('TEST 3 FAIL [%dms]: expected the quotes replaced by apostrophes, got isjson=%d lakename=%s', 16, -1, @ElapsedMs, @isJson, @lakename);
 
 ROLLBACK TRAN Test03ForecastPlotQuotedName
+GO
+
+-- ===================================================================================
+-- TEST 4: a station with NO dbo.WaterData row (1,108 supported stations on CTRL) must still get a
+--         valid document. "stamp" read the latest WaterData row, and NULL concatenated into the
+--         string made the whole document NULL - Plot.aspx GetJsonPlot then threw "Data is Null"
+--         for every such pin on the station map (prod station 04AA004, sid 268044, 2026-11-09).
+--         A station with no lakeid nulled it the same way. Both now come back as "".
+-- ===================================================================================
+BEGIN TRAN Test04ForecastPlotNoWaterData
+    DECLARE @test_name sysname = N'Test04ForecastPlotNoWaterData [fn_forecast_plot_json] : no WaterData row, no lake';
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(MAX), @isJson int, @stamp nvarchar(64), @lakeid nvarchar(64), @place nvarchar(255);
+BEGIN TRY SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- a station that has never reported a reading and is not linked to a water body
+INSERT INTO dbo.WaterStation (MLI, state, lat, lon, country, locDesc, locType, locName, county, sid, lakeName, supported)
+VALUES (N'UT_FPJ_4', 'NL', 47.50, -52.70, 'CA', N'UT FPJ STATION WITHOUT READINGS', 2, N'UT FPJ Station 4', N'', 990404, N'', 1);
+
+SET @json = dbo.fn_forecast_plot_json(990404, '00000000-0000-0000-0000-000000000000');
+
+SET @isJson = ISJSON(@json);
+SET @stamp  = JSON_VALUE(@json, '$.stamp');
+SET @lakeid = JSON_VALUE(@json, '$.lakeid');
+SET @place  = JSON_VALUE(@json, '$.place');
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE() AS ErrorState
+         , @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF @json IS NOT NULL AND @isJson = 1 AND @stamp = N'' AND @lakeid = N'' AND @place = N'UT FPJ STATION WITHOUT READINGS'
+    PRINT 'TEST 4 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: station without readings or lake still gets a valid document';
+ELSE
+    RAISERROR ('TEST 4 FAIL [%dms]: expected valid JSON with empty stamp and lakeid, got isjson=%d', 16, -1, @ElapsedMs, @isJson);
+
+ROLLBACK TRAN Test04ForecastPlotNoWaterData
 GO

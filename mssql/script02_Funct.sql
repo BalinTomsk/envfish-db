@@ -4608,8 +4608,10 @@ BEGIN
 	+ ', "fish":"' + COALESCE(@fishName, '') + '"'
 	+ ', "country":"' + @country + '"'
 	+ ', "state":"' + @state + '"'
-	+ ', "stamp":"' + @WaterStateDate + '"'
-	+ ', "lakeid":"' + CAST(@lakeid as varchar(36)) + '"'
+	-- COALESCE: a station that never reported (no dbo.WaterData row) or has no lakeid would otherwise
+	-- NULL the whole concatenated document, and Plot.aspx GetJsonPlot throws "Data is Null" on it.
+	+ ', "stamp":"' + COALESCE(@WaterStateDate, '') + '"'
+	+ ', "lakeid":"' + COALESCE(CAST(@lakeid as varchar(36)), '') + '"'
 	+ ', "lakename":"' + COALESCE(@lakeName, N'') + '"'
 	+ ', "date":['          + @DatesList        + ']'
 	+ ', "discharge":['     + @DischargeList   + ']'
