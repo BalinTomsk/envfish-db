@@ -49,11 +49,11 @@ CREATE FUNCTION dbo.GetStationInfo( @fishId uniqueidentifier, @placeId bigint )
   RETURNS @TBL TABLE (wheatherStamp datetime, lat float, lon float, loadWeather int
         , county varchar(64), city varchar(64), state char(2), country char(2), locName varchar(max), id uniqueidentifier
         , today int
-        , temperature float, turbidity float, oxygen float, sid int, mli varchar(64)
+        , turbidity float, oxygen float, sid int, mli varchar(64)
         , stamp datetime, discharge float, elevation float )
     AS
     begin
-      DECLARE @today int, @temperature float, @turbidity float, @oxygen float, @state char(2)
+      DECLARE @today int, @turbidity float, @oxygen float, @state char(2)
       DECLARE @stamp datetime, @discharge float, @elevation float, @locId uniqueidentifier, @shift int
       DECLARE @isw int, @wsId uniqueidentifier, @mli varchar(64)
       
@@ -62,7 +62,7 @@ CREATE FUNCTION dbo.GetStationInfo( @fishId uniqueidentifier, @placeId bigint )
     
   INSERT INTO @TBL   
     SELECT w.wheatherStamp, w.lat, w.lon, 0 as loadWeather, county, city, [state], country, locName, id, @today 
-       , s.temperature, s.turbidity, s.oxygen, w.sid, w.mli, s.stamp, s.discharge, s.elevation
+       , s.turbidity, s.oxygen, w.sid, w.mli, s.stamp, s.discharge, s.elevation
     FROM vWaterStation w, CurrentWaterState s  WHERE w.mli=s.mli AND w.sid = @placeId
     
     SELECT @stamp = stamp, @state = state FROM @TBL  
@@ -343,12 +343,12 @@ CREATE FUNCTION dbo.GetStationInfo( @fishId uniqueidentifier, @placeId bigint )
   RETURNS @TBL TABLE (wheatherStamp datetime, lat float, lon float, loadWeather int
         , county varchar(64), city varchar(64), state char(2), country char(2), locName varchar(max), id uniqueidentifier
         , today int
-        , temperature float, turbidity float, oxygen float, sid int, mli varchar(64)
+        , turbidity float, oxygen float, sid int, mli varchar(64)
         , stamp datetime, discharge float, elevation float )
 WITH SCHEMABINDING
     AS
     begin
-      DECLARE @today int, @temperature float, @turbidity float, @oxygen float, @state char(2)
+      DECLARE @today int, @turbidity float, @oxygen float, @state char(2)
       DECLARE @stamp datetime, @discharge float, @elevation float, @locId uniqueidentifier, @shift int
       DECLARE @isw int, @wsId uniqueidentifier, @mli varchar(64)
       
@@ -357,7 +357,7 @@ WITH SCHEMABINDING
     
   INSERT INTO @TBL   
     SELECT w.wheatherStamp, w.lat, w.lon, 0 as loadWeather, county, city, [state], country, locName, id, @today 
-       , s.temperature, s.turbidity, s.oxygen, w.sid, w.mli, s.stamp, s.discharge, s.elevation
+       , s.turbidity, s.oxygen, w.sid, w.mli, s.stamp, s.discharge, s.elevation
     FROM dbo.vWaterStation w, dbo.CurrentWaterState s  WHERE w.mli=s.mli AND w.sid = @placeId
     
     SELECT @stamp = stamp, @state = state FROM @TBL  
@@ -648,12 +648,12 @@ CREATE FUNCTION [dbo].[GetStationInfo]( @fishId uniqueidentifier, @placeId bigin
   RETURNS @TBL TABLE (wheatherStamp datetime, lat float, lon float, loadWeather int
         , county varchar(64), city varchar(64), state char(2), country char(2), locName varchar(max), id uniqueidentifier
         , today int
-        , temperature float, turbidity float, oxygen float, sid int, mli varchar(64)
+        , turbidity float, oxygen float, sid int, mli varchar(64)
         , stamp datetime, discharge float, elevation float )
 WITH SCHEMABINDING
     AS
     begin
-      DECLARE @today int, @temperature float, @turbidity float, @oxygen float, @state char(2)
+      DECLARE @today int, @turbidity float, @oxygen float, @state char(2)
       DECLARE @stamp datetime, @discharge float, @elevation float, @locId uniqueidentifier, @shift int
       DECLARE @isw int, @wsId uniqueidentifier, @mli varchar(64)
       
@@ -662,7 +662,7 @@ WITH SCHEMABINDING
     
   INSERT INTO @TBL   
     SELECT w.wheatherStamp, w.lat, w.lon, 0 as loadWeather, county, city, [state], country, locName, id, @today 
-       , s.temperature, s.turbidity, s.oxygen, w.sid, w.mli, s.stamp, s.discharge, s.elevation
+       , s.turbidity, s.oxygen, w.sid, w.mli, s.stamp, s.discharge, s.elevation
     FROM  dbo.vWaterStation w,  dbo.CurrentWaterState s  WHERE w.mli=s.mli AND w.sid = @placeId
     
     SELECT @stamp = stamp, @state = state FROM @TBL  
@@ -746,15 +746,15 @@ WITH SCHEMABINDING
 RETURN
 WITH cte AS
 (
-    SELECT MAX(stamp) AS stamp, AVG(temperature) AS temperature, AVG(discharge) AS discharge
+    SELECT MAX(stamp) AS stamp, AVG(discharge) AS discharge
         , AVG(turbidity) AS turbidity, AVG(oxygen) AS oxygen, AVG(ph) AS PH, AVG(elevation) AS elevation, AVG(velocity) AS velocity, mli 
         FROM dbo.vw_WaterData
         WHERE country=@country and state = @state AND stamp >= DATEADD( hour, -1 * @hr, getdate() ) 
         GROUP BY mli
 )
-SELECT stamp, temperature, discharge, turbidity, oxygen, ph, elevation, velocity, mli FROM cte
+SELECT stamp, discharge, turbidity, oxygen, ph, elevation, velocity, mli FROM cte
 UNION ALL
-    SELECT stamp, temperature, discharge, turbidity, oxygen, ph, elevation, velocity, mli
+    SELECT stamp, discharge, turbidity, oxygen, ph, elevation, velocity, mli
         FROM dbo.vw_WaterData z WHERE EXISTS
         (SELECT 1 FROM  ( SELECT MAX(stamp) AS stamp, mli FROM dbo.vw_WaterData v WHERE 
         country=@country and state = @state AND 
@@ -2346,7 +2346,7 @@ RETURN   --lat, lon, today, location, sid, country, state, county
 		AND EXISTS( SELECT 1 FROM dbo.CurrentWaterState c
 		             WHERE c.mli = w.mli
 		               AND c.stamp > DATEADD(day, -15, GETDATE())
-		               AND ( c.temperature IS NOT NULL OR c.discharge IS NOT NULL
+		               AND ( c.discharge IS NOT NULL
 		                  OR c.oxygen IS NOT NULL OR c.ph IS NOT NULL OR c.elevation IS NOT NULL ) )
 		AND EXISTS( SELECT 1 FROM dbo.weather_Forecast wf
 		             WHERE wf.mli = w.mli AND wf.dt >= CAST(GETDATE() AS date) )
@@ -2386,7 +2386,7 @@ RETURN   --lat, lon, today, location, sid, country, state, county
 		AND EXISTS( SELECT 1 FROM dbo.CurrentWaterState c
 		             WHERE c.mli = w.mli
 		               AND c.stamp > DATEADD(day, -15, GETDATE())
-		               AND ( c.temperature IS NOT NULL OR c.discharge IS NOT NULL
+		               AND ( c.discharge IS NOT NULL
 		                  OR c.oxygen IS NOT NULL OR c.ph IS NOT NULL OR c.elevation IS NOT NULL ) )
 		-- WEATHER was not a condition at all, so a station with no forecast still got a pin.
 		AND EXISTS( SELECT 1 FROM dbo.weather_Forecast wf
@@ -5211,10 +5211,10 @@ GO
 -- body's station (dbo.WaterStation.lakeId) and its dbo.weather_Forecast row for that calendar
 -- date (air temp/pressure/conditions -- retained ~15 days back / 10 days forward; naturally
 -- comes back NULL once @catch_date falls outside that window, since no forecast row exists).
--- dbo.CurrentWaterState is different: it holds a single "right now" reading per station with NO
--- date dimension at all (PK is just mli), so it is only joined when @catch_date is today or
--- yesterday -- otherwise a backdated catch would silently get today's water temp misattributed
--- to it. Returns zero rows only when the lake has no station at all -- caller treats a missing
+-- water_temp is always NULL: stations no longer report a water temperature (removed from
+-- dbo.WaterData / dbo.CurrentWaterState 2026-11-08). The column is kept so the catch-memo callers
+-- below need no change; a water temp on a catch is now only what the angler types in.
+-- Returns zero rows only when the lake has no station at all -- caller treats a missing
 -- row as "no snapshot".
 -- Called by: FishTracker wfCatchMemoEdit.aspx.cs GetWeatherSnapshot (catch form); docapi
 -- JdbcCatchLogCommandRepository.stationWeather (MCP add_catch_log fills weather values not given).
@@ -5232,11 +5232,9 @@ RETURN
         wf.pressure     AS weather_pressure,
         wf.shortText    AS weather_text,
         wf.icon         AS weather_icon,
-        cws.temperature AS water_temp
+        CAST(NULL AS float) AS water_temp
     FROM dbo.WaterStation ws
     LEFT JOIN dbo.weather_Forecast  wf  ON wf.mli  = ws.mli AND wf.dt = @catch_date
-    LEFT JOIN dbo.CurrentWaterState cws ON cws.mli = ws.mli
-                                        AND @catch_date >= CAST(DATEADD(DAY, -1, GETDATE()) AS DATE)
     WHERE ws.lakeId = @lake_id
     ORDER BY wf.tm
 );
@@ -7125,7 +7123,7 @@ GO
 
 -- How well a water reading suits a fish, 0..1, from its habitat interval (dbo.real_interval min / low / avg / high /
 -- max): 0 outside min..max, 0.80 at min or max, 0.90 at low or high, 1 at avg, linear in between. 1 when the
--- reading or the min / max is unknown. Used for temperature (ri_type 17) and dissolved oxygen (ri_type 33).
+-- reading or the min / max is unknown. Used for dissolved oxygen (ri_type 33).
 -- Called by dbo.fn_fish_location_today.
 CREATE FUNCTION dbo.fn_habitat_koef( @v float, @mn float, @lo float, @av float, @hi float, @mx float )
 RETURNS TABLE
@@ -7149,12 +7147,11 @@ RETURN
 GO
 
 -- The forecast-map probability of every fish at every water station (dbo.fish_location), recomputed from the base
--- probability: newToday = probability x monthFactor x lunarFactor x temperatureFactor x oxygenFactor, rounded and
+-- probability: newToday = probability x monthFactor x lunarFactor x oxygenFactor, rounded and
 -- clamped 0..100 (a NULL probability counts as 100). Each factor is 0..1 and 1 when unknown:
 --   monthFactor       - the month's dbo.fish_catch_probability / the fish's highest month (its peak month = 1)
 --   lunarFactor       - the moon day's dbo.fish_lunar_catch_probability / the fish's highest day (its best day = 1)
---   temperatureFactor - dbo.fn_habitat_koef of the station's CurrentWaterState temperature, habitat rule ri_type 17
---   oxygenFactor      - the same for dissolved oxygen, ri_type 33
+--   oxygenFactor      - dbo.fn_habitat_koef of the station's CurrentWaterState oxygen, habitat rule ri_type 33
 -- @month 1..12 and @moon_day 1..28 (dbo.fn_moon_day) are parameters so a run uses one value for every row.
 -- Called by dbo.spTotalUpdateProbability.
 -- SELECT TOP 10 * FROM dbo.fn_fish_location_today(MONTH(SYSUTCDATETIME()), dbo.fn_moon_day(SYSUTCDATETIME()))
@@ -7166,12 +7163,12 @@ RETURN
     (
         SELECT r.fish_Id, ri.ri_type, ri.ri_min, ri.ri_low, ri.ri_avg, ri.ri_high, ri.ri_max
           FROM dbo.fish_Rule r
-          JOIN dbo.real_interval ri ON ri.ri_parent_id = r.id AND ri.ri_type IN (17, 33)
+          JOIN dbo.real_interval ri ON ri.ri_parent_id = r.id AND ri.ri_type = 33
          WHERE r.periodStart = -1 AND r.periodEnd = -1
     )
     SELECT fl.id, fl.station_Id, fl.fish_Id, fl.probability, fl.today
          , m.f AS monthFactor, l.f AS lunarFactor
-         , ISNULL(t.koef, 1.00) AS temperatureFactor, ISNULL(o.koef, 1.00) AS oxygenFactor
+         , ISNULL(o.koef, 1.00) AS oxygenFactor
          , CAST(CASE WHEN x.v > 100 THEN 100 WHEN x.v < 0 THEN 0 ELSE x.v END AS int) AS newToday
       FROM dbo.fish_location fl
       LEFT JOIN dbo.WaterStation ws ON ws.id = fl.station_Id
@@ -7183,12 +7180,9 @@ RETURN
                                  / NULLIF(MAX(p.probability), 0), 1.0) AS f
                      FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = fl.fish_Id ) l
      OUTER APPLY ( SELECT TOP 1 k.koef FROM habitat h
-                    CROSS APPLY dbo.fn_habitat_koef(cws.temperature, h.ri_min, h.ri_low, h.ri_avg, h.ri_high, h.ri_max) k
-                    WHERE h.fish_Id = fl.fish_Id AND h.ri_type = 17 ) t
-     OUTER APPLY ( SELECT TOP 1 k.koef FROM habitat h
                     CROSS APPLY dbo.fn_habitat_koef(cws.oxygen, h.ri_min, h.ri_low, h.ri_avg, h.ri_high, h.ri_max) k
                     WHERE h.fish_Id = fl.fish_Id AND h.ri_type = 33 ) o
-     CROSS APPLY ( SELECT ROUND(ISNULL(fl.probability, 100) * m.f * l.f * ISNULL(t.koef, 1.00) * ISNULL(o.koef, 1.00), 0) AS v ) x
+     CROSS APPLY ( SELECT ROUND(ISNULL(fl.probability, 100) * m.f * l.f * ISNULL(o.koef, 1.00), 0) AS v ) x
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_reasoning_json' AND type IN ('FN','IF','TF'))
@@ -7196,15 +7190,15 @@ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_reasoning_json' AND t
 GO
 
 -- Why one fish has its forecast-map probability at one water station, and the same calculation for the 7 days from
--- @at. The value is dbo.fn_fish_location_today's (probability x month x lunar x temperature x oxygen, 0..100); this
+-- @at. The value is dbo.fn_fish_location_today's (probability x month x lunar x oxygen, 0..100); this
 -- adds what each factor was made from so a page can explain it:
---   factors   - the four factors (0..1); base = fish_location.probability, today = the computed value
+--   factors   - the three factors (0..1); base = fish_location.probability, today = the computed value
 --   moon      - curve day (dbo.fn_moon_day), the fish's curve value that day and its best day (null without a curve)
 --   month     - this month's catch index, the fish's peak index and peak month (null without monthly rows)
 --   spawn     - spawn months (fish_Rule periods), inSpawnSeason = this month falls in one
---   water     - the station's latest readings (CurrentWaterState); ranges = the fish's temperature / oxygen habitat
+--   water     - the station's latest readings (CurrentWaterState); ranges = the fish's oxygen habitat
 --   weather   - the station's weather row for that day (weather_Forecast), absent when there is none
---   week      - 7 days from @at, each at @at's time of day (so day 0 = today): date, moonDay, the four factors,
+--   week      - 7 days from @at, each at @at's time of day (so day 0 = today): date, moonDay, the three factors,
 --               probability, weather. Water readings are carried
 --               forward unchanged (they are not forecast); the month and moon factors change day by day.
 -- NULL for an unknown station, or a fish not listed at that station (dbo.fish_location).
@@ -7231,7 +7225,6 @@ BEGIN
          , t.probability AS base, t.newToday AS today
          , CAST(t.monthFactor AS decimal(6,3))       AS [factors.month]
          , CAST(t.lunarFactor AS decimal(6,3))       AS [factors.lunar]
-         , CAST(t.temperatureFactor AS decimal(6,3)) AS [factors.temperature]
          , CAST(t.oxygenFactor AS decimal(6,3))      AS [factors.oxygen]
          , @moon_day AS [moon.day]
          , (SELECT p.probability FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = f.fish_id AND p.[day] = @moon_day) AS [moon.value]
@@ -7248,15 +7241,9 @@ BEGIN
                                            OR (r.periodStart >  r.periodEnd AND (@month >= r.periodStart OR @month <= r.periodEnd)) ) )
                      THEN 1 ELSE 0 END AS bit) AS inSpawnSeason
          , cws.stamp AS [water.stamp]
-         , CAST(cws.temperature AS decimal(9,2)) AS [water.temperature], CAST(cws.oxygen AS decimal(9,2)) AS [water.oxygen]
+         , CAST(cws.oxygen AS decimal(9,2)) AS [water.oxygen]
          , CAST(cws.discharge AS decimal(12,3)) AS [water.discharge], CAST(cws.turbidity AS decimal(9,2)) AS [water.turbidity]
          , CAST(cws.ph AS decimal(5,2)) AS [water.ph], CAST(cws.velocity AS decimal(9,3)) AS [water.velocity]
-         , JSON_QUERY(( SELECT CAST(ri.ri_min AS decimal(9,2)) AS [min], CAST(ri.ri_low AS decimal(9,2)) AS low
-                             , CAST(ri.ri_avg AS decimal(9,2)) AS [avg], CAST(ri.ri_high AS decimal(9,2)) AS high
-                             , CAST(ri.ri_max AS decimal(9,2)) AS [max]
-                          FROM dbo.fish_Rule r JOIN dbo.real_interval ri ON ri.ri_parent_id = r.id AND ri.ri_type = 17
-                         WHERE r.fish_Id = f.fish_id AND r.periodStart = -1 AND r.periodEnd = -1
-                           FOR JSON PATH, WITHOUT_ARRAY_WRAPPER )) AS [ranges.temperature]
          , JSON_QUERY(( SELECT CAST(ri.ri_min AS decimal(9,2)) AS [min], CAST(ri.ri_low AS decimal(9,2)) AS low
                              , CAST(ri.ri_avg AS decimal(9,2)) AS [avg], CAST(ri.ri_high AS decimal(9,2)) AS high
                              , CAST(ri.ri_max AS decimal(9,2)) AS [max]
@@ -7270,7 +7257,6 @@ BEGIN
                          ORDER BY wf.tm DESC FOR JSON PATH, WITHOUT_ARRAY_WRAPPER )) AS weather
          , JSON_QUERY(( SELECT CONVERT(char(10), d.dt, 23) AS [date], d.md AS moonDay
                              , CAST(w.monthFactor AS decimal(6,3)) AS monthFactor, CAST(w.lunarFactor AS decimal(6,3)) AS lunarFactor
-                             , CAST(w.temperatureFactor AS decimal(6,3)) AS temperatureFactor
                              , CAST(w.oxygenFactor AS decimal(6,3)) AS oxygenFactor, w.newToday AS probability
                              , JSON_QUERY(( SELECT TOP 1 wf.shortText AS conditions, CAST(wf.tmHigh AS decimal(5,1)) AS airHigh
                                                  , CAST(wf.tmLow AS decimal(5,1)) AS airLow, wf.pop AS precipChance

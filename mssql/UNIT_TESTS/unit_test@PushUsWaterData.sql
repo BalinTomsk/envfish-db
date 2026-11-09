@@ -19,6 +19,9 @@ GO
   TEST 3 - the reverse failure: _ and % in an incoming name match OTHER stored names, so a
            genuinely new measurement can be silently skipped and never registered.
 
+  TEST 5 - series for readings no longer stored (water / air temperature, cyanobacteria,
+           orthophosphate) add no WaterData row; a stored measurement still does.
+
   Uses real tables: dbo.Lake, dbo.WaterStation, dbo.WaterData, dbo.UScode.
   Each test is its own named transaction, rolled back at the end of its own GO batch.
 */
@@ -240,4 +243,61 @@ BEGIN
 END
 
 IF @@TRANCOUNT > 0 ROLLBACK TRAN Test04UniqueConstraint
+GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 5: series for readings that are no longer stored (water / air temperature, cyanobacteria,
+--         orthophosphate - removed from dbo.WaterData 2026-11-08) add no WaterData row, while a
+--         stored measurement (Streamflow) still does
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test05DroppedSeries
+    DECLARE @test_name sysname = N'Test05DroppedSeries [sp_push_us_water_data] : dropped readings add no row'
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @LakeId5 uniqueidentifier = NEWID();
+DECLARE @Mli5 varchar(64) = 'UT_USCODE_05';
+DECLARE @dropped5 int = -1, @kept5 int = -1, @err5 nvarchar(2048), @msg5 nvarchar(4000);
+DECLARE @x5 xml = N'<root><a d="2026-08-11" v="12.5" /></root>';
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@LakeId5, 2, N'UT USCODE River 5');
+INSERT INTO dbo.WaterStation (MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@Mli5, 43.55, -80.25, 'US', N'unit-test station USCODE 5', 2, N'UT USCODE Station 5', N'', 970805, @LakeId5, N'UT USCODE River 5', 1);
+
+-- 2. execute unit test : four dropped series, then one stored series
+
+EXEC dbo.sp_push_us_water_data @mli = @Mli5, @state = N'NY', @name = N'Temperature', @unit = 'Water', @xmldoc = @x5;
+EXEC dbo.sp_push_us_water_data @mli = @Mli5, @state = N'NY', @name = N'Temperature', @unit = 'Air', @xmldoc = @x5;
+EXEC dbo.sp_push_us_water_data @mli = @Mli5, @state = N'NY', @name = N'Cyanobacteria (blue-green algae)', @unit = 'cells/mL', @xmldoc = @x5;
+EXEC dbo.sp_push_us_water_data @mli = @Mli5, @state = N'NY', @name = N'Orthophosphate', @unit = 'water, filtered, mg/L as P', @xmldoc = @x5;
+SELECT @dropped5 = COUNT(*) FROM dbo.WaterData WHERE mli = @Mli5;
+
+EXEC dbo.sp_push_us_water_data @mli = @Mli5, @state = N'NY', @name = N'Streamflow', @unit = 'ft^3/s', @xmldoc = @x5;
+SELECT @kept5 = COUNT(*) FROM dbo.WaterData WHERE mli = @Mli5 AND discharge IS NOT NULL;
+
+END TRY
+BEGIN CATCH
+    SET @err5 = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @err5 IS NOT NULL
+BEGIN
+    SET @msg5 = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: sp_push_us_water_data raised: ' + @err5;
+    RAISERROR (@msg5, 16, -1)
+END
+ELSE IF @dropped5 = 0 AND @kept5 = 1
+    PRINT 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: dropped readings added no row, Streamflow still stored'
+ELSE
+BEGIN
+    SET @msg5 = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: expected 0 rows after the dropped series and 1 after Streamflow, got '
+              + ISNULL(CAST(@dropped5 AS nvarchar(10)), N'NULL') + N' / ' + ISNULL(CAST(@kept5 AS nvarchar(10)), N'NULL');
+    RAISERROR (@msg5, 16, -1)
+END
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test05DroppedSeries
 GO

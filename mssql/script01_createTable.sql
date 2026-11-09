@@ -139,7 +139,6 @@ CREATE TABLE CurrentWaterState
 (
     mli            varchar(64) NOT NULL,
     stamp          datetime2   NOT NULL,    -- actual data reading on  site mli
-    temperature    float,
     discharge      float,
     turbidity      float,
     oxygen         float,
@@ -549,7 +548,7 @@ ALTER TABLE dbo.real_interval ADD CONSTRAINT CH_real_interval CHECK
 GO
 ALTER TABLE real_interval  WITH CHECK ADD FOREIGN KEY(ri_parent_id) REFERENCES fish_Rule (id)
 GO
--- used in fn_get_koef_fish_station_temperature
+-- used in fn_get_koef_fish_station_oxygen / _ph / _velocity
 CREATE NONCLUSTERED INDEX IDX_real_interval ON [dbo].[real_interval] ([ri_type]) INCLUDE ([ri_min],[ri_max])
 GO
 
@@ -2058,7 +2057,6 @@ CREATE TABLE dbo.WaterData
 (
     mli            varchar(64) NOT NULL,
     stamp          smalldatetime NOT NULL,    -- actual data reading on  site mli
-    temperature    tinyint,             -- [0..127] C
     discharge      float,               -- [(m3/s] cms
     turbidity      smallint,            -- [0.999] ppm
     oxygen         float,               -- [mg/L] ppm
@@ -2068,13 +2066,10 @@ CREATE TABLE dbo.WaterData
     wind           tinyint,             -- [m/s]
     winddir        smallint,
     humidity       tinyint,             -- [%]
-    air            tinyint,             -- [-63..+63] C  -- value in database half from real value (must by mulipled to 2 on viewing)
     velocity       tinyint,             -- [m/s]
     pressure       smallint,            -- [Torr]  ~760mm
 	Phycocyanins   float,
 	Chlorophylls   float,
-	Cyanobacteria  float,
-	Orthophosphate float,
 	nitrate        float,
 	chloride       float,
 	phycoerythrin  float,
@@ -2096,7 +2091,7 @@ GO
 -- DROP INDEX UK_WaterData_MLI_stamp ON dbo.WaterData
 CREATE UNIQUE NONCLUSTERED INDEX UK_WaterData_MLI_stamp ON dbo.WaterData(MLI, stamp);
 GO
--- no index on temperature/ph: nothing filters WaterData by a reading - spTotalUpdateProbability reads CurrentWaterState
+-- no index on ph: nothing filters WaterData by a reading - spTotalUpdateProbability reads CurrentWaterState
 -- EXEC sp_updatestats;
 -- UPDATE STATISTICS dbo.WaterData 
 --------------------------------------------------------------------------------------------
@@ -2114,16 +2109,15 @@ BEGIN    -- single row
 
 WITH cte AS
 (
-    SELECT i.mli, i.stamp, temperature
+    SELECT i.mli, i.stamp
 		, CASE WHEN CAST(discharge AS INT) <> -999 THEN discharge ELSE NULL END AS discharge
 		, turbidity, oxygen, ph, i.elevation, w.sid 
 		FROM INSERTED i
         JOIN dbo.WaterStation w ON w.mli=i.mli
         -- Only a reading that actually CARRIES something may touch the cache. An entirely empty
         -- reading is not a partial reading, it is NO reading -- and letting it through moved
-        -- CurrentWaterState.stamp forward, so a value of unknown age looked current. Prod station
-        -- 11446980 shows temperature 9.0 although no dbo.WaterData row for it has ever held a
-        -- temperature, and ~127 US stations publish nothing but empty rows. It also disabled every
+        -- CurrentWaterState.stamp forward, so a value of unknown age looked current (~127 US
+        -- stations publish nothing but empty rows). It also disabled every
         -- age-out keyed on stamp (spTotalUpdateProbability clears readings older than 7 days, a
         -- predicate that could never fire for exactly these stations).
         -- A PARTIAL reading still merges and still preserves what it does not carry -- that is what
@@ -2133,7 +2127,7 @@ WITH cte AS
         -- back to the newest row that has readings, rather than losing the station entirely.
         WHERE i.id IN (
             SELECT MAX(id) FROM INSERTED
-             WHERE temperature IS NOT NULL OR turbidity IS NOT NULL OR oxygen IS NOT NULL
+             WHERE turbidity IS NOT NULL OR oxygen IS NOT NULL
                 OR ph IS NOT NULL OR elevation IS NOT NULL
                 OR (discharge IS NOT NULL AND CAST(discharge AS INT) <> -999)
              GROUP BY mli )
@@ -2142,8 +2136,7 @@ WITH cte AS
           On src.mli = trg.mli
     When Matched Then
     Update Set
-          trg.temperature = ISNULL(src.temperature, trg.temperature)
-		, trg.stamp       = ISNULL(src.stamp,       trg.stamp) 
+          trg.stamp       = ISNULL(src.stamp,       trg.stamp) 
         , trg.discharge   = ISNULL(src.discharge,   trg.discharge)
         , trg.turbidity   = ISNULL(src.turbidity,   trg.turbidity)
         , trg.oxygen      = ISNULL(src.oxygen,      trg.oxygen)
@@ -2153,8 +2146,8 @@ WITH cte AS
     When Not Matched Then
     -- first ever reading for a station: sid is NOT NULL on CurrentWaterState, so it must be
     -- carried over from WaterStation here too - omitting it breaks ingestion for a new station
-    Insert (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation, sid)
-        Values (src.mli, src.stamp, src.temperature, src.discharge, src.turbidity, src.oxygen, CAST(src.ph AS float) / 10.0, src.elevation, src.sid);
+    Insert (mli, stamp, discharge, turbidity, oxygen, ph, elevation, sid)
+        Values (src.mli, src.stamp, src.discharge, src.turbidity, src.oxygen, CAST(src.ph AS float) / 10.0, src.elevation, src.sid);
 END
 GO
 --------------------------------------------------------------------------------------------

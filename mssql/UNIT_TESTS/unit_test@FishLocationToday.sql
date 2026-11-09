@@ -3,7 +3,7 @@ GO
 /*
   Unit tests for the forecast-map probability: dbo.fn_moon_day, dbo.fn_fish_location_today and
   dbo.spTotalUpdateProbability. fish_location.today must be recomputed from the base probability on every run:
-  today = probability x month factor x lunar factor x temperature factor x oxygen factor, clamped 0..100,
+  today = probability x month factor x lunar factor x oxygen factor, clamped 0..100,
   each factor counted once. Called by the weather services after every station update
   (efcs-backend WeatherService / OWMService, efj-backend weather).
 
@@ -130,10 +130,10 @@ INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, family_Id, created, stamp,
 VALUES (@F, N'Utflt-fish5', N'Utflt five', @Fam, SYSUTCDATETIME(), SYSUTCDATETIME(), 1, 0);
 SELECT @R = id FROM dbo.fish_Rule WHERE fish_Id = @F AND periodStart = -1 AND periodEnd = -1;
 INSERT INTO dbo.real_interval (ri_parent_id, ri_type, ri_min, ri_low, ri_avg, ri_high, ri_max, ri_stamp)
-VALUES (@R, 17, 10.0, 12.0, 15.0, 18.0, 20.0, GETUTCDATE());                       -- 10 C = minimum -> 0.80
+VALUES (@R, 33, 5.0, 6.0, 8.0, 10.0, 12.0, GETUTCDATE());                          -- 5 mg/L = minimum -> 0.80
 INSERT INTO dbo.WaterStation (id, mli, lakeName, locType, locName, locDesc, county, lat, lon, country, state, agency, stamp, supported, sid)
 VALUES (@S, 'UTFLT_005', 'Utflt Lake', 1, 'Utflt Station 5', 'Utflt station', 'Utflt', 45.0, -75.0, 'CA', 'ON', 'TEST', GETUTCDATE(), 1, 990505);
-INSERT INTO dbo.CurrentWaterState (mli, temperature, stamp, iterstamp, sid) VALUES ('UTFLT_005', 10.0, GETUTCDATE(), GETUTCDATE(), 990505);
+INSERT INTO dbo.CurrentWaterState (mli, oxygen, stamp, iterstamp, sid) VALUES ('UTFLT_005', 5.0, GETUTCDATE(), GETUTCDATE(), 990505);
 INSERT INTO dbo.fish_catch_probability (fish_id, [month], probability) VALUES (@F, 6, 100), (@F, 7, 200);
 INSERT INTO dbo.fish_lunar_catch_probability (fish_id, [day], probability) VALUES (@F, 1, 90), (@F, 10, 45);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp) VALUES (@S, @F, 100, 100, GETUTCDATE());

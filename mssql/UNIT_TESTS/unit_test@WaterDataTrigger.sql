@@ -42,8 +42,8 @@ VALUES (@Mli1, 45.51, -75.51, 'CA', N'unit-test station TRWD 1', 2, N'UT TRWD St
 
 -- 2. execute unit test : the ingestion service inserts the station's first reading
 
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
-VALUES (@Mli1, '2026-08-10T12:34:00', 18, 12.5, 30, 9.5, 74, 120.5);
+INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli1, '2026-08-10T12:34:00', 12.5, 30, 9.5, 74, 120.5);
 
 SELECT @rows1 = COUNT(*) FROM dbo.CurrentWaterState WHERE mli = @Mli1;
 SELECT @gotSid1 = sid   FROM dbo.CurrentWaterState WHERE mli = @Mli1;
@@ -85,7 +85,7 @@ DECLARE @LakeId2 uniqueidentifier = NEWID();
 DECLARE @Mli2    varchar(64)      = 'UT_TRWD_NEW2';
 DECLARE @Sid2    int              = 970102;
 DECLARE @Stamp2  datetime2        = '2026-08-10T12:34:00';
-DECLARE @ph2 float, @disch2 float, @temp2 float, @turb2 float, @oxy2 float, @elev2 float, @st2 datetime2;
+DECLARE @ph2 float, @disch2 float, @turb2 float, @oxy2 float, @elev2 float, @st2 datetime2;
 DECLARE @err2 nvarchar(2048), @msg2 nvarchar(4000);
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
@@ -99,10 +99,10 @@ VALUES (@Mli2, 45.52, -75.52, 'CA', N'unit-test station TRWD 2', 2, N'UT TRWD St
 
 -- 2. execute unit test : ph 74 -> 7.4, discharge -999 (the source's "missing" marker) -> NULL
 
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
-VALUES (@Mli2, @Stamp2, 21, -999, 45, 8.25, 74, 233.75);
+INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli2, @Stamp2, -999, 45, 8.25, 74, 233.75);
 
-SELECT @temp2 = temperature, @disch2 = discharge, @turb2 = turbidity, @oxy2 = oxygen
+SELECT @disch2 = discharge, @turb2 = turbidity, @oxy2 = oxygen
      , @ph2 = ph, @elev2 = elevation, @st2 = stamp
   FROM dbo.CurrentWaterState WHERE mli = @Mli2;
 
@@ -121,12 +121,12 @@ BEGIN
     RAISERROR (@msg2, 16, -1)
 END
 ELSE IF @ph2 IS NULL OR ABS(@ph2 - 7.4) > 0.0001 OR @disch2 IS NOT NULL
-     OR ISNULL(@temp2, -1) <> 21 OR ISNULL(@turb2, -1) <> 45 OR ABS(ISNULL(@oxy2, -1) - 8.25) > 0.0001
+     OR ISNULL(@turb2, -1) <> 45 OR ABS(ISNULL(@oxy2, -1) - 8.25) > 0.0001
      OR ABS(ISNULL(@elev2, -1) - 233.75) > 0.0001 OR ISNULL(@st2, '1900-01-01') <> @Stamp2
 BEGIN
-    SET @msg2 = N'TEST 2 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: expected ph=7.4 discharge=NULL temp=21 turb=45 oxy=8.25 elev=233.75, got ph='
+    SET @msg2 = N'TEST 2 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: expected ph=7.4 discharge=NULL turb=45 oxy=8.25 elev=233.75, got ph='
               + ISNULL(CAST(@ph2 AS varchar), 'NULL') + N' discharge=' + ISNULL(CAST(@disch2 AS varchar), 'NULL')
-              + N' temp=' + ISNULL(CAST(@temp2 AS varchar), 'NULL') + N' turb=' + ISNULL(CAST(@turb2 AS varchar), 'NULL')
+              + N' turb=' + ISNULL(CAST(@turb2 AS varchar), 'NULL')
               + N' oxy=' + ISNULL(CAST(@oxy2 AS varchar), 'NULL') + N' elev=' + ISNULL(CAST(@elev2 AS varchar), 'NULL')
               + N' stamp=' + ISNULL(CONVERT(varchar(30), @st2, 126), 'NULL');
     RAISERROR (@msg2, 16, -1)
@@ -145,7 +145,7 @@ DECLARE @tStart datetime2, @ElapsedMs int;
 DECLARE @LakeId3 uniqueidentifier = NEWID();
 DECLARE @Mli3    varchar(64)      = 'UT_TRWD_OLD3';
 DECLARE @Sid3    int              = 970103;
-DECLARE @rows3 int, @gotSid3 bigint, @temp3 float, @ph3 float, @err3 nvarchar(2048), @msg3 nvarchar(4000);
+DECLARE @rows3 int, @gotSid3 bigint, @turb3 float, @ph3 float, @err3 nvarchar(2048), @msg3 nvarchar(4000);
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
@@ -157,16 +157,16 @@ INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@LakeId3, 2, N'UT TRW
 INSERT INTO dbo.WaterStation (MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@Mli3, 45.53, -75.53, 'CA', N'unit-test station TRWD 3', 2, N'UT TRWD Station 3', N'', @Sid3, @LakeId3, N'UT TRWD Lake 3', 1);
 
-INSERT INTO dbo.CurrentWaterState (mli, stamp, temperature, ph, sid, iterstamp)
+INSERT INTO dbo.CurrentWaterState (mli, stamp, turbidity, ph, sid, iterstamp)
 VALUES (@Mli3, '2026-08-01T00:00:00', 4, 6.1, 111111, GETUTCDATE());
 
 -- 2. execute unit test
 
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
-VALUES (@Mli3, '2026-08-10T12:34:00', 19, 3.5, 12, 7.5, 68, 15.0);
+INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli3, '2026-08-10T12:34:00', 3.5, 19, 7.5, 68, 15.0);
 
 SELECT @rows3 = COUNT(*) FROM dbo.CurrentWaterState WHERE mli = @Mli3;
-SELECT @gotSid3 = sid, @temp3 = temperature, @ph3 = ph FROM dbo.CurrentWaterState WHERE mli = @Mli3;
+SELECT @gotSid3 = sid, @turb3 = turbidity, @ph3 = ph FROM dbo.CurrentWaterState WHERE mli = @Mli3;
 
 END TRY
 BEGIN CATCH
@@ -182,13 +182,13 @@ BEGIN
     SET @msg3 = N'TEST 3 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: WaterData insert raised: ' + @err3;
     RAISERROR (@msg3, 16, -1)
 END
-ELSE IF ISNULL(@rows3, 0) <> 1 OR ISNULL(@gotSid3, -1) <> @Sid3 OR ISNULL(@temp3, -1) <> 19
+ELSE IF ISNULL(@rows3, 0) <> 1 OR ISNULL(@gotSid3, -1) <> @Sid3 OR ISNULL(@turb3, -1) <> 19
      OR @ph3 IS NULL OR ABS(@ph3 - 6.8) > 0.0001
 BEGIN
     SET @msg3 = N'TEST 3 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: expected 1 row sid=' + CAST(@Sid3 AS varchar)
-              + N' temp=19 ph=6.8, got rows=' + ISNULL(CAST(@rows3 AS varchar), 'NULL')
+              + N' turb=19 ph=6.8, got rows=' + ISNULL(CAST(@rows3 AS varchar), 'NULL')
               + N' sid=' + ISNULL(CAST(@gotSid3 AS varchar), 'NULL')
-              + N' temp=' + ISNULL(CAST(@temp3 AS varchar), 'NULL')
+              + N' turb=' + ISNULL(CAST(@turb3 AS varchar), 'NULL')
               + N' ph=' + ISNULL(CAST(@ph3 AS varchar), 'NULL');
     RAISERROR (@msg3, 16, -1)
 END
@@ -201,13 +201,12 @@ GO
 -- TEST 4: an ENTIRELY EMPTY reading must not make the cache look fresh.
 --
 -- USGS publishes different parameters at different times, so a reading that carries discharge
--- but no temperature SHOULD keep the last known temperature - that is what the ISNULL merge is
+-- but no turbidity SHOULD keep the last known turbidity - that is what the ISNULL merge is
 -- for, and TEST 5 pins it down. But a reading with NO measurement at all is not a partial
 -- reading, it is NO reading, and it still advanced dbo.CurrentWaterState.stamp. The row then
--- claims to be current while carrying a value of unknown age: prod station 11446980 shows
--- temperature 9.0 though no dbo.WaterData row for it has EVER held a temperature.
+-- claims to be current while carrying a value of unknown age.
 --
--- It also disables every age-out downstream. spTotalUpdateProbability clears temperature and
+-- It also disables every age-out downstream. spTotalUpdateProbability clears
 -- oxygen "WHERE stamp < DATEADD(DAY,-7,GETUTCDATE())" - a predicate that can never fire for
 -- exactly the stations that need it, because the empty readings keep moving stamp forward.
 -- ---------------------------------------------------------------------------------------
@@ -219,7 +218,7 @@ DECLARE @Mli4    varchar(64)      = 'UT_TRWD_EMPTY4';
 DECLARE @Sid4    int              = 970104;
 DECLARE @OldStamp datetime2 = DATEADD(day, -10, CAST(GETDATE() AS date));
 DECLARE @NewStamp datetime2 = CAST(GETDATE() AS date);
-DECLARE @stamp4 datetime2, @temp4 float, @rows4 int, @err4 nvarchar(2048), @msg4 nvarchar(4000);
+DECLARE @stamp4 datetime2, @turb4 float, @rows4 int, @err4 nvarchar(2048), @msg4 nvarchar(4000);
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
@@ -230,17 +229,17 @@ INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@LakeId4, 2, N'UT TRW
 INSERT INTO dbo.WaterStation (MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@Mli4, 45.54, -75.54, 'US', N'unit-test station TRWD 4', 2, N'UT TRWD Station 4', N'', @Sid4, @LakeId4, N'UT TRWD Lake 4', 1);
 
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
-VALUES (@Mli4, @OldStamp, 9, 4.5, 12, 8.0, 70, 15.0);
+INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli4, @OldStamp, 4.5, 12, 8.0, 70, 15.0);
 
 -- 2. execute unit test : today's poll returns a row carrying NOTHING, exactly as it does for
 --    the 127 US stations whose readings are entirely empty
 
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
-VALUES (@Mli4, @NewStamp, NULL, NULL, NULL, NULL, NULL, NULL);
+INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli4, @NewStamp, NULL, NULL, NULL, NULL, NULL);
 
 SELECT @rows4 = COUNT(*) FROM dbo.CurrentWaterState WHERE mli = @Mli4;
-SELECT @stamp4 = stamp, @temp4 = temperature FROM dbo.CurrentWaterState WHERE mli = @Mli4;
+SELECT @stamp4 = stamp, @turb4 = turbidity FROM dbo.CurrentWaterState WHERE mli = @Mli4;
 
 END TRY
 BEGIN CATCH
@@ -249,7 +248,7 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
--- 3. result verification : the temperature is legitimately still 9 (nothing newer exists), but
+-- 3. result verification : the turbidity is legitimately still 12 (nothing newer exists), but
 --    the stamp must still say 10 days ago, because that is when data last actually arrived.
 
 IF @err4 IS NOT NULL
@@ -257,12 +256,12 @@ BEGIN
     SET @msg4 = N'TEST 4 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err4;
     RAISERROR (@msg4, 16, -1)
 END
-ELSE IF ISNULL(@rows4, 0) <> 1 OR ISNULL(@temp4, -1) <> 9 OR ISNULL(@stamp4, '1900-01-01') <> @OldStamp
+ELSE IF ISNULL(@rows4, 0) <> 1 OR ISNULL(@turb4, -1) <> 12 OR ISNULL(@stamp4, '1900-01-01') <> @OldStamp
 BEGIN
     SET @msg4 = N'TEST 4 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: an empty reading must leave stamp at '
-              + CONVERT(varchar(30), @OldStamp, 120) + N' with temperature 9, got stamp='
-              + ISNULL(CONVERT(varchar(30), @stamp4, 120), 'NULL') + N' temperature='
-              + ISNULL(CAST(@temp4 AS varchar), 'NULL') + N' rows=' + ISNULL(CAST(@rows4 AS varchar), 'NULL');
+              + CONVERT(varchar(30), @OldStamp, 120) + N' with turbidity 12, got stamp='
+              + ISNULL(CONVERT(varchar(30), @stamp4, 120), 'NULL') + N' turbidity='
+              + ISNULL(CAST(@turb4 AS varchar), 'NULL') + N' rows=' + ISNULL(CAST(@rows4 AS varchar), 'NULL');
     RAISERROR (@msg4, 16, -1)
 END
 ELSE
@@ -282,7 +281,7 @@ DECLARE @Mli5    varchar(64)      = 'UT_TRWD_PART5';
 DECLARE @Sid5    int              = 970105;
 DECLARE @Old5 datetime2 = DATEADD(day, -10, CAST(GETDATE() AS date));
 DECLARE @New5 datetime2 = CAST(GETDATE() AS date);
-DECLARE @stamp5 datetime2, @temp5 float, @disch5 float, @err5 nvarchar(2048), @msg5 nvarchar(4000);
+DECLARE @stamp5 datetime2, @turb5 float, @disch5 float, @err5 nvarchar(2048), @msg5 nvarchar(4000);
 BEGIN TRY  SET NOCOUNT ON;
 SET @tStart = SYSUTCDATETIME();
 
@@ -293,15 +292,15 @@ INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@LakeId5, 2, N'UT TRW
 INSERT INTO dbo.WaterStation (MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@Mli5, 45.55, -75.55, 'US', N'unit-test station TRWD 5', 2, N'UT TRWD Station 5', N'', @Sid5, @LakeId5, N'UT TRWD Lake 5', 1);
 
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
-VALUES (@Mli5, @Old5, 9, 4.5, 12, 8.0, 70, 15.0);
+INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli5, @Old5, 4.5, 12, 8.0, 70, 15.0);
 
--- 2. execute unit test : today the gauge publishes discharge but no temperature
+-- 2. execute unit test : today the gauge publishes discharge but no turbidity
 
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
-VALUES (@Mli5, @New5, NULL, 7.25, NULL, NULL, NULL, NULL);
+INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli5, @New5, 7.25, NULL, NULL, NULL, NULL);
 
-SELECT @stamp5 = stamp, @temp5 = temperature, @disch5 = discharge
+SELECT @stamp5 = stamp, @turb5 = turbidity, @disch5 = discharge
   FROM dbo.CurrentWaterState WHERE mli = @Mli5;
 
 END TRY
@@ -311,7 +310,7 @@ BEGIN CATCH
 END CATCH
 SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
--- 3. result verification : discharge updated, temperature preserved, stamp DOES move - real
+-- 3. result verification : discharge updated, turbidity preserved, stamp DOES move - real
 --    data arrived, so the row is genuinely current.
 
 IF @err5 IS NOT NULL
@@ -319,12 +318,12 @@ BEGIN
     SET @msg5 = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err5;
     RAISERROR (@msg5, 16, -1)
 END
-ELSE IF ABS(ISNULL(@disch5, -1) - 7.25) > 0.0001 OR ISNULL(@temp5, -1) <> 9
+ELSE IF ABS(ISNULL(@disch5, -1) - 7.25) > 0.0001 OR ISNULL(@turb5, -1) <> 12
      OR ISNULL(@stamp5, '1900-01-01') <> @New5
 BEGIN
-    SET @msg5 = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: expected discharge 7.25, temperature 9 preserved and stamp '
+    SET @msg5 = N'TEST 5 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: expected discharge 7.25, turbidity 12 preserved and stamp '
               + CONVERT(varchar(30), @New5, 120) + N', got discharge=' + ISNULL(CAST(@disch5 AS varchar), 'NULL')
-              + N' temperature=' + ISNULL(CAST(@temp5 AS varchar), 'NULL')
+              + N' turbidity=' + ISNULL(CAST(@turb5 AS varchar), 'NULL')
               + N' stamp=' + ISNULL(CONVERT(varchar(30), @stamp5, 120), 'NULL');
     RAISERROR (@msg5, 16, -1)
 END

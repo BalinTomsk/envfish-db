@@ -2,6 +2,39 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-08: **`dbo.WaterData.air`, `.Cyanobacteria` and `.Orthophosphate` dropped.** air and Cyanobacteria were
+  NULL/0 for every station (USGS unit `air, °C` never matched `sp_push_us_water_data`'s `'Air'` check; no
+  cyanobacteria code was mapped); Orthophosphate reached 4 of 10,611 stations on CTRL and none on production.
+  `sp_push_us_water_data` now returns early for these series (and water temperature), so they add no empty row;
+  waterservice C# 10.6.0 / Java 1.11.0 stop sending USGS 00020 / 00021 / 00671. No view, function or page read the
+  columns. Test: `unit_test@PushUsWaterData.sql` 5. **Applied 2026-11-08 to CTRL envionx and production** by a
+  one-off (deleted once applied) that dropped three auto-created statistics and the columns and recreated only
+  `sp_push_us_water_data`; before/after definition hashes on both show exactly that one object changed. CTRL's 15
+  orthophosphate values were lost (backup file overwritten by a second run); production had none.
+
+- 2026-11-08: **Water temperature removed as a station reading.** `dbo.WaterData.temperature` and
+  `dbo.CurrentWaterState.temperature` dropped, with everything that carried them: `TR_insWaterData`,
+  `vw_WaterData` / `vScienceView` (no `temperature` / `temperature_unit`), `GetStationInfo`, `GetLastHourWaterData`,
+  the `fn_map_location` / `_trial` pin rule, `spUpdateCurrentWaterState`, `sp_push_us_water_data` (a
+  `Temperature`/`Water` series is now ignored), `scriptA100_fillForecast.sql`. The forecast probability is now
+  probability x month x lunar x oxygen: `fn_fish_location_today` has no `temperatureFactor`, `fn_fish_reasoning_json`
+  no `factors.temperature` / `water.temperature` / `ranges.temperature` / week `temperatureFactor`,
+  `fn_get_koef_fish_station_temperature` dropped (its DROP guard stays), and `fn_get_koef_fish_station_oxygen` now keys
+  on `oxygen` (it tested `temperature IS NULL`). Unchanged on purpose: fish habitat / spawn temperature ranges
+  (`real_interval` ri_type 16 / 17) and the catch memo, except `fn_catch_weather_snapshot.water_temp`, kept as a
+  column but always NULL. Callers changed in step: efcs-backend / efj-backend waterservice (USGS 00010 / 00011 no
+  longer pushed), FishTracker Science / River weather / Reasoning, aspcore Forecast readings / reasoning. Tests updated:
+  `CatchMemo` 12, 17, `FishLocationToday` 5, `WaterDataService` (4, temperature tests replaced), `WaterDataTrigger`,
+  `MapLocation`, `ForecastPlotJson`. **Applied 2026-11-08 to CTRL envionx and production** (one-off script, deleted
+  once applied). Both carried three indexes on `CurrentWaterState.temperature` that no script creates
+  (`idx_CurrentWaterState_temperature`, `idx_CurrentWaterState_tm`, `IDX_CurrentWaterState_oximli`); the one-off
+  dropped them by column. Production got only the 15 changed objects, NOT a full re-run of the view / function /
+  procedure scripts: a definition-hash compare showed production differing from the repo in 66 unrelated objects.
+  Verified on production by before/after hashes (exactly those 15 changed, `fn_get_koef_fish_station_temperature`
+  removed, each identical to CTRL). Backups of the dropped `CurrentWaterState` values: CTRL 939, production 922
+  (`F:\logs\water_temp\*_cws_temperature_backup.csv`). Deployed with it: waterservice C# 10.5.0 (csnode),
+  Java 1.10.0 (jnode), FishTracker DLL + Science / Reasoning / wfRiverViewWeather.
+
 - 2026-10-30: **catch_memo_angler** (for docapi 1.29.0 MCP `add_catch_log`): `dbo.catch_memo.catch_memo_angler`
   NVARCHAR(200) NULL (who caught it, when not the author), `sp_add_catch_memo @angler` (NULL on update keeps it), the
   column in `fn_catch_memo_list` / `fn_catch_memo_json` / `fn_catch_memo_get`, and new `fn_catch_log_write_state`

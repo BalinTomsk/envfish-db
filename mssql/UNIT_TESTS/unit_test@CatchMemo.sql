@@ -550,14 +550,14 @@ SET @tStart = SYSUTCDATETIME();
 DECLARE @Lake12    uniqueidentifier = NEWID();
 DECLARE @Station12 uniqueidentifier = NEWID();
 DECLARE @Mli12     varchar(64) = 'UT_MLI_012';
-DECLARE @Today12   date = CAST(GETDATE() AS DATE);   -- dynamic: CurrentWaterState is only joined for today/yesterday
+DECLARE @Today12   date = CAST(GETDATE() AS DATE);
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake12, 1, N'UT Lake 12');
 INSERT INTO dbo.WaterStation (id, mli, lakeName, locType, locName, locDesc, county, lat, lon, country, state, agency, stamp, supported, sid, lakeId)
 VALUES (@Station12, @Mli12, N'UT Lake 12', 1, N'UT Station 12', N'UT Desc', N'UT County', 45.0, -75.0, 'CA', 'ON', 'TEST', GETUTCDATE(), 1, 900012, @Lake12);
 INSERT INTO dbo.weather_Forecast (link, tmHigh, tmLow, gpfDay, gpfNight, dt, mli, pressure, shortText, icon)
 VALUES (@Station12, 18.0, 10.0, 0, 0, @Today12, @Mli12, 1013, N'Partly Cloudy', N'02d');
-INSERT INTO dbo.CurrentWaterState (mli, stamp, temperature, sid, iterstamp)
-VALUES (@Mli12, GETUTCDATE(), 14.5, 900012, GETUTCDATE());
+INSERT INTO dbo.CurrentWaterState (mli, stamp, oxygen, sid, iterstamp)
+VALUES (@Mli12, GETUTCDATE(), 8.5, 900012, GETUTCDATE());
 
 -- 2. execute unit test
 
@@ -573,7 +573,7 @@ SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 
 -- 3. result verification
 
-IF @WTemp IS NULL OR @WTemp <> 18.0 OR @WPress <> 1013 OR @WText <> N'Partly Cloudy' OR @WIcon <> N'02d' OR @WaterTemp IS NULL OR @WaterTemp <> 14.5
+IF @WTemp IS NULL OR @WTemp <> 18.0 OR @WPress <> 1013 OR @WText <> N'Partly Cloudy' OR @WIcon <> N'02d' OR @WaterTemp IS NOT NULL
    RAISERROR ('TEST 12 FAIL [%dms]: unexpected snapshot values', 16, -1, @ElapsedMs)
 ELSE
     print 'TEST 12 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_catch_weather_snapshot returned the forecast row'
@@ -751,10 +751,10 @@ ROLLBACK TRAN CM_Test16
 GO
 
 -- ============================================================================
--- TEST 17: fn_catch_weather_snapshot never attaches today's water temp to an old catch date
+-- TEST 17: fn_catch_weather_snapshot never attaches a station water temp (stations report none)
 -- ============================================================================
 BEGIN TRAN CM_Test17
-    declare @test_name sysname = N'CM_Test17 [fn_catch_weather_snapshot] : never attaches today''s water temp to an old catch date'
+    declare @test_name sysname = N'CM_Test17 [fn_catch_weather_snapshot] : never attaches a station water temp'
 DECLARE @tStart datetime2, @ElapsedMs int;
 DECLARE @WaterTemp float;
 BEGIN TRY  SET NOCOUNT ON;
@@ -768,14 +768,13 @@ DECLARE @Mli17     varchar(64) = 'UT_MLI_017';
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake17, 1, N'UT Lake 17');
 INSERT INTO dbo.WaterStation (id, mli, lakeName, locType, locName, locDesc, county, lat, lon, country, state, agency, stamp, supported, sid, lakeId)
 VALUES (@Station17, @Mli17, N'UT Lake 17', 1, N'UT Station 17', N'UT Desc', N'UT County', 45.0, -75.0, 'CA', 'ON', 'TEST', GETUTCDATE(), 1, 900017, @Lake17);
--- CurrentWaterState has no history -- this is "right now", not "on the catch date"
-INSERT INTO dbo.CurrentWaterState (mli, stamp, temperature, sid, iterstamp)
-VALUES (@Mli17, GETUTCDATE(), 14.5, 900017, GETUTCDATE());
+-- the station has a current reading, but water temperature is no longer one of them
+INSERT INTO dbo.CurrentWaterState (mli, stamp, oxygen, sid, iterstamp)
+VALUES (@Mli17, GETUTCDATE(), 8.5, 900017, GETUTCDATE());
 
 -- 2. execute unit test
 
--- a catch logged for a date weeks in the past must not get today's water reading attached
-SELECT @WaterTemp = water_temp FROM dbo.fn_catch_weather_snapshot(@Lake17, DATEADD(DAY, -30, CAST(GETDATE() AS DATE)));
+SELECT @WaterTemp = water_temp FROM dbo.fn_catch_weather_snapshot(@Lake17, CAST(GETDATE() AS DATE));
 
 END TRY
 BEGIN CATCH
@@ -787,9 +786,9 @@ SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 -- 3. result verification
 
 IF @WaterTemp IS NOT NULL
-   RAISERROR ('TEST 17 FAIL [%dms]: old catch date got a water temp attached', 16, -1, @ElapsedMs)
+   RAISERROR ('TEST 17 FAIL [%dms]: snapshot carried a station water temp', 16, -1, @ElapsedMs)
 ELSE
-    print 'TEST 17 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: old catch date correctly got no water temp'
+    print 'TEST 17 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: snapshot carries no station water temp'
 
 ROLLBACK TRAN CM_Test17
 GO

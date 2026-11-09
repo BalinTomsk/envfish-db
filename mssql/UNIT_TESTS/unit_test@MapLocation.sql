@@ -58,7 +58,7 @@ VALUES (@St1, @Mli1, 44.10, -79.10, 'CA', N'unit-test station', 2, N'UT MAP Stat
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@St1, @Fish1, 55, GETUTCDATE());
 
 -- a real reading, and a forecast for today
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES (@Mli1, GETDATE(), 17, 3.5);
+INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES (@Mli1, GETDATE(), 3.5);
 INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
 VALUES (@St1, @Mli1, CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
 
@@ -113,7 +113,7 @@ INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lak
 INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@St2, @Mli2, 44.20, -79.20, 'CA', N'unit-test station', 2, N'UT MAP Station 2', N'UT County', 940102, @Lake2, N'UT MAP Lake 2', 1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@St2, @Fish2, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES (@Mli2, GETDATE(), 17, 3.5);
+INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES (@Mli2, GETDATE(), 3.5);
 -- deliberately NO dbo.weather_Forecast row
 
 -- 2. execute unit test
@@ -170,8 +170,8 @@ INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locN
 VALUES (@St3, @Mli3, 44.30, -79.30, 'CA', N'unit-test station', 2, N'UT MAP Station 3', N'UT County', 940103, @Lake3, N'UT MAP Lake 3', 1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@St3, @Fish3, 55, GETUTCDATE());
 
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
-VALUES (@Mli3, GETDATE(), NULL, NULL, NULL, NULL, NULL, NULL);
+INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Mli3, GETDATE(), NULL, NULL, NULL, NULL, NULL);
 
 INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
 VALUES (@St3, @Mli3, CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
@@ -229,7 +229,7 @@ INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lak
 INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@St4, @Mli4, 44.40, -79.40, 'CA', N'unit-test station', 2, N'UT MAP Station 4', N'UT County', 940104, @Lake4, N'UT MAP Lake 4', 1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@St4, @Fish4, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES (@Mli4, GETDATE(), 17, 3.5);
+INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES (@Mli4, GETDATE(), 3.5);
 INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
 VALUES (@St4, @Mli4, CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
 
@@ -282,7 +282,7 @@ INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lak
 INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@StA, 'UT_MAP_5', 49.8, -92.8, 'CA', 'ON', N'unit-test station', 2, N'UT MAP Station 5', N'UT County', 940105, @Lake, N'UT MAP Lake', 1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StA, @Fish, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES ('UT_MAP_5', GETDATE(), 17, 3.5);
+INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES ('UT_MAP_5', GETDATE(), 3.5);
 INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
 VALUES (@StA, 'UT_MAP_5', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
 
@@ -334,7 +334,7 @@ INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lak
 INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@StA, 'UT_MAP_6', 45.4, -78.0, 'CA', 'QC', N'unit-test station', 2, N'UT MAP Station 6', N'UT County', 940106, @Lake, N'UT MAP Lake', 1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StA, @Fish, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES ('UT_MAP_6', GETDATE(), 17, 3.5);
+INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES ('UT_MAP_6', GETDATE(), 3.5);
 INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
 VALUES (@StA, 'UT_MAP_6', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
 
@@ -386,13 +386,13 @@ INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lak
 INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@StA, 'UT_MAP_7', 44.0, -80.0, 'CA', 'ON', N'unit-test station', 2, N'UT MAP Station 7', N'UT County', 940107, @Lake, N'UT MAP Lake', 1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StA, @Fish, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES ('UT_MAP_7', GETDATE(), 17, 3.5);
+INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES ('UT_MAP_7', GETDATE(), 3.5);
 INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
 VALUES (@StA, 'UT_MAP_7', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
 INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@StB, 'UT_MAP_8', 42.5, -79.5, 'US', 'NY', N'unit-test station', 2, N'UT MAP Station 8', N'UT County', 940108, @Lake, N'UT MAP Lake', 1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StB, @Fish, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge) VALUES ('UT_MAP_8', GETDATE(), 17, 3.5);
+INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES ('UT_MAP_8', GETDATE(), 3.5);
 INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
 VALUES (@StB, 'UT_MAP_8', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
 

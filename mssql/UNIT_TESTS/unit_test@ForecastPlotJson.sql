@@ -39,8 +39,8 @@ INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake1, 2, N'UT FPJ G
 INSERT INTO dbo.WaterStation (id, MLI, state, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@St1, N'UT_FPJ_1', 'ON', 43.50, -80.50, 'CA', N'UT FPJ STATION NEAR ELMIRA', 2, N'UT FPJ Station 1', N'', 990401, @Lake1, N'UT FPJ Grand River', 1);
 INSERT INTO dbo.CurrentWaterState (mli, stamp, sid) VALUES (N'UT_FPJ_1', GETDATE(), 990401);
-INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, elevation)
-VALUES (N'UT_FPJ_1', CAST(GETDATE() AS smalldatetime), 17, 4.2, 312.5);
+INSERT INTO dbo.WaterData (mli, stamp, discharge, elevation)
+VALUES (N'UT_FPJ_1', CAST(GETDATE() AS smalldatetime), 4.2, 312.5);
 
 SET @json = dbo.fn_forecast_plot_json(990401, '00000000-0000-0000-0000-000000000000');
 
@@ -90,7 +90,7 @@ ALTER TABLE dbo.WaterStation NOCHECK CONSTRAINT FK_WaterStation_Lake;
 INSERT INTO dbo.WaterStation (id, MLI, state, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@St2, N'UT_FPJ_2', 'ON', 44.10, -79.90, 'CA', N'UT FPJ ORPHAN STATION', 2, N'UT FPJ Station 2', N'', 990402, @Orphan, N'UT FPJ Orphan', 1);
 INSERT INTO dbo.CurrentWaterState (mli, stamp, sid) VALUES (N'UT_FPJ_2', GETDATE(), 990402);
-INSERT INTO dbo.WaterData (mli, stamp, temperature) VALUES (N'UT_FPJ_2', CAST(GETDATE() AS smalldatetime), 11);
+INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES (N'UT_FPJ_2', CAST(GETDATE() AS smalldatetime), 1.1);
 
 SET @json = dbo.fn_forecast_plot_json(990402, '00000000-0000-0000-0000-000000000000');
 
@@ -133,7 +133,7 @@ INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake3, 2, N'UT FPJ '
 INSERT INTO dbo.WaterStation (id, MLI, state, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
 VALUES (@St3, N'UT_FPJ_3', 'ON', 45.20, -78.30, 'CA', N'UT FPJ QUOTED STATION', 2, N'UT FPJ Station 3', N'', 990403, @Lake3, N'UT FPJ Quoted Creek', 1);
 INSERT INTO dbo.CurrentWaterState (mli, stamp, sid) VALUES (N'UT_FPJ_3', GETDATE(), 990403);
-INSERT INTO dbo.WaterData (mli, stamp, temperature) VALUES (N'UT_FPJ_3', CAST(GETDATE() AS smalldatetime), 9);
+INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES (N'UT_FPJ_3', CAST(GETDATE() AS smalldatetime), 0.9);
 
 SET @json = dbo.fn_forecast_plot_json(990403, '00000000-0000-0000-0000-000000000000');
 

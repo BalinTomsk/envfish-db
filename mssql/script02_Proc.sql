@@ -481,7 +481,7 @@ GO
 
 -- EXEC spPushSpeciesFromLakeToStation
 CREATE PROCEDURE spUpdateCurrentWaterState @mli varchar(64), @stamp datetime, @elevation float, @sid bigint 
-   , @temperature float, @conductance float, @ph float 
+   , @conductance float, @ph float 
    , @turbidity float,   @oxygen float,      @discharge float
 WITH EXEC AS CALLER
 AS
@@ -489,8 +489,8 @@ BEGIN TRY
   SET NOCOUNT ON
   IF @mli IS NOT NULL
   BEGIN
-    INSERT INTO dbo.WaterData (mli, stamp, temperature, discharge, turbidity, oxygen, ph, elevation)
-      VALUES (@mli, @stamp, @temperature, @discharge, @turbidity, @oxygen, CAST(@ph as float) * 10.0, @elevation)
+    INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
+      VALUES (@mli, @stamp, @discharge, @turbidity, @oxygen, CAST(@ph as float) * 10.0, @elevation)
     RETURN @@ROWCOUNT      
   END
 END TRY
@@ -597,7 +597,7 @@ IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'spTotalUpdateProbability' AND 
 GO
 
 -- Recomputes dbo.fish_location.today (what the forecast map shows) for every fish at every water station, from the
--- base probability on every run: probability x month factor x lunar factor x temperature factor x oxygen factor,
+-- base probability on every run: probability x month factor x lunar factor x oxygen factor,
 -- clamped 0..100 (dbo.fn_fish_location_today). Each factor counts once, so repeated runs never compound. Only rows
 -- whose value changes are written. Water readings older than 7 days are cleared first, so they stop counting.
 -- Called after every station update by the weather services: efcs-backend WeatherService
@@ -620,7 +620,7 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
 
-        UPDATE [CurrentWaterState] SET temperature = NULL, oxygen = NULL
+        UPDATE [CurrentWaterState] SET oxygen = NULL
             WHERE stamp < DATEADD(DAY, -7, GETUTCDATE())
 
         UPDATE fl
@@ -2700,6 +2700,12 @@ SET NOCOUNT ON;
 	IF DATALENGTH(@xmldoc) = 0 OR LEN(@mli) = 0 OR LEN(@state) = 0
 		RETURN;
 
+	-- Water temperature, air temperature, cyanobacteria and orthophosphate are no longer stored (removed
+	-- 2026-11-08): a series that only carries one of them would otherwise add a WaterData row with no reading.
+	IF @name = 'Temperature' AND @unit IN ('Water', 'Air')
+	   OR @name IN ('Cyanobacteria (blue-green algae)', 'Orthophosphate')
+		RETURN 0;
+
 	-- Exact match, not LIKE: this is a catalogue lookup, not a search. LIKE made it fail three ways -
 	-- USGS names contain [ ] ('Total nitrogen [nitrate + nitrite + ...]'), which LIKE reads as a
 	-- character class so the row never matched itself; `unit LIKE NULL` is UNKNOWN so unitless
@@ -2746,21 +2752,17 @@ SET NOCOUNT ON;
 								 , 'Estuary or ocean water surface elevation above NGVD 1929'
 								 , 'Lake or reservoir water surface elevation above NGVD 1929'
 								 , 'Lake or reservoir elevation above New York State Barge Canal Datum (NYBCD)') THEN val ELSE NULL END AS elevation  -- [m]
-			, CASE WHEN @name = 'Temperature' AND @unit = 'Water'  THEN val ELSE NULL END			    AS temperature
 			, CASE WHEN @name in ( 'Turbidity')  THEN val ELSE NULL END							        AS turbidity	-- 
 
 			, CASE WHEN @name = 'Barometric pressure'  THEN val ELSE NULL END						    AS pressure
 			, CASE WHEN @name in ('Wind speed', 'Wind gust speed')  THEN val ELSE NULL END				AS wind
-			, CASE WHEN @name = 'Temperature' AND @unit = 'Air'  THEN val ELSE NULL END			        AS air
 			, CASE WHEN @name in ('Wind direction', 'Wind gust direction') THEN val ELSE NULL END       AS winddir
 			, CASE WHEN @name = 'Relative humidity' THEN val ELSE NULL END						        AS humidity
 			, CASE WHEN @name = 'Precipitation' THEN val ELSE NULL END						            AS precipitation
 
 			, CASE WHEN @name in ('Chlorophylls', 'Chlorophyll <i>a</i>')  THEN val ELSE NULL END		AS chlorophylls
 			, CASE WHEN @name = 'Phycocyanins (cyanobacteria)'  THEN val ELSE NULL END					AS phycocyanins
-			, CASE WHEN @name = 'Cyanobacteria (blue-green algae)'  THEN val ELSE NULL END				AS cyanobacteria
 			, CASE WHEN @name = 'Phycoerythrin (blue-green algae)'  THEN val ELSE NULL END				AS phycoerythrin
-			, CASE WHEN @name = 'Orthophosphate'  THEN val ELSE NULL END								AS orthophosphate
 			, CASE WHEN @name = 'Nitrate'  THEN val ELSE NULL END										AS nitrate
 			, CASE WHEN @name = 'Chloride'  THEN val ELSE NULL END										AS chloride
 			, CASE WHEN @name = 'Dissolved oxygen'  THEN val ELSE NULL END								AS oxygen
@@ -2778,11 +2780,9 @@ SET NOCOUNT ON;
         UPDATE SET t.discharge = COALESCE(source.discharge * @koef_discharge,   t.discharge)
 		, t.elevation          = COALESCE(source.elevation * @koef_elevation,   t.elevation)
 		, t.velocity           = COALESCE(source.velocity  * @koef_velocity,	t.velocity)
-		, t.temperature        = COALESCE(source.temperature,					t.temperature)
 		, t.turbidity          = COALESCE(source.turbidity,				    	t.turbidity)
 
 		, t.pressure           = COALESCE(source.pressure,						t.pressure)
-		, t.air                = COALESCE(source.air,							t.air)
 		, t.wind               = COALESCE(source.wind,							t.wind)
 		, t.winddir            = COALESCE(source.winddir,						t.winddir)
 		, t.humidity           = COALESCE(source.humidity,						t.humidity)
@@ -2790,17 +2790,15 @@ SET NOCOUNT ON;
 
 		, t.chlorophylls       = COALESCE(source.chlorophylls,					t.chlorophylls)
 		, t.phycocyanins       = COALESCE(source.phycocyanins,					t.phycocyanins)
-		, t.cyanobacteria      = COALESCE(source.cyanobacteria,					t.cyanobacteria)
 		, t.phycoerythrin      = COALESCE(source.phycoerythrin,					t.phycoerythrin)
-		, t.orthophosphate     = COALESCE(source.orthophosphate,				t.orthophosphate)
 		, t.nitrate            = COALESCE(source.nitrate,						t.nitrate)
 		, t.chloride           = COALESCE(source.chloride,						t.chloride)
 		, t.oxygen             = COALESCE(source.oxygen,						t.oxygen)
 		, t.salinity           = COALESCE(source.salinity,						t.salinity)
 		, t.ph                 = COALESCE(source.ph,							t.ph)
     WHEN NOT MATCHED BY TARGET THEN  
-        INSERT (stamp, discharge, elevation, mli,  pressure, chlorophylls, salinity, phycocyanins, phycoerythrin, cyanobacteria, orthophosphate, nitrate, chloride, wind, temperature, oxygen, ph, velocity, winddir, humidity, precipitation) 
-		VALUES ( dt,  discharge,  elevation, @mli, pressure, chlorophylls, salinity, phycocyanins, phycoerythrin, cyanobacteria, orthophosphate, nitrate, chloride, wind, temperature, oxygen, ph, velocity, winddir, humidity, precipitation );
+        INSERT (stamp, discharge, elevation, mli,  pressure, chlorophylls, salinity, phycocyanins, phycoerythrin, nitrate, chloride, wind, oxygen, ph, velocity, winddir, humidity, precipitation) 
+		VALUES ( dt,  discharge,  elevation, @mli, pressure, chlorophylls, salinity, phycocyanins, phycoerythrin, nitrate, chloride, wind, oxygen, ph, velocity, winddir, humidity, precipitation );
 	RETURN @@ROWCOUNT;
 END TRY
 BEGIN CATCH

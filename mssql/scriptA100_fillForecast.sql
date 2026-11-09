@@ -13,25 +13,17 @@ GO
 GO
 
  insert into CurrentWaterState 
-   SELECT temperature, conductance, discharge, turbidity, oxygen, ph, elevation, sid, mli, stamp,  GETUTCDATE() as iterstamp
+   SELECT conductance, discharge, turbidity, oxygen, ph, elevation, sid, mli, stamp,  GETUTCDATE() as iterstamp
    FROM USWater.dbo.vUSWaterData WHERE sid in 
       ( SELECT MAX(sid) FROM USWater.dbo.vUSWaterData  WHERE stamp > '20140801' GROUP BY mli )
 
 insert into CurrentWaterState 
-   SELECT temperature, conductance, discharge, turbidity, oxygen, ph, elevation, sid, mli, stamp,  GETUTCDATE() as iterstamp
+   SELECT conductance, discharge, turbidity, oxygen, ph, elevation, sid, mli, stamp,  GETUTCDATE() as iterstamp
    FROM USWater.dbo.ONCA257 WHERE sid in 
       ( SELECT MAX(sid) FROM USWater.dbo.ONCA257  WHERE stamp > '20011101' GROUP BY mli )  
       AND mli not in (select mli from CurrentWaterState)    
        
 GO
-update t SET t.temperature=w.temperature, t.stamp=w.stamp FROM CurrentWaterState t WITH (NOLOCK), USWater.dbo.vUSWaterData w WITH (NOLOCK)
-    WHERE t.mli=w.mli AND w.sid IN (
-   SELECT MAX(sid) FROM USWater.dbo.vUSWaterData WITH (NOLOCK) WHERE ( stamp > '20100101' ) AND temperature IS NOT NULL GROUP BY mli   )
-                             
-update t SET t.temperature=w.temperature, t.stamp=w.stamp FROM CurrentWaterState t WITH (NOLOCK), USWater.dbo.ONCA257 w WITH (NOLOCK)
-    WHERE t.mli=w.mli AND w.sid IN (
-   SELECT MAX(sid) FROM USWater.dbo.ONCA257 WITH (NOLOCK) WHERE ( stamp > '20100101' ) AND temperature IS NOT NULL GROUP BY mli   )
-                  
 update t SET t.turbidity=w.turbidity, t.stamp=w.stamp FROM CurrentWaterState t WITH (NOLOCK), USWater.dbo.vUSWaterData w  WITH (NOLOCK)
     WHERE t.mli=w.mli AND w.sid IN (
    SELECT MAX(sid) FROM USWater.dbo.vUSWaterData  WITH (NOLOCK) WHERE ( stamp > '20010101' )
@@ -127,7 +119,6 @@ GO
 -- EXEC dbo.spPushSpeciesFromLakeToStation
 
 -- select * from vGetFishingStation100TmTu
---select MAX(temperature), MIN(temperature) from CurrentWaterState
 --select * from CurrentWaterState
 
 

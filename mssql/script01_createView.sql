@@ -244,7 +244,7 @@ GO
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'vw_WaterData' AND type = 'V')
     DROP VIEW dbo.vw_WaterData
 GO
---- hide internal convertions: PH, airtemp
+--- hide internal convertions: PH
 -- select top 100  * from vw_WaterData where dt > '2021-01-01'
 --   select top 100  * from vw_WaterData  where  mli = '02GE004' or  263911 = sid
 CREATE VIEW dbo.vw_WaterData
@@ -253,7 +253,7 @@ WITH SCHEMABINDING
     SELECT w.mli, w.state, w.lat, w.lon, w.id, w.sid, w.locName, w.city, w.country, d.stamp
         , CAST(d.stamp AS date) AS dt
 		, CAST(CAST(DATEADD(HOUR,w.tz, d.stamp) AS time) AS varchar(8)) AS tm
-		, temperature, discharge
+		, discharge
         , d.elevation, (CAST(d.ph AS float) / 10.0) AS PH, d.oxygen, d.turbidity, velocity
     FROM dbo.WaterStation w JOIN dbo.WaterData d ON d.mli = w.mli
 GO
@@ -267,8 +267,6 @@ WITH SCHEMABINDING
  AS
 SELECT mli, state, lat, lon, id, sid, locName, city, country, stamp
    , CONVERT(varchar(16), dt, 107) AS dt, CAST(tm AS varchar(5)) AS tm
-   , ISNULL( CAST(ROUND(temperature, 1) AS varchar(16)), 'N/A') AS temperature
-   , ( CASE WHEN country = 'US' THEN 'F' ELSE 'C' END ) AS temperature_unit
    , ISNULL( CAST(NULLIF(ROUND(discharge, 1), 0) AS varchar(16)), 'N/A') AS discharge
    , ( CASE WHEN country = 'US' THEN 'ft^3/s' ELSE 'm^3/s' END ) AS discharge_unit
    , ISNULL( CAST(ROUND(elevation, 2) AS varchar(16)), 'N/A') AS elevation
@@ -282,7 +280,6 @@ SELECT mli, state, lat, lon, id, sid, locName, city, country, stamp
    (
      SELECT mli, state, lat, lon, id, sid, locName, city, country, stamp
           , CAST(stamp AS date) AS dt, CAST(stamp AS time) AS tm
-        , CASE WHEN country = 'US' THEN 32 + (temperature / 1.8) ELSE temperature END  AS temperature
         , CASE WHEN country = 'US' THEN discharge * 35.314666721489 ELSE discharge END  AS discharge
         , CASE WHEN country = 'US' THEN elevation * 3.28084 ELSE elevation END  AS elevation
         , PH, oxygen, turbidity
@@ -494,7 +491,7 @@ AS
             (
                 SELECT mli, fish_ID, oxygen AS ox, oxL, oxH, (( oxH - oxL ) / 2) AS optimum
                 FROM cte, dbo.CurrentWaterState w 
-                    where w.temperature IS NOT NULL AND oxL Is NOT NULL AND oxH Is NOT NULL
+                    where w.oxygen IS NOT NULL AND oxL Is NOT NULL AND oxH Is NOT NULL
             )b
         ) a
         UNION ALL
@@ -511,7 +508,7 @@ AS
             (
                 SELECT mli, fish_ID, oxygen as ox, (oxH / 2) as oxL, oxH, (oxH / 2) + (oxH / 4) AS optimum
                 FROM cte, dbo.CurrentWaterState w 
-                    where w.temperature IS NOT NULL AND oxL Is NULL AND oxH Is NOT NULL
+                    where w.oxygen IS NOT NULL AND oxL Is NULL AND oxH Is NOT NULL
             )d
         ) c
         UNION ALL
@@ -528,13 +525,13 @@ AS
             (
                 SELECT mli, fish_ID, oxygen as ox,  oxL, (oxL + 10) as oxH, (oxL + 5) AS optimum
                 FROM cte, dbo.CurrentWaterState w 
-                    where w.temperature IS NOT NULL AND oxL IS NOT NULL AND oxH IS NULL
+                    where w.oxygen IS NOT NULL AND oxL IS NOT NULL AND oxH IS NULL
             )e
         ) f
         UNION ALL
         SELECT mli, fish_ID, 3 AS value, oxygen as ox,  oxL, oxH, 1 AS koef
                 FROM cte, dbo.CurrentWaterState w 
-            where w.temperature IS NULL
+            where w.oxygen IS NULL
     ) g WHERE value = CASE 
           WHEN ox IS NULL OR ( ox IS NOT NULL AND oxL IS NULL AND oxH IS NULL )THEN 3
           WHEN ox IS NOT NULL AND oxL IS NULL AND oxH IS NOT NULL THEN 1 
@@ -627,80 +624,8 @@ GO
 ----------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_get_koef_fish_station_temperature' AND xtype = 'V')
     DROP VIEW dbo.fn_get_koef_fish_station_temperature
-GO
-CREATE VIEW dbo.fn_get_koef_fish_station_temperature
-WITH SCHEMABINDING
-AS 
-  WITH cte ( fish_id, fish_name, tmL, tmH ) AS
-  (                                                                         -- 80% 90%    100%     90% 80%
-     SELECT f.fish_id, f.fish_name, habitate_tm.ri_min AS tmL               ---|   |  |__optimum___|  |  |
-          , habitate_tm.ri_max AS tmH                                       ---|   |__________________|  |  
-       FROM  dbo.fish f JOIN dbo.fish_Rule r ON ( r.fish_Id=f.fish_id )     ---|_________________________|
-       JOIN dbo.real_interval habitate_tm ON habitate_tm.ri_parent_id = r.id AND habitate_tm.ri_type = 17
-       WHERE r.periodStart = -1 AND r.periodEnd = -1                        
-  )
-    SELECT mli, fish_ID, koef FROM 
-    (
-        SELECT mli, fish_ID, 0 AS value, tm, tmL, tmH                        -- all data exists
-        , CASE WHEN tm BETWEEN l100 AND h100  THEN 1.0 
-                WHEN (tm BETWEEN l90 AND l100) OR (tm BETWEEN h100 AND h90) THEN 0.9
-                WHEN (tm BETWEEN tmL AND l90)  OR (tm BETWEEN h90 AND  tmH) THEN 0.8 ELSE 0.5 END AS koef
-        FROM 
-        (
-            SELECT mli, fish_ID, tm, tmL, tmH
-                , (optimum + (( tmH - optimum ) / 2))  AS h100, (tmL + (( optimum - tmL )  /  2)) AS l100
-                , (optimum + (( tmH - optimum ) / 4))  AS h90,  (tmL + (( optimum - tmL )  /  4)) AS l90
-            FROM
-            (
-                SELECT mli, fish_ID, temperature AS tm, tmL, tmH, (( tmH - tmL ) / 2) AS optimum
-                FROM cte, dbo.CurrentWaterState w 
-                    where w.temperature IS NOT NULL AND tmL Is NOT NULL AND tmH Is NOT NULL
-            )b
-        ) a
-        UNION ALL
-        SELECT mli, fish_ID, 1 AS value, tm, tmL, tmH                          --- tmL Is NULL
-        , CASE WHEN tm BETWEEN l100 AND h100  THEN 1.0 
-                WHEN (tm BETWEEN l90 AND l100) OR (tm BETWEEN h100 AND h90) THEN 0.9
-                WHEN (tm BETWEEN tmL AND l90)  OR (tm BETWEEN h90 AND  tmH) THEN 0.8 END AS koef
-        FROM 
-        (
-            SELECT mli, fish_ID, tm, tmL, tmH
-                , (optimum + (( tmH - optimum ) / 2))  AS h100, (tmL + (( optimum - tmL )  /  2)) AS l100
-                , (optimum + (( tmH - optimum ) / 4))  AS h90,  (tmL + (( optimum - tmL )  /  4)) AS l90
-            FROM
-            (
-                SELECT mli, fish_ID, temperature as tm, (tmH / 2) as tmL, tmH, (tmH / 2) + (tmH / 4) AS optimum
-                FROM cte, dbo.CurrentWaterState w 
-                    where w.temperature IS NOT NULL AND tmL Is NULL AND tmH Is NOT NULL
-            )d
-        ) c
-        UNION ALL
-        SELECT mli, fish_ID, 2 AS value, tm, tmL, tmH
-        , CASE WHEN tm BETWEEN l100 AND h100  THEN 1.0 
-                WHEN (tm BETWEEN l90 AND l100) OR (tm BETWEEN h100 AND h90) THEN 0.9
-                WHEN (tm BETWEEN tmL AND l90)  OR (tm BETWEEN h90 AND  tmH) THEN 0.8 END AS koef
-        FROM 
-        (
-            SELECT mli, fish_ID, tm, tmL, tmH
-                , (optimum + (( tmH - optimum ) / 2))  AS h100, (tmL + (( optimum - tmL )  /  2)) AS l100
-                , (optimum + (( tmH - optimum ) / 4))  AS h90,  (tmL + (( optimum - tmL )  /  4)) AS l90
-            FROM
-            (
-                SELECT mli, fish_ID, temperature as tm,  tmL, (tmL + 10) as tmH, (tmL + 5) AS optimum
-                FROM cte, dbo.CurrentWaterState w 
-                    where w.temperature IS NOT NULL AND tmL IS NOT NULL AND tmH IS NULL
-            )e
-        ) f
-        UNION ALL
-        SELECT mli, fish_ID, 3 AS value, temperature as tm,  tmL, tmH, 1 AS koef
-                FROM cte, dbo.CurrentWaterState w 
-            where w.temperature IS NULL
-    ) g WHERE value = CASE 
-          WHEN tm IS NULL OR ( tm IS NOT NULL AND tmL IS NULL AND tmH IS NULL )THEN 3
-          WHEN tm IS NOT NULL AND tmL IS NULL AND tmH IS NOT NULL THEN 1 
-          WHEN tm IS NOT NULL AND tmL IS NOT NULL AND tmH IS NULL THEN 2 
-          WHEN tm IS NOT NULL AND tmL IS NOT NULL AND tmH IS NOT NULL THEN 0 
-        END AND koef IS NOT NULL
+-- fn_get_koef_fish_station_temperature removed with the water temperature reading (2026-11-08); the DROP above
+-- clears it from existing databases.
 GO
 
 ----------------------------------------------------------------------------------------------------------------------------
