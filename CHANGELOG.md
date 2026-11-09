@@ -2,6 +2,18 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-09: **`dbo.Spot.lake_Id` repaired with the new `dbo.sp_spot_relink`.** All 376 spots are Ontario points loaded in
+  2014 with the lake chosen by name only, so a "Trout Lake" spot hung on the Northwest Territories Trout Lake: 230 of 321
+  rows were more than 2 degrees from their lake and 50 pointed at a lake that no longer exists (found while drawing spots
+  as hooks on `wfRiverViewer.aspx`). The procedure moves a spot to the nearest same-named lake within 55 km of it,
+  un-assigns it (zero guid, coordinates kept) when the lake is gone or over 220 km away, and leaves the rest;
+  `@apply = 0` only counts; a second run changes nothing. Test: `unit_test@SpotRelink.sql` (8, all failed first with the
+  procedure missing, pass now). **Applied 2026-11-09 to CTRL envionx and production**: 222 moved, 60 un-assigned, 94 untouched;
+  afterwards every assigned spot is within 2 degrees of its lake (306 within 0.5) and none points at a missing lake.
+  Production: read-only dry run first (same 222 / 60, spot for spot as CTRL), then the procedure was created from its own
+  block only and run in a transaction that commits only on those counts; second run 0 / 0, production identical to CTRL
+  (376 of 376 rows), list of the old lake ids kept for rollback. The one-off `EXEC` sits in `script20_Migration.sql` - it has now
+  run on both databases and can be removed.
 - 2026-11-09: **`fn_forecast_plot_json` no longer returns NULL for a station without readings.** `"stamp"` read the
   latest `dbo.WaterData` row and was concatenated into the document, so a station that never reported (1,108 supported
   stations on CTRL) - or one without a `lakeid` - got a NULL document, and FishTracker `Forecast/Plot.aspx`

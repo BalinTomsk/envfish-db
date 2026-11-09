@@ -152,3 +152,14 @@ GO
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- ONE-OFF BACKFILL (2026-11-09) -- dbo.Spot.lake_Id, the 376 Ontario fishing spots attached to same-named lakes elsewhere.
+--
+-- TRANSIENT: delete this block once it has been run against every database that needs it. dbo.sp_spot_relink itself
+-- lives in script02_Proc.sql and STAYS (reusable repair tool; this is only the invocation).
+-- Safe on a fresh build (dbo.Spot is empty, nothing moves). Safe to re-run: a second run changes nothing.
+DECLARE @relinked int, @unassigned int;
+EXEC dbo.sp_spot_relink @relinked = @relinked OUTPUT, @unassigned = @unassigned OUTPUT;
+PRINT 'spot relink: ' + CAST(ISNULL(@relinked, 0) AS varchar(10)) + ' moved to their own lake, ' + CAST(ISNULL(@unassigned, 0) AS varchar(10)) + ' un-assigned';
+GO

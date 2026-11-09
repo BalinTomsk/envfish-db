@@ -5931,3 +5931,77 @@ BEGIN
     SELECT deleted = @@ROWCOUNT;
 END
 GO
+------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_spot_relink' AND type = 'P')
+    DROP PROCEDURE dbo.sp_spot_relink
+GO
+-- sp_spot_relink : repairs dbo.Spot.lake_Id, the water body a fishing spot belongs to.
+--
+-- The 376 Ontario spots were loaded in 2014 with the lake picked by NAME only, so a "Trout Lake" spot in Ontario
+-- hung on whichever Trout Lake was found first (the one in the Northwest Territories): 230 of 321 rows were more
+-- than 2 degrees from their lake and 50 pointed at a lake that no longer exists (found 2026-11-09 on the river viewer
+-- map). Per spot, in km between the spot and the lake's dbo.vw_lake point:
+--   next to its lake (<= 55 km), lake without coordinates, or already un-assigned -> left alone
+--   otherwise: the NEAREST lake of the same name within 55 km of the spot          -> the spot moves to it
+--   otherwise: the lake no longer exists, or is > 220 km away                      -> lake_Id = zero guid (unassigned)
+--   otherwise (55..220 km, nothing better)                                          -> left alone
+-- Un-assigned spots keep their coordinates; the zero guid is the column default, so nothing else changes.
+-- A second run changes nothing. @apply = 0 only counts. Reusable after any later bulk spot import.
+--
+-- Called from: nothing in the application. Run by hand, and once from script20_Migration.sql (one-off).
+-- Readers of the result: Resources/wfRiverViewer.aspx.cs GetFishPoints (via dbo.fn_lake_view_info 'fishspot').
+-- Covered by UNIT_TESTS/unit_test@SpotRelink.sql.
+CREATE PROCEDURE dbo.sp_spot_relink
+    @apply      bit = 1,
+    @relinked   int = NULL OUTPUT,   -- spots moved to another lake
+    @unassigned int = NULL OUTPUT    -- spots set to the zero guid
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @near float = 55.0, @far float = 220.0
+          , @zero uniqueidentifier = '00000000-0000-0000-0000-000000000000';
+
+    CREATE TABLE #sp (spot_id uniqueidentifier NOT NULL PRIMARY KEY, new_lake uniqueidentifier NOT NULL);
+
+    ;WITH s AS
+    (
+        SELECT sp.spot_id, sp.spot_lat, sp.spot_lon, sp.lake_Id, v.lake_name
+             , CASE WHEN v.lat IS NULL OR v.lon IS NULL THEN NULL
+                    ELSE 111.195 * SQRT( POWER(sp.spot_lat - v.lat, 2)
+                                       + POWER((sp.spot_lon - v.lon) * COS(RADIANS(sp.spot_lat)), 2) ) END AS km
+             , CASE WHEN EXISTS (SELECT 1 FROM dbo.lake l WHERE l.lake_id = sp.lake_Id) THEN 1 ELSE 0 END AS lake_exists
+          FROM dbo.Spot sp
+          LEFT JOIN dbo.vw_lake v ON v.lake_id = sp.lake_Id
+         WHERE sp.spot_lat IS NOT NULL AND sp.spot_lon IS NOT NULL AND sp.lake_Id <> @zero
+    )
+    INSERT INTO #sp (spot_id, new_lake)
+    SELECT s.spot_id
+         , COALESCE(k.lake_id, @zero)
+      FROM s
+      OUTER APPLY
+      (   SELECT TOP (1) c.lake_id
+            FROM dbo.vw_lake c
+           CROSS APPLY (SELECT 111.195 * SQRT( POWER(s.spot_lat - c.lat, 2)
+                                             + POWER((s.spot_lon - c.lon) * COS(RADIANS(s.spot_lat)), 2) ) AS km) d
+           WHERE s.lake_name IS NOT NULL
+             AND c.lake_name = s.lake_name
+             AND c.lake_id  <> s.lake_Id
+             AND c.lat BETWEEN s.spot_lat - 0.6 AND s.spot_lat + 0.6
+             AND c.lon BETWEEN s.spot_lon - 1.5 AND s.spot_lon + 1.5
+             AND d.km <= @near
+           ORDER BY d.km, c.lake_id
+      ) k
+     WHERE ( s.lake_exists = 0 OR s.km > @near )                          -- not next to its lake
+       AND ( k.lake_id IS NOT NULL OR s.lake_exists = 0 OR s.km > @far );  -- and something to do about it
+
+    SELECT @relinked   = COUNT(*) FROM #sp WHERE new_lake <> @zero;
+    SELECT @unassigned = COUNT(*) FROM #sp WHERE new_lake  = @zero;
+
+    IF @apply = 1
+        UPDATE dbo.Spot SET lake_Id = t.new_lake        -- dbo.Spot named in full: an alias here is read as a missing object by the dependency tracker
+          FROM dbo.Spot
+          JOIN #sp t ON t.spot_id = dbo.Spot.spot_id;
+
+    DROP TABLE #sp;
+END
+GO

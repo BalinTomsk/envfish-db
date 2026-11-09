@@ -158,6 +158,10 @@ Many rows have NULL or 0 measures; rankings (`sort=length_desc` etc.) leave thos
   station; `isolated` = no water connections; `reviewed` = checked by an operator; `ai_edit` bitmask of AI edits.
 - **Regulations**: `dbo.regulations`, scoped to one water body (`lakeId`), a zone, a state or a whole country
   (`fn_lake_regulation_json`, `fn_region_regulation_json`). A water body's own rules do not repeat the region's.
+- **Fishing spots**: `dbo.Spot` (`spot_lat`/`spot_lon`, `lake_Id`) - the 376 Ontario spots of 2014, drawn as hook icons on
+  the river viewer map. `lake_Id` was set by lake NAME only, so most rows hung on a same-named lake in another province
+  (2026-11-09: 230 of 321 rows more than 2 degrees away, 50 pointing at deleted lakes). `dbo.sp_spot_relink` repairs it:
+  moves a spot to the nearest same-named lake within 55 km of it, otherwise un-assigns it (zero guid, coordinates kept).
 
 ## Where the data came from
 
