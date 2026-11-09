@@ -7,7 +7,8 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   stations on CTRL) - or one without a `lakeid` - got a NULL document, and FishTracker `Forecast/Plot.aspx`
   `GetJsonPlot` threw "Data is Null" on its station-map pin (prod 04AA004 / sid 268044). Both now default to `""`.
   Test: `unit_test@ForecastPlotJson.sql` 4 (failed first, passes now). Pre-existing, not caused by the water
-  temperature removal. Existing databases: `F:\logs\water_tempix_forecast_plot_json.sql` replaces only this function.
+  temperature removal. **Applied 2026-11-09 to CTRL envionx and production** by a targeted script replacing only
+  this function; before/after hashes show exactly that one object changed, live Plot / Science pages verified clean.
 
 - 2026-11-08: **`dbo.WaterData.air`, `.Cyanobacteria` and `.Orthophosphate` dropped.** air and Cyanobacteria were
   NULL/0 for every station (USGS unit `air, °C` never matched `sp_push_us_water_data`'s `'Air'` check; no
