@@ -2,6 +2,21 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-09: **Ontario fishing access points imported into `dbo.Spot`** (LIO *Fishing access points*, FISHING_ACCESS_POINT
+  export of 2026-10-29, Open Government Licence - Ontario, 2,430 points). **Schema** (`script01_createTable.sql`): `dbo.Spot` gained
+  nullable `spot_name`, `spot_type`, `spot_parking`, `spot_owner`, `spot_surface`, `spot_access`, `spot_fee`, `spot_info_url`,
+  `spot_comment`, `spot_verified`, `spot_verified_by`, `spot_source`, `spot_source_id`, `spot_source_stamp`, a filtered unique
+  index `UX_Spot_source (spot_source, spot_source_id)` and `IX_Spot_lake_Id`. The 376 rows of 2014 keep NULLs. Photo links are
+  not loaded (internal ministry file-share paths). **Objects** (`script02_Proc.sql`): `dbo.sp_spot_upsert` (JSON in, one row per
+  source id, a re-run changes nothing) and `dbo.sp_spot_link_by_name` (un-assigned spot gets the lake its name says, within
+  `@max_km`, default 20; longest lake name wins, then nearest). Tests: `unit_test@SpotImport.sql` (5) and
+  `unit_test@SpotLinkByName.sql` (4), all failed first (missing columns), pass now; full suite 684 PASS. **Applied 2026-11-09 to
+  CTRL envionx and production**: columns and indexes by an idempotent patch (`ontario_spots/spot_columns_live.sql`), procedures, then
+  `ontario_spots/Import-LioSpots.ps1` (one transaction, `-DryRun` rolls back): 2,430 inserted, 1,159 linked to a lake (1,019 boat
+  launches, 108 shoreline, 32 enhanced shoreline), second run 0/0/0, 2014 rows untouched; `fn_lake_view_info` returns 25 spots
+  for Lake Muskoka. **Production** (after a read-only dry run that matched CTRL link for link): column patch, procedures from their own blocks, then the import in one transaction that commits only on exactly 2,430 inserted / 1,159 linked; a second run 0 / 0 / 0, prod identical to CTRL on all 2,430 rows, 2014 rows untouched, no spot points at a missing lake; the live river viewer draws 25 spots for Lake Muskoka. Rollback: delete the rows where `spot_source = 'LIO-FAP'`. Source files and
+  notes: `F:\envionx\data\spots_on`, `ontario_spots/README.md`.
+
 - 2026-11-09: **`dbo.Spot.lake_Id` repaired with the new `dbo.sp_spot_relink`.** All 376 spots are Ontario points loaded in
   2014 with the lake chosen by name only, so a "Trout Lake" spot hung on the Northwest Territories Trout Lake: 230 of 321
   rows were more than 2 degrees from their lake and 50 pointed at a lake that no longer exists (found while drawing spots
