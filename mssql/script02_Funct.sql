@@ -7280,3 +7280,56 @@ BEGIN
        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER );
 END
 GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_forecast_stations_json' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_forecast_stations_json
+GO
+
+-- The forecast-map stations near a point for one fish, nearest first: the website's Planning.aspx map
+-- (dbo.fn_map_location -- water AND weather AND fish, today's score from dbo.fish_location) cut to a radius.
+--   @fish_id    the fish (dbo.fish); NULL result when unknown
+--   @lat, @lon  the caller's position
+--   @radius_km  1..500, NULL = 100
+--   @country    'CA' or 'US' as the map's country radio; NULL = both (an angler near the border sees both)
+--   @limit      1..200, NULL = 50; total counts every station in the radius
+-- Each station: sid, name (the map's location), lat, lon, country, state, county, today (0..100, the value the
+-- map plots), marker (today / 10 - 1, Planning.aspx's pin colour index) and distanceKm (great circle, 0.1 km).
+-- Called by docapi ForecastController GET /api/v1/forecast/stations (JdbcForecastQueryRepository.stations),
+-- for the envfish-droid Forecast tab.
+-- SELECT dbo.fn_forecast_stations_json('2CFFB500-3E59-4120-9460-055856E9AC5C', 43.45, -80.49, 100, NULL, 20)
+CREATE FUNCTION dbo.fn_forecast_stations_json( @fish_id uniqueidentifier, @lat float, @lon float
+                                             , @radius_km float, @country char(2), @limit int )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    DECLARE @fishName varchar(64) = (SELECT TOP 1 fish_name FROM dbo.fish WHERE fish_id = @fish_id);
+    IF @fishName IS NULL OR @lat IS NULL OR @lon IS NULL
+        RETURN NULL;
+
+    SET @radius_km = CASE WHEN @radius_km IS NULL THEN 100 WHEN @radius_km < 1 THEN 1 WHEN @radius_km > 500 THEN 500 ELSE @radius_km END;
+    SET @limit = CASE WHEN @limit IS NULL THEN 50 WHEN @limit < 1 THEN 1 WHEN @limit > 200 THEN 200 ELSE @limit END;
+    SET @country = NULLIF(UPPER(LTRIM(RTRIM(@country))), '');
+
+    DECLARE @near TABLE ( sid int PRIMARY KEY, name nvarchar(255), lat float, lon float, country char(2)
+                        , state nvarchar(16), county nvarchar(255), today int, km decimal(7,1) );
+
+    INSERT INTO @near (sid, name, lat, lon, country, state, county, today, km)
+    SELECT m.sid, m.location, m.lat, m.lon, m.country, m.state, m.county, m.today, d.km
+      FROM ( SELECT * FROM dbo.fn_map_location(@fishName, @lat, @lon, 'CA', 0) WHERE ISNULL(@country, 'CA') = 'CA'
+             UNION ALL
+             SELECT * FROM dbo.fn_map_location(@fishName, @lat, @lon, 'US', 0) WHERE ISNULL(@country, 'US') = 'US' ) m
+     CROSS APPLY ( SELECT CAST(6371.0 * 2 * ASIN(SQRT( POWER(SIN(RADIANS(m.lat - @lat) / 2), 2)
+                        + COS(RADIANS(@lat)) * COS(RADIANS(m.lat)) * POWER(SIN(RADIANS(m.lon - @lon) / 2), 2) )) AS decimal(7,1)) AS km ) d
+     WHERE m.lat BETWEEN @lat - @radius_km / 111.0 AND @lat + @radius_km / 111.0
+       AND d.km <= @radius_km;
+
+    RETURN (
+    SELECT @fish_id AS fishId, @fishName AS fish, CAST(@lat AS decimal(9,5)) AS lat, CAST(@lon AS decimal(9,5)) AS lon
+         , CAST(@radius_km AS int) AS radiusKm, @country AS country
+         , @limit AS limit, (SELECT COUNT(*) FROM @near) AS total
+         , JSON_QUERY(ISNULL(( SELECT TOP (@limit) n.sid, n.name, CAST(n.lat AS decimal(9,5)) AS lat, CAST(n.lon AS decimal(9,5)) AS lon, n.country, n.state, n.county
+                                    , n.today, n.today / 10 - 1 AS marker, n.km AS distanceKm
+                                 FROM @near n ORDER BY n.km, n.sid FOR JSON PATH, INCLUDE_NULL_VALUES ), '[]')) AS stations
+       FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES );
+END
+GO
