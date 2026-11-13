@@ -158,6 +158,16 @@ Many rows have NULL or 0 measures; rankings (`sort=length_desc` etc.) leave thos
   station; `isolated` = no water connections; `reviewed` = checked by an operator; `ai_edit` bitmask of AI edits.
 - **Regulations**: `dbo.regulations`, scoped to one water body (`lakeId`), a zone, a state or a whole country
   (`fn_lake_regulation_json`, `fn_region_regulation_json`). A water body's own rules do not repeat the region's.
+- **Fishing spots**: `dbo.Spot` (`spot_lat`/`spot_lon`, `lake_Id`; zero guid = not tied to a water body). Two loads:
+  the 376 Ontario spots of 2014 (no attributes, `spot_source` NULL) and, since 2026-11-09, the 2,430 LIO *Fishing access
+  points* of Ontario (`spot_source = 'LIO-FAP'`, `spot_source_id` = OGF_ID): name, `spot_type` (Boat Launch 2,210 /
+  Shoreline Access 167 / Enhanced Shoreline Access 53), parking, owner, surface, access flag, user fee, info link, comment,
+  verification date and source. They are drawn as hook icons on the river viewer map.
+  `lake_Id` of the 2014 load was set by lake NAME only, so most rows hung on a same-named lake in another province;
+  `dbo.sp_spot_relink` repairs that (nearest same-named lake within 55 km, else un-assigned). LIO rows are loaded by
+  `dbo.sp_spot_upsert` (JSON, one row per source id, re-runnable) and tied to a lake by `dbo.sp_spot_link_by_name` (spot name
+  contains the lake name, lake point within 20 km, longest name then nearest; 1,159 of 2,430 linked on CTRL, the rest stay
+  un-assigned because `dbo.Lake_Shape` holds shapes for very few Ontario water bodies).
 
 ## Where the data came from
 

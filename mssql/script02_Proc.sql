@@ -5931,3 +5931,230 @@ BEGIN
     SELECT deleted = @@ROWCOUNT;
 END
 GO
+------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_spot_relink' AND type = 'P')
+    DROP PROCEDURE dbo.sp_spot_relink
+GO
+-- sp_spot_relink : repairs dbo.Spot.lake_Id, the water body a fishing spot belongs to.
+--
+-- The 376 Ontario spots were loaded in 2014 with the lake picked by NAME only, so a "Trout Lake" spot in Ontario
+-- hung on whichever Trout Lake was found first (the one in the Northwest Territories): 230 of 321 rows were more
+-- than 2 degrees from their lake and 50 pointed at a lake that no longer exists (found 2026-11-09 on the river viewer
+-- map). Per spot, in km between the spot and the lake's dbo.vw_lake point:
+--   next to its lake (<= 55 km), lake without coordinates, or already un-assigned -> left alone
+--   otherwise: the NEAREST lake of the same name within 55 km of the spot          -> the spot moves to it
+--   otherwise: the lake no longer exists, or is > 220 km away                      -> lake_Id = zero guid (unassigned)
+--   otherwise (55..220 km, nothing better)                                          -> left alone
+-- Un-assigned spots keep their coordinates; the zero guid is the column default, so nothing else changes.
+-- A second run changes nothing. @apply = 0 only counts. Reusable after any later bulk spot import.
+--
+-- Called from: nothing in the application. Run by hand, and once from script20_Migration.sql (one-off).
+-- Readers of the result: Resources/wfRiverViewer.aspx.cs GetFishPoints (via dbo.fn_lake_view_info 'fishspot').
+-- Covered by UNIT_TESTS/unit_test@SpotRelink.sql.
+CREATE PROCEDURE dbo.sp_spot_relink
+    @apply      bit = 1,
+    @relinked   int = NULL OUTPUT,   -- spots moved to another lake
+    @unassigned int = NULL OUTPUT    -- spots set to the zero guid
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @near float = 55.0, @far float = 220.0
+          , @zero uniqueidentifier = '00000000-0000-0000-0000-000000000000';
+
+    CREATE TABLE #sp (spot_id uniqueidentifier NOT NULL PRIMARY KEY, new_lake uniqueidentifier NOT NULL);
+
+    ;WITH s AS
+    (
+        SELECT sp.spot_id, sp.spot_lat, sp.spot_lon, sp.lake_Id, v.lake_name
+             , CASE WHEN v.lat IS NULL OR v.lon IS NULL THEN NULL
+                    ELSE 111.195 * SQRT( POWER(sp.spot_lat - v.lat, 2)
+                                       + POWER((sp.spot_lon - v.lon) * COS(RADIANS(sp.spot_lat)), 2) ) END AS km
+             , CASE WHEN EXISTS (SELECT 1 FROM dbo.lake l WHERE l.lake_id = sp.lake_Id) THEN 1 ELSE 0 END AS lake_exists
+          FROM dbo.Spot sp
+          LEFT JOIN dbo.vw_lake v ON v.lake_id = sp.lake_Id
+         WHERE sp.spot_lat IS NOT NULL AND sp.spot_lon IS NOT NULL AND sp.lake_Id <> @zero
+    )
+    INSERT INTO #sp (spot_id, new_lake)
+    SELECT s.spot_id
+         , COALESCE(k.lake_id, @zero)
+      FROM s
+      OUTER APPLY
+      (   SELECT TOP (1) c.lake_id
+            FROM dbo.vw_lake c
+           CROSS APPLY (SELECT 111.195 * SQRT( POWER(s.spot_lat - c.lat, 2)
+                                             + POWER((s.spot_lon - c.lon) * COS(RADIANS(s.spot_lat)), 2) ) AS km) d
+           WHERE s.lake_name IS NOT NULL
+             AND c.lake_name = s.lake_name
+             AND c.lake_id  <> s.lake_Id
+             AND c.lat BETWEEN s.spot_lat - 0.6 AND s.spot_lat + 0.6
+             AND c.lon BETWEEN s.spot_lon - 1.5 AND s.spot_lon + 1.5
+             AND d.km <= @near
+           ORDER BY d.km, c.lake_id
+      ) k
+     WHERE ( s.lake_exists = 0 OR s.km > @near )                          -- not next to its lake
+       AND ( k.lake_id IS NOT NULL OR s.lake_exists = 0 OR s.km > @far );  -- and something to do about it
+
+    SELECT @relinked   = COUNT(*) FROM #sp WHERE new_lake <> @zero;
+    SELECT @unassigned = COUNT(*) FROM #sp WHERE new_lake  = @zero;
+
+    IF @apply = 1
+        UPDATE dbo.Spot SET lake_Id = t.new_lake        -- dbo.Spot named in full: an alias here is read as a missing object by the dependency tracker
+          FROM dbo.Spot
+          JOIN #sp t ON t.spot_id = dbo.Spot.spot_id;
+
+    DROP TABLE #sp;
+END
+GO
+------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_spot_upsert' AND type = 'P')
+    DROP PROCEDURE dbo.sp_spot_upsert
+GO
+-- sp_spot_upsert : loads one dataset of fishing spots into dbo.Spot from a JSON array, one row per (@source, id).
+-- Rows already there are updated in place when a value changed (spot_id and lake_Id are kept), new ones are inserted
+-- with lake_Id = zero guid (link them with dbo.sp_spot_link_by_name). Rows without id or coordinates are skipped. Rows of
+-- other sources and the 2014 rows (spot_source NULL) are never touched. A second run of the same JSON changes nothing.
+--
+-- JSON item: {"id","type","name","lat","lon","parking","owner","surface","access","fee","info_url","comment","verified",
+-- "verified_by","stamp"}. parking / fee: Yes -> 1, No -> 0, anything else NULL. owner / surface / access: blank or Unknown ->
+-- NULL. verified / stamp: yyyyMMdd or yyyyMMddHHmmss.
+--
+-- Called from: ontario_spots/Import-LioSpots.ps1 (LIO Fishing access points, @source = 'LIO-FAP'); nothing in the web app.
+-- Readers of the result: Resources/wfRiverViewer.aspx.cs GetFishPoints (via dbo.fn_lake_view_info 'fishspot').
+-- Covered by UNIT_TESTS/unit_test@SpotImport.sql.
+CREATE PROCEDURE dbo.sp_spot_upsert
+    @source   varchar(16),
+    @json     nvarchar(max),
+    @inserted int = NULL OUTPUT,
+    @updated  int = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NULLIF(LTRIM(RTRIM(@source)), '') IS NULL
+    BEGIN
+        RAISERROR ('sp_spot_upsert: @source is required', 16, 1);
+        RETURN;
+    END;
+
+    SELECT x.id, x.lat, x.lon
+         , NULLIF(LTRIM(RTRIM(x.name)), '')        AS name
+         , NULLIF(LTRIM(RTRIM(x.type)), '')        AS type
+         , CASE LOWER(LTRIM(RTRIM(x.parking))) WHEN 'yes' THEN CAST(1 AS bit) WHEN 'no' THEN CAST(0 AS bit) END AS parking
+         , CASE WHEN LOWER(LTRIM(RTRIM(x.owner)))   IN ('', 'unknown') THEN NULL ELSE LTRIM(RTRIM(x.owner))   END AS owner
+         , CASE WHEN LOWER(LTRIM(RTRIM(x.surface))) IN ('', 'unknown') THEN NULL ELSE LTRIM(RTRIM(x.surface)) END AS surface
+         , CASE WHEN LOWER(LTRIM(RTRIM(x.access)))  IN ('', 'unknown') THEN NULL ELSE LTRIM(RTRIM(x.access))  END AS access
+         , CASE LOWER(LTRIM(RTRIM(x.fee))) WHEN 'yes' THEN CAST(1 AS bit) WHEN 'no' THEN CAST(0 AS bit) END AS fee
+         , NULLIF(LTRIM(RTRIM(x.info_url)), '')    AS info_url
+         , NULLIF(LTRIM(RTRIM(x.comment)), '')     AS comment
+         , TRY_CONVERT(date, NULLIF(LEFT(LTRIM(RTRIM(x.verified)), 8), ''), 112) AS verified
+         , NULLIF(LTRIM(RTRIM(x.verified_by)), '') AS verified_by
+         , CASE WHEN LEN(LTRIM(RTRIM(x.stamp))) >= 14
+                THEN TRY_CONVERT(datetime2, LEFT(x.stamp, 8) + ' ' + SUBSTRING(x.stamp, 9, 2) + ':' + SUBSTRING(x.stamp, 11, 2) + ':' + SUBSTRING(x.stamp, 13, 2), 112)
+                ELSE TRY_CONVERT(datetime2, NULLIF(LEFT(LTRIM(RTRIM(x.stamp)), 8), ''), 112) END AS stamp
+         , ROW_NUMBER() OVER (PARTITION BY LTRIM(RTRIM(x.id)) ORDER BY (SELECT 1)) AS rn
+      INTO #n
+      FROM OPENJSON(@json) WITH
+           ( id          varchar(32)   '$.id',        type     varchar(32)   '$.type',      name     nvarchar(128) '$.name'
+           , lat         float         '$.lat',       lon      float         '$.lon'
+           , parking     varchar(10)   '$.parking',   owner    varchar(16)   '$.owner',     surface  varchar(16)   '$.surface'
+           , access      varchar(10)   '$.access',    fee      varchar(10)   '$.fee'
+           , info_url    nvarchar(255) '$.info_url',  comment  nvarchar(255) '$.comment'
+           , verified    varchar(20)   '$.verified',  verified_by nvarchar(64) '$.verified_by', stamp varchar(20) '$.stamp' ) x
+     WHERE NULLIF(LTRIM(RTRIM(x.id)), '') IS NOT NULL AND x.lat IS NOT NULL AND x.lon IS NOT NULL;
+
+    UPDATE #n SET id = LTRIM(RTRIM(id));
+    DELETE FROM #n WHERE rn > 1;
+
+    -- changed rows are updated in place; spot_id and lake_Id stay
+    UPDATE dbo.Spot
+       SET spot_lat = n.lat, spot_lon = n.lon, spot_name = n.name, spot_type = n.type, spot_parking = n.parking
+         , spot_owner = n.owner, spot_surface = n.surface, spot_access = n.access, spot_fee = n.fee
+         , spot_info_url = n.info_url, spot_comment = n.comment, spot_verified = n.verified, spot_verified_by = n.verified_by
+         , spot_source_stamp = n.stamp
+      FROM dbo.Spot
+      JOIN #n n ON dbo.Spot.spot_source = @source AND dbo.Spot.spot_source_id = n.id
+     WHERE EXISTS (SELECT dbo.Spot.spot_lat, dbo.Spot.spot_lon, dbo.Spot.spot_name, dbo.Spot.spot_type, dbo.Spot.spot_parking
+                        , dbo.Spot.spot_owner, dbo.Spot.spot_surface, dbo.Spot.spot_access, dbo.Spot.spot_fee
+                        , dbo.Spot.spot_info_url, dbo.Spot.spot_comment, dbo.Spot.spot_verified, dbo.Spot.spot_verified_by
+                        , dbo.Spot.spot_source_stamp
+                   EXCEPT
+                   SELECT n.lat, n.lon, n.name, n.type, n.parking, n.owner, n.surface, n.access, n.fee
+                        , n.info_url, n.comment, n.verified, n.verified_by, n.stamp);
+    SET @updated = @@ROWCOUNT;
+
+    INSERT INTO dbo.Spot (spot_lat, spot_lon, spot_name, spot_type, spot_parking, spot_owner, spot_surface, spot_access, spot_fee
+                        , spot_info_url, spot_comment, spot_verified, spot_verified_by, spot_source, spot_source_id, spot_source_stamp)
+    SELECT n.lat, n.lon, n.name, n.type, n.parking, n.owner, n.surface, n.access, n.fee
+         , n.info_url, n.comment, n.verified, n.verified_by, @source, n.id, n.stamp
+      FROM #n n
+     WHERE NOT EXISTS (SELECT 1 FROM dbo.Spot s WHERE s.spot_source = @source AND s.spot_source_id = n.id);
+    SET @inserted = @@ROWCOUNT;
+
+    DROP TABLE #n;
+END
+GO
+------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_spot_link_by_name' AND type = 'P')
+    DROP PROCEDURE dbo.sp_spot_link_by_name
+GO
+-- sp_spot_link_by_name : gives an un-assigned spot (lake_Id = zero guid) the water body its NAME says. The spot's name must
+-- contain the lake's name (>= 5 characters) and the lake's dbo.vw_lake point must lie within @max_km of the spot; with several
+-- candidates the longest lake name wins, then the nearest ("Utsimp Lake North Access" -> "Utsimp Lake North", not "Utsimp Lake").
+-- Only spots with a name and the zero guid are looked at, so a second run links nothing and the 2014 rows (no name) are never touched.
+-- @source limits it to one dataset (NULL = all); @apply = 0 only counts. Spots that match nothing stay un-assigned, coordinates kept.
+-- Why by name: dbo.Lake_Shape holds shapes for very few Ontario water bodies (2026-11-09: 17 of 2,430 LIO points within 600 m of one).
+--
+-- Called from: ontario_spots/Import-LioSpots.ps1 right after dbo.sp_spot_upsert; nothing in the web app.
+-- Covered by UNIT_TESTS/unit_test@SpotImport.sql.
+CREATE PROCEDURE dbo.sp_spot_link_by_name
+    @source varchar(16) = NULL,
+    @max_km float = 20.0,
+    @apply  bit = 1,
+    @linked int = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @zero uniqueidentifier = '00000000-0000-0000-0000-000000000000';
+
+    SELECT spot_id, spot_lat, spot_lon, spot_name
+      INTO #cand
+      FROM dbo.Spot
+     WHERE lake_Id = @zero AND spot_name IS NOT NULL AND spot_lat IS NOT NULL AND spot_lon IS NOT NULL
+       AND (@source IS NULL OR spot_source = @source);
+
+    CREATE TABLE #lnk (spot_id uniqueidentifier NOT NULL PRIMARY KEY, lake_id uniqueidentifier NOT NULL);
+
+    IF EXISTS (SELECT 1 FROM #cand)
+    BEGIN
+        DECLARE @dlat float = @max_km / 111.195
+              , @minlat float, @maxlat float, @minlon float, @maxlon float;
+        SELECT @minlat = MIN(spot_lat), @maxlat = MAX(spot_lat), @minlon = MIN(spot_lon), @maxlon = MAX(spot_lon) FROM #cand;
+        DECLARE @dlon float = @dlat / COS(RADIANS(CASE WHEN ABS(@minlat) > ABS(@maxlat) THEN ABS(@minlat) ELSE ABS(@maxlat) END));
+
+        SELECT lake_id, lake_name, lat, lon
+          INTO #lk
+          FROM dbo.vw_lake
+         WHERE lat IS NOT NULL AND lon IS NOT NULL AND LEN(lake_name) >= 5
+           AND lat BETWEEN @minlat - @dlat AND @maxlat + @dlat
+           AND lon BETWEEN @minlon - @dlon AND @maxlon + @dlon;
+
+        INSERT INTO #lnk (spot_id, lake_id)
+        SELECT c.spot_id, k.lake_id
+          FROM #cand c
+         CROSS APPLY (SELECT TOP (1) l.lake_id
+                        FROM #lk l
+                       WHERE CHARINDEX(l.lake_name, c.spot_name) > 0
+                         AND l.lat BETWEEN c.spot_lat - @dlat AND c.spot_lat + @dlat
+                         AND 111.195 * SQRT( POWER(c.spot_lat - l.lat, 2) + POWER((c.spot_lon - l.lon) * COS(RADIANS(c.spot_lat)), 2) ) <= @max_km
+                       ORDER BY LEN(l.lake_name) DESC
+                              , 111.195 * SQRT( POWER(c.spot_lat - l.lat, 2) + POWER((c.spot_lon - l.lon) * COS(RADIANS(c.spot_lat)), 2) )
+                              , l.lake_id) k;
+    END;
+
+    SELECT @linked = COUNT(*) FROM #lnk;
+
+    IF @apply = 1
+        UPDATE dbo.Spot SET lake_Id = t.lake_id
+          FROM dbo.Spot
+          JOIN #lnk t ON t.spot_id = dbo.Spot.spot_id;
+END
+GO

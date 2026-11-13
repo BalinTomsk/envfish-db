@@ -1504,6 +1504,22 @@ CREATE TABLE Spot
     spot_sid  int not null identity(1,1),
     spot_created datetime2 NOT NULL,
     spot_link nvarchar(255),
+    -- Descriptive columns (2026-11-09), filled by the Ontario import (LIO Fishing access points, spot_source = 'LIO-FAP').
+    -- Rows of the 2014 load keep NULL here. NULL = unknown for the Yes/No fields.
+    spot_name         nvarchar(128) NULL,   -- site name
+    spot_type         varchar(32)   NULL,   -- Boat Launch / Shoreline Access / Enhanced Shoreline Access
+    spot_parking      bit           NULL,
+    spot_owner        varchar(16)   NULL,   -- Provincial / Municipal / Federal / Private
+    spot_surface      varchar(16)   NULL,   -- Concrete / Gravel / Natural / Other
+    spot_access       varchar(10)   NULL,   -- LIO ACCESS_FLG as published (Yes / No); its exact meaning is not documented
+    spot_fee          bit           NULL,   -- user fee
+    spot_info_url     nvarchar(255) NULL,
+    spot_comment      nvarchar(255) NULL,
+    spot_verified     date          NULL,   -- last field verification
+    spot_verified_by  nvarchar(64)  NULL,
+    spot_source       varchar(16)   NULL,   -- which dataset the row came from; NULL for the 2014 load
+    spot_source_id    varchar(32)   NULL,   -- the dataset's own id (LIO OGF_ID)
+    spot_source_stamp datetime2     NULL,   -- the dataset's effective date for the row
     CONSTRAINT PK_Spot PRIMARY KEY CLUSTERED ( spot_id ASC )
 ) 
 GO
@@ -1512,6 +1528,12 @@ GO
 ALTER TABLE dbo.Spot ADD CONSTRAINT DF_Spot_spot_id DEFAULT (NEWSEQUENTIALID()) FOR spot_id;
 GO
 ALTER TABLE dbo.Spot ADD CONSTRAINT DF_Spot_lake_Id DEFAULT ('00000000-0000-0000-0000-000000000000') FOR lake_Id;
+GO
+-- one row per (dataset, dataset id): a re-import updates instead of duplicating (dbo.sp_spot_upsert); needs QUOTED_IDENTIFIER ON
+CREATE UNIQUE INDEX UX_Spot_source ON dbo.Spot (spot_source, spot_source_id) WHERE spot_source IS NOT NULL;
+GO
+-- the river viewer reads the spots of one water body (dbo.fn_lake_view_info)
+CREATE INDEX IX_Spot_lake_Id ON dbo.Spot (lake_Id) INCLUDE (spot_lat, spot_lon);
 GO
 
 -------------------------------------------------------------------------------------------------------

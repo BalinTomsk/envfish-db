@@ -12,6 +12,33 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   failed first on the missing function). The other two forecast endpoints need no new object: they call
   `fn_forecast_plot_json` and `fn_fish_reasoning_json`. **Applied to production 2026-11-13** (verified: Laurel Creek first, 89 stations within 100 km). CTRL not yet (unreachable that day).
 
+- 2026-11-09: **Ontario fishing access points imported into `dbo.Spot`** (LIO *Fishing access points*, FISHING_ACCESS_POINT
+  export of 2026-10-29, Open Government Licence - Ontario, 2,430 points). **Schema** (`script01_createTable.sql`): `dbo.Spot` gained
+  nullable `spot_name`, `spot_type`, `spot_parking`, `spot_owner`, `spot_surface`, `spot_access`, `spot_fee`, `spot_info_url`,
+  `spot_comment`, `spot_verified`, `spot_verified_by`, `spot_source`, `spot_source_id`, `spot_source_stamp`, a filtered unique
+  index `UX_Spot_source (spot_source, spot_source_id)` and `IX_Spot_lake_Id`. The 376 rows of 2014 keep NULLs. Photo links are
+  not loaded (internal ministry file-share paths). **Objects** (`script02_Proc.sql`): `dbo.sp_spot_upsert` (JSON in, one row per
+  source id, a re-run changes nothing) and `dbo.sp_spot_link_by_name` (un-assigned spot gets the lake its name says, within
+  `@max_km`, default 20; longest lake name wins, then nearest). Tests: `unit_test@SpotImport.sql` (5) and
+  `unit_test@SpotLinkByName.sql` (4), all failed first (missing columns), pass now; full suite 684 PASS. **Applied 2026-11-09 to
+  CTRL envionx and production**: columns and indexes by an idempotent patch (`ontario_spots/spot_columns_live.sql`), procedures, then
+  `ontario_spots/Import-LioSpots.ps1` (one transaction, `-DryRun` rolls back): 2,430 inserted, 1,159 linked to a lake (1,019 boat
+  launches, 108 shoreline, 32 enhanced shoreline), second run 0/0/0, 2014 rows untouched; `fn_lake_view_info` returns 25 spots
+  for Lake Muskoka. **Production** (after a read-only dry run that matched CTRL link for link): column patch, procedures from their own blocks, then the import in one transaction that commits only on exactly 2,430 inserted / 1,159 linked; a second run 0 / 0 / 0, prod identical to CTRL on all 2,430 rows, 2014 rows untouched, no spot points at a missing lake; the live river viewer draws 25 spots for Lake Muskoka. Rollback: delete the rows where `spot_source = 'LIO-FAP'`. Source files and
+  notes: `F:\envionx\data\spots_on`, `ontario_spots/README.md`.
+
+- 2026-11-09: **`dbo.Spot.lake_Id` repaired with the new `dbo.sp_spot_relink`.** All 376 spots are Ontario points loaded in
+  2014 with the lake chosen by name only, so a "Trout Lake" spot hung on the Northwest Territories Trout Lake: 230 of 321
+  rows were more than 2 degrees from their lake and 50 pointed at a lake that no longer exists (found while drawing spots
+  as hooks on `wfRiverViewer.aspx`). The procedure moves a spot to the nearest same-named lake within 55 km of it,
+  un-assigns it (zero guid, coordinates kept) when the lake is gone or over 220 km away, and leaves the rest;
+  `@apply = 0` only counts; a second run changes nothing. Test: `unit_test@SpotRelink.sql` (8, all failed first with the
+  procedure missing, pass now). **Applied 2026-11-09 to CTRL envionx and production**: 222 moved, 60 un-assigned, 94 untouched;
+  afterwards every assigned spot is within 2 degrees of its lake (306 within 0.5) and none points at a missing lake.
+  Production: read-only dry run first (same 222 / 60, spot for spot as CTRL), then the procedure was created from its own
+  block only and run in a transaction that commits only on those counts; second run 0 / 0, production identical to CTRL
+  (376 of 376 rows), list of the old lake ids kept for rollback. The one-off `EXEC` sits in `script20_Migration.sql` - it has now
+  run on both databases and can be removed.
 - 2026-11-09: **`fn_forecast_plot_json` no longer returns NULL for a station without readings.** `"stamp"` read the
   latest `dbo.WaterData` row and was concatenated into the document, so a station that never reported (1,108 supported
   stations on CTRL) - or one without a `lakeid` - got a NULL document, and FishTracker `Forecast/Plot.aspx`
