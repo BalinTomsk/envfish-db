@@ -4539,7 +4539,10 @@ GO
 GO
 
 
--- provide values for FishTracker.Forecast.Plot.GetJsonPlot
+-- provide values for FishTracker.Forecast.Plot.GetJsonPlot, WebService/Plot (TPlotService), the aspcore
+-- ForecastRepository and docapi GET /api/v1/forecast/plot/{sid}.
+-- Metric for every country (degC, mm, m, m3/s), as stored: the website converts to US units for a US
+-- visitor (2026-11-13). The document's "units" object names them.
 -- select dbo.fn_forecast_plot_json (142266, '4db64c3d-95cc-4e19-85be-c2a46582f813' )
 -- select dbo.fn_forecast_plot_json (266745, '4f023204-cdaf-4fae-bf7f-e9319794e8ff' )
 CREATE FUNCTION dbo.fn_forecast_plot_json( @sid int, @fish_guid varchar(255) )
@@ -4547,12 +4550,12 @@ RETURNS nvarchar(MAX)
 AS
 BEGIN
   DECLARE @rst TABLE (dt date, tm float , lvl float , prc float , dis float , tu float);
-  DECLARE @TemperatureList varchar(255) = '';
-  DECLARE @WaterLevelList  varchar(255) = '';
-  DECLARE @DischargeList  varchar(255) = '';
-  DECLARE @Precipitation  varchar(255) = '';
-  DECLARE @Turbidity  varchar(255) = '';
-  DECLARE @DatesList  varchar(255) = '';
+  DECLARE @TemperatureList varchar(2000) = '';
+  DECLARE @WaterLevelList  varchar(2000) = '';
+  DECLARE @DischargeList  varchar(2000) = '';
+  DECLARE @Precipitation  varchar(2000) = '';
+  DECLARE @Turbidity  varchar(2000) = '';
+  DECLARE @DatesList  varchar(2000) = '';
   DECLARE @country char(2) = '';
   DECLARE @state nvarchar(255) = '';
   DECLARE @lakeid uniqueidentifier;
@@ -4564,9 +4567,6 @@ BEGIN
   INSERT INTO @rst (dt) SELECT * from dbo.GetDatePeriod( @start, @end );
   DECLARE @fishName sysname = (SELECT fish_name FROM fish WHERE fish_id = @fish_guid);
   DECLARE @WaterStateDate varchar(32) = (SELECT TOP 1 CAST(stamp AS varchar(32)) FROM [WaterData] where mli = @mli ORDER BY stamp DESC);
-  -- convert C to F if US
-  UPDATE @rst SET tm = CASE WHEN 'US' = @country THEN ( tm * 2 ) + 30 ELSE tm END FROM @rst;
-
   UPDATE t SET t.tm  = ( CASE WHEN f.dt = CAST(getutcdate() AS DATE) THEN f.air_temperature ELSE f.tmDay END )
     , t.prc = (COALESCE(f.[gpfDay], 0) + COALESCE(f.[gpfNight], 0))/2.0
     FROM @rst t JOIN weather_Forecast f WITH (NOLOCK) ON (CAST(f.dt AS DATE) = t.dt) 
@@ -4613,6 +4613,7 @@ BEGIN
 	+ ', "stamp":"' + COALESCE(@WaterStateDate, '') + '"'
 	+ ', "lakeid":"' + COALESCE(CAST(@lakeid as varchar(36)), '') + '"'
 	+ ', "lakename":"' + COALESCE(@lakeName, N'') + '"'
+	+ N', "units":{"temperature":"°C","precipitation":"mm","level":"m","discharge":"m³/s"}'
 	+ ', "date":['          + @DatesList        + ']'
 	+ ', "discharge":['     + @DischargeList   + ']'
 	+ ', "precipitation":[' + @Precipitation   + ']'
@@ -7203,8 +7204,10 @@ GO
 --   week      - 7 days from @at, each at @at's time of day (so day 0 = today): date, moonDay, the three factors,
 --               probability, weather. Water readings are carried
 --               forward unchanged (they are not forecast); the month and moon factors change day by day.
+-- Every number is metric, for every country (degC, km/h, mm, m3/s, m/s), as stored: the website converts
+-- to US units for a US visitor (2026-11-13). country is trimmed (WaterStation.country is padded, "US ").
 -- NULL for an unknown station, or a fish not listed at that station (dbo.fish_location).
--- Called by FishTracker Forecast/Reasoning.aspx.cs (LoadReasoning).
+-- Called by FishTracker Forecast/Reasoning.aspx.cs (LoadReasoning) and docapi GET /api/v1/forecast/reasoning/{sid}.
 -- SELECT dbo.fn_fish_reasoning_json(266353, '2CFFB500-3E59-4120-9460-055856E9AC5C', SYSUTCDATETIME())
 CREATE FUNCTION dbo.fn_fish_reasoning_json( @sid int, @fish_id uniqueidentifier, @at datetime2 )
 RETURNS nvarchar(max)
@@ -7221,7 +7224,7 @@ BEGIN
 
     RETURN (
     SELECT ws.sid, COALESCE(NULLIF(ws.locName, ''), NULLIF(ws.locDesc, ''), 'station ' + ws.mli) AS station, ISNULL(l.lake_name, ws.lakeName) AS lakeName, ws.lakeId
-         , ws.country, ws.state
+         , RTRIM(ws.country) AS country, ws.state
          , f.fish_id AS fishId, f.fish_name AS fish
          , f.fish_moon_sensitive AS moonSensitive, f.fish_migrate_pattern AS migrates
          , t.probability AS base, t.newToday AS today

@@ -259,7 +259,11 @@ WITH SCHEMABINDING
 GO
 
 ------------------------------------------------------------------------------
--- select TOP 1 * from dbo.vScienceView WHERE 263911 = sid order by dt desc, tm desc
+-- Science tab (FishTracker Forecast/Science.aspx.cs, aspcore ForecastRepository).
+-- Metric for every country, as stored (m3/s, m, m/s): the website converts to US units for a US
+-- visitor (2026-11-13). Before that it multiplied US discharge and velocity by 35.3147 and
+-- elevation by 3.28084 and labelled them ft^3/s, ft/s, ft.
+-- select TOP 1 * from dbo.vScienceView WHERE 263911 = sid order by stamp desc
 ------------------------------------------------------------------------------
 
 CREATE VIEW dbo.vScienceView 
@@ -268,22 +272,19 @@ WITH SCHEMABINDING
 SELECT mli, state, lat, lon, id, sid, locName, city, country, stamp
    , CONVERT(varchar(16), dt, 107) AS dt, CAST(tm AS varchar(5)) AS tm
    , ISNULL( CAST(NULLIF(ROUND(discharge, 1), 0) AS varchar(16)), 'N/A') AS discharge
-   , ( CASE WHEN country = 'US' THEN 'ft^3/s' ELSE 'm^3/s' END ) AS discharge_unit
+   , 'm^3/s' AS discharge_unit
    , ISNULL( CAST(ROUND(elevation, 2) AS varchar(16)), 'N/A') AS elevation
-   , ( CASE WHEN country = 'US' THEN 'ft' ELSE 'm' END ) AS elevation_unit
+   , 'm' AS elevation_unit
    , ISNULL( CAST(ROUND(oxygen, 3) AS varchar(16)), 'N/A') AS oxygen
    , ISNULL( CAST(PH AS varchar(8)), 'N/A') AS ph
    , ISNULL( CAST(ROUND(turbidity, 1) AS varchar(16)), 'N/A') AS turbidity
    , ISNULL( CAST(ROUND(velocity, 1) AS varchar(16)), 'N/A') AS velocity
-   , ( CASE WHEN country = 'US' THEN 'ft/s' ELSE 'm/s' END ) AS velocity_unit
+   , 'm/s' AS velocity_unit
    FROM 
    (
      SELECT mli, state, lat, lon, id, sid, locName, city, country, stamp
           , CAST(stamp AS date) AS dt, CAST(stamp AS time) AS tm
-        , CASE WHEN country = 'US' THEN discharge * 35.314666721489 ELSE discharge END  AS discharge
-        , CASE WHEN country = 'US' THEN elevation * 3.28084 ELSE elevation END  AS elevation
-        , PH, oxygen, turbidity
-        , CASE WHEN country = 'US' THEN velocity * 35.3147 ELSE velocity END  AS velocity
+        , discharge, elevation, PH, oxygen, turbidity, velocity
         FROM dbo.vw_WaterData 
     )z
 GO

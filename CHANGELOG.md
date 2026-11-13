@@ -2,6 +2,29 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-13: **US water readings are stored metric; the forecast objects return metric for every country.**
+  The user's rule: the database stores metric everywhere, and the website shows US units to a US *visitor*.
+  `sp_push_us_water_data` (both waterservice collectors) had three faults: ft3/s was stored as **m3/h**
+  (x 101.941; Canada is m3/s); the unit check missed the collectors' unpadded strings (`in ft`, `feet`,
+  `feet per second` matched only `' in ft'` etc.), so those were stored as sent; and the conversion ran only in the
+  MERGE's UPDATE branch, so the first reading of each day (and `CurrentWaterState`, filled from the INSERT by
+  `TR_insWaterData`) kept the raw ft3/s and ft. Now the unit is trimmed and converted in the source rows, both
+  branches store level m, discharge m3/s, velocity m/s, wind km/h, precipitation mm, pressure hPa (integer
+  columns rounded). `fn_forecast_plot_json`, `fn_plot_weather`, `fn_fish_reasoning_json` and `vScienceView`
+  return what is stored, metric for every station (`vScienceView` used to multiply US discharge and velocity by
+  35.3147 and elevation by 3.28084: Missouri at Sioux City showed 93.6 million "ft3/s"). Kept from the first
+  version of this change: `fn_forecast_plot_json` lost its dead degF UPDATE (it ran before `tm` was filled), its
+  lists are varchar(2000) and it has a metric `units` object; `fn_fish_reasoning_json` trims `country` (was
+  "US "). `fn_plot_weather` is unchanged from main. Callers: waterservice WaterDataRepository (C# + Java);
+  FishTracker Forecast/Plot, Science, Reasoning; aspcore ForecastRepository; docapi /forecast/plot, /reasoning.
+  `WaterData.velocity` is tinyint, so velocities in m/s round to whole numbers (left as is).
+  Test: `unit_test@ForecastUsUnits.sql` 8 (all 8 failed first, then passed). One-off migration, guarded by the
+  extended property `dbo.WaterData.us_units_metric`: US `WaterData.discharge` / 3600, US `CurrentWaterState`
+  discharge x 0.0283168 and elevation x 0.3048. Raw-insert rows in `WaterData` (a day with a single push) cannot be
+  told apart and stay off until they age out (15 days). Applied to local envionx (105,324 + 9,383 rows; Sioux City
+  736 m3/s = 26,000 ft3/s, 3.22 m; a second run skipped). CTRL queued in ctrlLogBag.
+  **Prod: `ADMIN_WRITE_forecast_us_units.sql` right after the FishTracker.dll + Plot.aspx upload.**
+
 - 2026-11-13: **New `dbo.fn_forecast_stations_json(@fish_id, @lat, @lon, @radius_km, @country, @limit)`** for the
   envfish-droid Forecast tab (docapi `GET /api/v1/forecast/stations`). It is the website's Planning.aspx map
   (`dbo.fn_map_location`: water AND weather AND fish, `today` from `dbo.fish_location`) cut to a radius around the

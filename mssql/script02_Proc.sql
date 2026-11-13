@@ -2725,24 +2725,44 @@ SET NOCOUNT ON;
 		END CATCH
 	END
 
-	DECLARE @koef_elevation float = (CASE WHEN @unit IN ('ft', ' in ft', ' feet') THEN 0.3048000097536 ELSE 1 END);
+	-- Everything is stored METRIC, for every country (2026-11-13): level m, discharge m3/s (as ECCC sends
+	-- Canada's), velocity m/s, wind km/h, precipitation mm, pressure hPa. The website converts to US units
+	-- for a US visitor. The unit is trimmed: the collectors send it with no leading space ('in ft',
+	-- 'feet per second'), the legacy feed sent ' in ft'. Before this, ft3/s was stored as m3/h (x 101.941),
+	-- and 'in ft', 'feet', 'feet per second', mph, inches and mmHg were stored as sent.
+	-- Callers: waterservice WaterDataRepository (C# efcs-backend and Java efj-backend, USGS push).
+	DECLARE @u varchar(64) = LTRIM(RTRIM(@unit));
+	DECLARE @koef_elevation float = (CASE WHEN @u IN ('ft', 'in ft', 'feet') THEN 0.3048 ELSE 1 END);
 	DECLARE @koef_discharge float = (
-		CASE WHEN @unit = 'ft^3/s'  THEN 101.941  
-		     WHEN @unit = 'gal/min' THEN 350.227125 
-			                        ELSE 1            -- [m^3/hr] 
+		CASE WHEN @u IN ('ft^3/s', 'tidally filtered, ft^3/s') THEN 0.028316846592
+		     WHEN @u = 'gal/min'                               THEN 0.0000630901964
+			                                                   ELSE 1            -- [m^3/s]
 		END);
 	DECLARE @koef_velocity float = (
-		CASE WHEN @unit IN ('ft/s', ' feet per second') THEN 101.941  
-		     WHEN @unit = 'miles per hour'  THEN 0.44704 ELSE 1 
+		CASE WHEN @u IN ('ft/s', 'feet per second') THEN 0.3048
+		     WHEN @u IN ('miles per hour', 'mph')   THEN 0.44704
+		     WHEN @u = 'knots'                      THEN 0.514444 ELSE 1     -- [m/s]
+		END);
+	DECLARE @koef_wind float = (
+		CASE WHEN @u IN ('mph', 'air, mph')                    THEN 1.609344
+		     WHEN @u IN ('m/s', 'air, meters per second')      THEN 3.6
+		     WHEN @u IN ('knots', 'air, kn')                   THEN 1.852 ELSE 1 -- [km/h]
+		END);
+	DECLARE @koef_precipitation float = (CASE WHEN @u IN ('total, in', 'cumulative, inches') THEN 25.4 ELSE 1 END); -- [mm]
+	DECLARE @koef_pressure float = (
+		CASE WHEN @u = 'mmHg'             THEN 1.333224
+		     WHEN @u = 'uncorrected, kPa' THEN 10 ELSE 1                     -- [hPa]
 		END);
 
 	;WITH cte AS
 	 (
 		SELECT dt
-			, CASE WHEN @name in ( 'Streamflow')  THEN val ELSE NULL END							   AS discharge	-- [m^3/hr]
+			-- units are converted HERE, so both MERGE branches store metric (the INSERT branch stored the
+			-- raw value before 2026-11-13); integer columns are rounded rather than truncated
+			, CASE WHEN @name in ( 'Streamflow')  THEN val * @koef_discharge ELSE NULL END			   AS discharge	-- [m^3/s]
 			, CASE WHEN @name in ('Water velocity reading from field sensor'
-								, 'Mean water velocity for discharge computation' )  
-								THEN val ELSE NULL END												   AS velocity  -- [m/s] 
+								, 'Mean water velocity for discharge computation' )
+								THEN ROUND(val * @koef_velocity, 0) ELSE NULL END					   AS velocity  -- [m/s], tinyint column
 			, CASE WHEN @name in ( 'Gage height', 'Stream water level elevation above NAVD 1988', 'Elevation of reservoir water surface above datum'
 								 , 'Lake or reservoir elevation above United States Bureau of Reclamation Klamath Basin (USBRKB) Datum'
 								 , 'Lake or reservoir water surface elevation above NAVD 1988'
@@ -2751,14 +2771,14 @@ SET NOCOUNT ON;
 								 , 'Stream water level elevation above NGVD 1929'
 								 , 'Estuary or ocean water surface elevation above NGVD 1929'
 								 , 'Lake or reservoir water surface elevation above NGVD 1929'
-								 , 'Lake or reservoir elevation above New York State Barge Canal Datum (NYBCD)') THEN val ELSE NULL END AS elevation  -- [m]
+								 , 'Lake or reservoir elevation above New York State Barge Canal Datum (NYBCD)') THEN val * @koef_elevation ELSE NULL END AS elevation  -- [m]
 			, CASE WHEN @name in ( 'Turbidity')  THEN val ELSE NULL END							        AS turbidity	-- 
 
-			, CASE WHEN @name = 'Barometric pressure'  THEN val ELSE NULL END						    AS pressure
-			, CASE WHEN @name in ('Wind speed', 'Wind gust speed')  THEN val ELSE NULL END				AS wind
+			, CASE WHEN @name = 'Barometric pressure'  THEN ROUND(val * @koef_pressure, 0) ELSE NULL END AS pressure	-- [hPa]
+			, CASE WHEN @name in ('Wind speed', 'Wind gust speed')  THEN ROUND(val * @koef_wind, 0) ELSE NULL END AS wind	-- [km/h]
 			, CASE WHEN @name in ('Wind direction', 'Wind gust direction') THEN val ELSE NULL END       AS winddir
 			, CASE WHEN @name = 'Relative humidity' THEN val ELSE NULL END						        AS humidity
-			, CASE WHEN @name = 'Precipitation' THEN val ELSE NULL END						            AS precipitation
+			, CASE WHEN @name = 'Precipitation' THEN ROUND(val * @koef_precipitation, 0) ELSE NULL END AS precipitation	-- [mm]
 
 			, CASE WHEN @name in ('Chlorophylls', 'Chlorophyll <i>a</i>')  THEN val ELSE NULL END		AS chlorophylls
 			, CASE WHEN @name = 'Phycocyanins (cyanobacteria)'  THEN val ELSE NULL END					AS phycocyanins
@@ -2777,9 +2797,9 @@ SET NOCOUNT ON;
 	MERGE INTO WaterData AS t
         USING cte AS source ON CAST(t.stamp AS DATE ) = source.dt AND t.mli = @mli
     WHEN MATCHED THEN 
-        UPDATE SET t.discharge = COALESCE(source.discharge * @koef_discharge,   t.discharge)
-		, t.elevation          = COALESCE(source.elevation * @koef_elevation,   t.elevation)
-		, t.velocity           = COALESCE(source.velocity  * @koef_velocity,	t.velocity)
+        UPDATE SET t.discharge = COALESCE(source.discharge,   t.discharge)
+		, t.elevation          = COALESCE(source.elevation,   t.elevation)
+		, t.velocity           = COALESCE(source.velocity,	t.velocity)
 		, t.turbidity          = COALESCE(source.turbidity,				    	t.turbidity)
 
 		, t.pressure           = COALESCE(source.pressure,						t.pressure)
