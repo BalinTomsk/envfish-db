@@ -2,6 +2,16 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-13: **New `dbo.fn_forecast_stations_json(@fish_id, @lat, @lon, @radius_km, @country, @limit)`** for the
+  envfish-droid Forecast tab (docapi `GET /api/v1/forecast/stations`). It is the website's Planning.aspx map
+  (`dbo.fn_map_location`: water AND weather AND fish, `today` from `dbo.fish_location`) cut to a radius around the
+  caller, nearest first: `{fishId, fish, lat, lon, radiusKm, country, limit, total, stations:[{sid, name, lat, lon,
+  country, state, county, today, marker, distanceKm}]}`. `marker` = `today / 10 - 1`, the map's pin colour index.
+  Radius 1..500 km (NULL 100), limit 1..200 (NULL 50), `@country` NULL = both countries; unknown fish = NULL. It
+  reuses `fn_map_location`, so the map rule lives in one place. Test: `unit_test@ForecastStationsJson.sql` 7 (all
+  failed first on the missing function). The other two forecast endpoints need no new object: they call
+  `fn_forecast_plot_json` and `fn_fish_reasoning_json`. **Applied to production 2026-11-13** (verified: Laurel Creek first, 89 stations within 100 km). CTRL not yet (unreachable that day).
+
 - 2026-11-09: **Ontario fishing access points imported into `dbo.Spot`** (LIO *Fishing access points*, FISHING_ACCESS_POINT
   export of 2026-10-29, Open Government Licence - Ontario, 2,430 points). **Schema** (`script01_createTable.sql`): `dbo.Spot` gained
   nullable `spot_name`, `spot_type`, `spot_parking`, `spot_owner`, `spot_surface`, `spot_access`, `spot_fee`, `spot_info_url`,
