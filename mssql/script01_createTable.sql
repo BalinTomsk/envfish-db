@@ -980,6 +980,11 @@ GO
 
 CREATE NONCLUSTERED INDEX IDX_Lake_Shape ON  Lake_Shape (lake_id);
 GO
+-- Spatial index for map tiles: dbo.fn_shapes_bbox_geojson finds the shapes crossing a bounding box with STIntersects.
+-- Like every index that needs them, writes to Lake_Shape then require SET QUOTED_IDENTIFIER / ANSI_NULLS ON
+-- (sqlcmd -I; ADO.NET and JDBC set them by default).
+CREATE SPATIAL INDEX SIDX_Lake_Shape ON Lake_Shape (Lake_Shape_shape) USING GEOGRAPHY_AUTO_GRID;
+GO
 ALTER TABLE Lake_Shape ADD CONSTRAINT FK_Lake_Shape FOREIGN KEY (lake_id) REFERENCES lake(lake_id) ON DELETE CASCADE ON UPDATE CASCADE;
 GO
 -- ALTER TABLE Lake_Shape ADD CONSTRAINT PK_Lake_Shape PRIMARY KEY CLUSTERED (lake_id, Lake_Shape_id);

@@ -125,7 +125,10 @@ Indexes worth knowing: `UK_Tributaries_Source` / `UK_Tributaries_Mouth` (`Main_L
 
 Geography rows per water body: `Lake_Shape_type` **1 = river centre line**, **2 = water-body outline** (both from the
 Canadian Hydrospatial Network / provincial hydro), NULL = legacy line. No trigger and no dedupe key: an insert skips a
-shape the water body already has. `fn_lake_shape_geojson` serves them to the river map.
+shape the water body already has. `fn_lake_shape_geojson` serves them to the river map; `fn_shapes_bbox_geojson`
+serves every shape crossing a box, simplified per map zoom, to the app map (docapi `GET /api/v1/map/shapes`); both
+convert through `fn_shape_geojson_parts`. The spatial index `SIDX_Lake_Shape` (2026-11-14) means every write to
+`Lake_Shape` needs `SET QUOTED_IDENTIFIER ON` and `ANSI_NULLS ON`: run import scripts with `sqlcmd -I`.
 `STLength()` of the type-1 line is a river's length in metres (`lengthM` in search results) — it can be shorter than
 the true river when only part is mapped (Saint John River: line 366 km, `length` 673 km).
 
