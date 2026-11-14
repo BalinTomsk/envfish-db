@@ -233,8 +233,8 @@ DECLARE @wkt nvarchar(max) = (SELECT 'LINESTRING(' + STRING_AGG(CAST(CONCAT(CONV
                                  CONVERT(varchar(20), CAST(46 + (n % 2) * 0.0001 AS decimal(10,5)))) AS nvarchar(max)), ', ') WITHIN GROUP (ORDER BY n) + ')'
                                 FROM (SELECT TOP (401) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS n FROM sys.all_objects) x);
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 2, N'Utlsj Zigzag River');
-INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
-SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
+INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp)
+SELECT v.id, v.g, v.t, GETUTCDATE()
 FROM (VALUES (@L, geography::STGeomFromText(@wkt, 4326), 1)) v(id, g, t);
 SET @full = dbo.fn_lake_shape_geojson(@L, NULL);
 SET @json = dbo.fn_lake_shape_geojson(@L, 10);
@@ -269,8 +269,8 @@ SET @tStart = SYSUTCDATETIME();
 
 -- a ~100 km lake and a ~10 m island far off it: Reduce turns the island into a POINT
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@L, 1, N'Utlsj Islet Lake');
-INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp, Lake_Shape_hash)
-SELECT v.id, v.g, v.t, GETUTCDATE(), CAST(HASHBYTES('MD5', v.g.ToString()) AS bigint)
+INSERT INTO dbo.Lake_Shape (lake_id, Lake_Shape_shape, Lake_Shape_type, Lake_Shape_stamp)
+SELECT v.id, v.g, v.t, GETUTCDATE()
 FROM (VALUES (@L, geography::STGeomFromText('MULTIPOLYGON(((-66 46, -65 46, -65 47, -66 47, -66 46)), ((-64 46, -63.9999 46, -63.9999 46.0001, -64 46.0001, -64 46)))', 4326), 2)) v(id, g, t);
 SET @json = dbo.fn_lake_shape_geojson(@L, 10);
 

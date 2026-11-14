@@ -2,6 +2,16 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-14: **Map shapes by bounding box (envfish-droid P0-10, docapi 1.33.0).** New `dbo.fn_shapes_bbox_geojson(west,
+  south, east, north, zoom, limit)`: the `Lake_Shape` shapes crossing a box as GeoJSON, each `Reduce`d to one 256-px
+  pixel at the zoom and left out when under two pixels long, longest first, `truncated` past `limit` (default 500,
+  cap 2000); NULL for a box that is not one or is over 5 degrees. New spatial index `SIDX_Lake_Shape`
+  (`GEOGRAPHY_AUTO_GRID`): writes to `Lake_Shape` now need `QUOTED_IDENTIFIER`/`ANSI_NULLS` ON (`sqlcmd -I`). The WKT ->
+  GeoJSON conversion moved out of `fn_lake_shape_geojson` into the inline function `dbo.fn_shape_geojson_parts`, shared
+  by both (same output; empty parts are now skipped). Tests: `unit_test@ShapesBboxJson.sql` (8); `unit_test@LakeShapeJson.sql`
+  tests 7-8 had been failing since the hash column was dropped (2026-10-20: they still inserted `Lake_Shape_hash`), fixed,
+  8/8 pass. Applied to local envionx; CTRL queued in `ctrlLogBag/pending`; prod: `ADMIN_WRITE_p010_map_shapes.sql`.
+
 - 2026-11-13: **US water readings are stored metric; the forecast objects return metric for every country.**
   The user's rule: the database stores metric everywhere, and the website shows US units to a US *visitor*.
   `sp_push_us_water_data` (both waterservice collectors) had three faults: ft3/s was stored as **m3/h**

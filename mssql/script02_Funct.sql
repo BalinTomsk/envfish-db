@@ -6015,13 +6015,55 @@ AS RETURN
 );
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT * FROM dbo.fn_shape_geojson_parts(geography::STGeomFromText('LINESTRING(-66 47, -65.9 47.1)', 4326));
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_shape_geojson_parts' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_shape_geojson_parts
+GO
+-- fn_shape_geojson_parts : one geography as GeoJSON geometries, one row per part: (part, gtype, coordinates).
+-- The one WKT -> GeoJSON converter for Lake_Shape. Called by dbo.fn_lake_shape_geojson (one water body, river-viewer
+-- map) and dbo.fn_shapes_bbox_geojson (map tiles, docapi GET /api/v1/map/shapes for the envfish-droid app).
+-- A GeometryCollection (what geography Reduce can make of a polygon with small islands) is split into its parts
+-- (part = 1..n; a plain geometry is part 0). Only LineString / MultiLineString / Polygon / MultiPolygon rows are
+-- returned; points and empty parts are left out. coordinates is the GeoJSON coordinates array as text, [lon, lat].
+-- WKT -> GeoJSON coordinates: protect ring/part separators "), (", turn point separators ", " into "],[", open/close
+-- the innermost lists (a "(" before a number, a ")" after one) as "[[" / "]]", then the remaining parens to brackets
+-- and the space inside each point to a comma.
+CREATE FUNCTION dbo.fn_shape_geojson_parts( @g geography )
+RETURNS TABLE
+AS
+RETURN
+    SELECT p.part, t.gtype, c6.v AS coordinates
+      FROM (SELECT @g AS g, 0 AS part
+             WHERE @g.STGeometryType() <> 'GeometryCollection'
+            UNION ALL
+            SELECT @g.STGeometryN(n.n), n.n
+              FROM (SELECT TOP (CASE WHEN @g.STGeometryType() = 'GeometryCollection' THEN @g.STNumGeometries() ELSE 0 END)
+                           ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
+                      FROM       (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) a(x)
+                      CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) b(x)
+                      CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) c(x)
+                      CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) d(x)
+                      CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) e(x)) n) p
+     CROSS APPLY (SELECT p.g.STGeometryType() AS gtype, p.g.STAsText() AS wkt) t
+     CROSS APPLY (SELECT REPLACE(REPLACE(SUBSTRING(t.wkt, CHARINDEX('(', t.wkt), LEN(t.wkt)), '), (', ')|('), ', ', '],[') AS v) c2
+     CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c2.v,
+                      '(-', '[[-'), '(0', '[[0'), '(1', '[[1'), '(2', '[[2'), '(3', '[[3'), '(4', '[[4'),
+                      '(5', '[[5'), '(6', '[[6'), '(7', '[[7'), '(8', '[[8'), '(9', '[[9') AS v) c3
+     CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c3.v,
+                      '0)', '0]]'), '1)', '1]]'), '2)', '2]]'), '3)', '3]]'), '4)', '4]]'),
+                      '5)', '5]]'), '6)', '6]]'), '7)', '7]]'), '8)', '8]]'), '9)', '9]]') AS v) c4
+     CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(c4.v, '|', ','), '(', '['), ')', ']'), ' ', ',') AS v) c6
+     WHERE t.gtype IN ('LineString', 'MultiLineString', 'Polygon', 'MultiPolygon')
+       AND p.g.STIsEmpty() = 0;
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
 --     SELECT dbo.fn_lake_shape_geojson('eba567df-2892-e811-9104-00155d007b12', NULL);   -- Nepisiguit River (NB), full detail
 --     SELECT dbo.fn_lake_shape_geojson('7B69A194-BA36-11D8-92E2-080020A0F4C9', 3000);   -- Great Slave Lake, map detail
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_shape_geojson' AND xtype = 'FN')
     DROP FUNCTION dbo.fn_lake_shape_geojson
 GO
 -- fn_lake_shape_geojson : the shapes of one water body (dbo.Lake_Shape) as a GeoJSON FeatureCollection, for drawing on a
--- map (Leaflet L.geoJSON). The single reader of Lake_Shape.
+-- map (Leaflet L.geoJSON). Geometries come from dbo.fn_shape_geojson_parts (shared with dbo.fn_shapes_bbox_geojson).
 -- Called by: fishfind-frontend Resources/wfRiverViewer.aspx.cs GetShapeGeoJson (General-tab map, @detail 3000).
 -- Returns NULL for an unknown water body, else
 --   {"type":"FeatureCollection","guid","lakeName",
@@ -6034,9 +6076,6 @@ GO
 -- Reduce can turn a polygon with islands into a GeometryCollection (small islands collapse to points/lines); such a
 -- result is split into its parts, one feature each, and the parts of the types above are kept.
 -- Coordinates are [lon, lat] (GeoJSON order, which is also the order STAsText writes for geography).
--- WKT -> GeoJSON coordinates: protect ring/part separators "), (", turn point separators ", " into "],[", open/close
--- the innermost lists (a "(" before a number, a ")" after one) as "[[" / "]]", then the remaining parens to brackets
--- and the space inside each point to a comma.
 CREATE FUNCTION dbo.fn_lake_shape_geojson( @lake_id uniqueidentifier, @detail int )
 RETURNS nvarchar(max)
 AS
@@ -6056,37 +6095,93 @@ BEGIN
                    SELECT 'Feature'                AS [type]
                         , s.Lake_Shape_id          AS [properties.id]
                         , CASE s.Lake_Shape_type WHEN 1 THEN 'line' WHEN 2 THEN 'outline' ELSE 'shape' END AS [properties.kind]
-                        , t.gtype                  AS [geometry.type]
-                        , JSON_QUERY(c6.v)         AS [geometry.coordinates]
+                        , p.gtype                  AS [geometry.type]
+                        , JSON_QUERY(p.coordinates) AS [geometry.coordinates]
                      FROM dbo.Lake_Shape s
-                    CROSS APPLY (SELECT CASE WHEN @tol > 0 THEN s.Lake_Shape_shape.Reduce(@tol) ELSE s.Lake_Shape_shape END AS g) r
-                    CROSS APPLY (SELECT r.g AS g, 0 AS part
-                                  WHERE r.g.STGeometryType() <> 'GeometryCollection'
-                                 UNION ALL
-                                 SELECT r.g.STGeometryN(n.n), n.n
-                                   FROM (SELECT TOP (CASE WHEN r.g.STGeometryType() = 'GeometryCollection' THEN r.g.STNumGeometries() ELSE 0 END)
-                                                ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
-                                           FROM       (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) a(x)
-                                           CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) b(x)
-                                           CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) c(x)
-                                           CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) d(x)
-                                           CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) e(x)) n) p
-                    CROSS APPLY (SELECT p.g.STGeometryType() AS gtype, p.g.STAsText() AS wkt) t
-                    CROSS APPLY (SELECT REPLACE(REPLACE(SUBSTRING(t.wkt, CHARINDEX('(', t.wkt), LEN(t.wkt)), '), (', ')|('), ', ', '],[') AS v) c2
-                    CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c2.v,
-                                     '(-', '[[-'), '(0', '[[0'), '(1', '[[1'), '(2', '[[2'), '(3', '[[3'), '(4', '[[4'),
-                                     '(5', '[[5'), '(6', '[[6'), '(7', '[[7'), '(8', '[[8'), '(9', '[[9') AS v) c3
-                    CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c3.v,
-                                     '0)', '0]]'), '1)', '1]]'), '2)', '2]]'), '3)', '3]]'), '4)', '4]]'),
-                                     '5)', '5]]'), '6)', '6]]'), '7)', '7]]'), '8)', '8]]'), '9)', '9]]') AS v) c4
-                    CROSS APPLY (SELECT REPLACE(REPLACE(REPLACE(REPLACE(c4.v, '|', ','), '(', '['), ')', ']'), ' ', ',') AS v) c6
+                    CROSS APPLY dbo.fn_shape_geojson_parts(CASE WHEN @tol > 0 THEN s.Lake_Shape_shape.Reduce(@tol) ELSE s.Lake_Shape_shape END) p
                     WHERE s.lake_id = @lake_id
-                      AND t.gtype IN ('LineString', 'MultiLineString', 'Polygon', 'MultiPolygon')
                     ORDER BY s.Lake_Shape_type, s.Lake_Shape_id, p.part
                       FOR JSON PATH
                ), N'[]')) AS features
           FROM dbo.lake l
          WHERE l.lake_id = @lake_id
+           FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    );
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_shapes_bbox_geojson(-114.6, 61.0, -113.8, 61.4, 10, NULL);   -- part of Great Slave Lake at zoom 10
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_shapes_bbox_geojson' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_shapes_bbox_geojson
+GO
+-- fn_shapes_bbox_geojson : the water-body shapes (dbo.Lake_Shape: lake outlines, river lines) crossing a bounding box,
+-- simplified for a map zoom level, as a GeoJSON FeatureCollection. For the envfish-droid app's map (TODO P0-10).
+-- Called by: efj-backend docapi JdbcMapQueryRepository.shapes (GET /api/v1/map/shapes).
+-- @west/@south/@east/@north: degrees (WGS 84). NULL for a box that is not one: a NULL edge, west >= east, south >= north,
+-- latitude outside -85..85, longitude outside -180..180, or wider/taller than 5 degrees (too much for one request;
+-- the app asks for smaller boxes at low zoom). Boxes do not cross the antimeridian.
+-- @zoom: web-map zoom 0..22 (clamped). One screen pixel at that zoom (256-px tiles, the box's middle latitude) is the
+-- simplification tolerance in metres: each shape is Reduce()d by it, and a shape shorter than 2 pixels in total
+-- (line length / perimeter) is left out, being invisible at that zoom.
+-- @limit: most features, longest first (default 500, 1..2000). truncated = true when more shapes crossed the box.
+-- Returns {"type":"FeatureCollection","bbox":[w,s,e,n],"zoom","toleranceM","truncated",
+--          "features":[{"type":"Feature","properties":{"id","lakeId","lakeName","locType","kind"},"geometry":{...}}]}
+-- kind: "line" (Lake_Shape_type 1), "outline" (2), "shape" (other / NULL); geometry types and parts as in
+-- dbo.fn_shape_geojson_parts. Shapes are whole, not clipped to the box: a long river comes back in full.
+CREATE FUNCTION dbo.fn_shapes_bbox_geojson( @west float, @south float, @east float, @north float, @zoom int, @limit int )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    IF @west IS NULL OR @south IS NULL OR @east IS NULL OR @north IS NULL
+       OR @west >= @east OR @south >= @north
+       OR @west < -180 OR @east > 180 OR @south < -85 OR @north > 85
+       OR @east - @west > 5 OR @north - @south > 5
+        RETURN NULL;
+
+    DECLARE @z int = CASE WHEN @zoom IS NULL OR @zoom < 0 THEN 0 WHEN @zoom > 22 THEN 22 ELSE @zoom END;
+    DECLARE @max int = CASE WHEN @limit IS NULL OR @limit < 1 THEN 500 WHEN @limit > 2000 THEN 2000 ELSE @limit END;
+    -- metres per pixel of a 256-px web-mercator tile at zoom @z and the box's middle latitude
+    DECLARE @tol float = 156543.03392 * COS(RADIANS((@south + @north) / 2)) / POWER(CAST(2 AS float), @z);
+    -- exterior ring counter-clockwise (west-south, east-south, east-north, west-north): the inside is the box
+    DECLARE @box geography = geography::STGeomFromText(CONCAT('POLYGON((',
+              STR(@west, 12, 7), ' ', STR(@south, 12, 7), ', ', STR(@east, 12, 7), ' ', STR(@south, 12, 7), ', ',
+              STR(@east, 12, 7), ' ', STR(@north, 12, 7), ', ', STR(@west, 12, 7), ' ', STR(@north, 12, 7), ', ',
+              STR(@west, 12, 7), ' ', STR(@south, 12, 7), '))'), 4326);
+
+    DECLARE @hit TABLE (lake_id uniqueidentifier, id int, len float, PRIMARY KEY (lake_id, id));
+    INSERT INTO @hit (lake_id, id, len)
+    SELECT s.lake_id, s.Lake_Shape_id, s.Lake_Shape_shape.STLength()
+      FROM dbo.Lake_Shape s
+     WHERE s.Lake_Shape_shape.STIntersects(@box) = 1;
+
+    DECLARE @total int = (SELECT COUNT(*) FROM @hit WHERE len >= 2 * @tol);
+
+    RETURN (
+        SELECT 'FeatureCollection'                                AS [type]
+             , JSON_QUERY(CONCAT('[', CAST(@west AS decimal(10, 6)), ',', CAST(@south AS decimal(10, 6)), ',',
+                                      CAST(@east AS decimal(10, 6)), ',', CAST(@north AS decimal(10, 6)), ']')) AS bbox
+             , @z                                                 AS zoom
+             , CAST(ROUND(@tol, 2) AS decimal(12, 2))             AS toleranceM
+             , CAST(CASE WHEN @total > @max THEN 1 ELSE 0 END AS bit) AS truncated
+             , JSON_QUERY(ISNULL((
+                   SELECT 'Feature'                                AS [type]
+                        , s.Lake_Shape_id                          AS [properties.id]
+                        , CONVERT(varchar(36), s.lake_id)          AS [properties.lakeId]
+                        , l.lake_name                              AS [properties.lakeName]
+                        , l.locType                                AS [properties.locType]
+                        , CASE s.Lake_Shape_type WHEN 1 THEN 'line' WHEN 2 THEN 'outline' ELSE 'shape' END AS [properties.kind]
+                        , p.gtype                                  AS [geometry.type]
+                        , JSON_QUERY(p.coordinates)                AS [geometry.coordinates]
+                     FROM (SELECT TOP (@max) h.lake_id, h.id, h.len
+                             FROM @hit h
+                            WHERE h.len >= 2 * @tol
+                            ORDER BY h.len DESC, h.lake_id, h.id) h
+                     JOIN dbo.Lake_Shape s ON s.lake_id = h.lake_id AND s.Lake_Shape_id = h.id
+                     JOIN dbo.lake l       ON l.lake_id = s.lake_id
+                    CROSS APPLY dbo.fn_shape_geojson_parts(s.Lake_Shape_shape.Reduce(@tol)) p
+                    ORDER BY h.len DESC, h.lake_id, h.id, p.part
+                      FOR JSON PATH
+               ), N'[]'))                                         AS features
            FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
     );
 END
