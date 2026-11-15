@@ -2,6 +2,13 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-15: **`dbo.fn_read_fish_edit_list` is now an inline TVF.** The multi-statement version built every
+  fish (1,063) into a table variable with 10 UPDATEs before `wfFishViewer.LoadHabitat`'s `WHERE fish_id =` applied;
+  the fish page hit the 30 s command timeout 24 times on prod since 2026-10-27 (plus 4 in `LoadUnEditedFish`). Same
+  columns in the same order; one fish 1,841 ms -> 2 ms locally. Tests: `unit_test@FishEditList.sql` (3; TEST 1 failed
+  on the old function). **LIVE on prod 2026-11-15** (all 1,063 rows identical before/after, Smallmouth Bass page
+  renders its habitat); local envionx applied; CTRL queued in `ctrlLogBag/pending` (CTRL unreachable).
+
 - 2026-11-14: **Map shapes by bounding box (envfish-droid P0-10, docapi 1.33.0).** New `dbo.fn_shapes_bbox_geojson(west,
   south, east, north, zoom, limit)`: the `Lake_Shape` shapes crossing a box as GeoJSON, each `Reduce`d to one 256-px
   pixel at the zoom and left out when under two pixels long, longest first, `truncated` past `limit` (default 500,

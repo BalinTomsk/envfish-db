@@ -2794,78 +2794,51 @@ SELECT v.fish_id, v.fish_name FROM dbo.fish v
     ) AND z.fish_max_length < 65
 GO
 ---------------------------------------------------------------------------------------------------------------------------------------------
-IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_read_fish_edit_list' AND xtype = 'TF')
+IF OBJECT_ID('dbo.fn_read_fish_edit_list') IS NOT NULL
     DROP function dbo.fn_read_fish_edit_list
 GO
--- used in FishTracker.TFishEditor.LoadUnEditedFish()
+-- Habitat row of every fish species: the base (-1/-1) fish_Rule and its real_interval values.
+-- Called from FishTracker.Editor.TFishEditor.LoadUnEditedFish (every fish)
+--         and FishTracker.Resources.wfFishViewer.LoadHabitat (WHERE fish_id = @fish_id).
+-- Inline on purpose: the multi-statement version built every fish into a table variable before the
+-- viewer's filter applied, and wfFishViewer.LoadHabitat hit the 30 s command timeout on prod.
+-- real_interval PK is (ri_parent_id, ri_type) and UK_fish_Rule allows one base rule per fish, so
+-- each join below matches at most one row.
 -- 1 - sport, 2 - Coarse, 4 - commersial, 8 - invading
 -- select * from dbo.fn_read_fish_edit_list() where fish_id = '6b45fea3-5cbe-4982-89af-c241eb5c6a36'  ORDER BY fish_name ASC
 CREATE FUNCTION [dbo].[fn_read_fish_edit_list]()
-RETURNS @TBL TABLE ( fish_id uniqueidentifier, fish_name varchar(32), fish_latin varchar(64), synonims varchar(255) 
-         , food_Type int, water_type int, feedsOver int, habitat int
-         , tuLD float, tuL float, tuC float, tuH float, tuHD float 
-         , tmLD float, tmL float, tmC float, tmH float, tmHD float
-         , oxLD float, oxL float, oxC float, oxH float, oxHD float
-         , phLD float, phL float, phC float, phH float, phHD float
-         , veL float, veH float
-         , depthMin float, depthMax float
-         , saltL float, saltH float
-         , NitrateH float, NitrateL float, PhosphateH float, PhosphateL float
-         , HardnessL float, HardnessH float
-         , periodStart int, periodEnd int, editor varchar(128), locked bit
-         , fish_Type int, fish_ability int, react_color int, home_range float, distribution_area nvarchar(500), stamp datetime )
+RETURNS TABLE
 WITH SCHEMABINDING
 AS
-begin
-  INSERT INTO @TBL ( fish_id, fish_name, fish_latin, synonims, food_Type
-                   , water_type, fish_Type, fish_ability, react_color, home_range, distribution_area, stamp )
-        SELECT fish_id, fish_name, fish_latin, alt_Name, food_Type, water_type, fish_Type
-        , fish_ability, react_color, fish_home_range, fish_distribution_area, stamp FROM dbo.fish;
-
-  update t SET t.depthMin = n.ri_min, t.depthMax = n.ri_max 
-      from dbo.real_interval n RIGHT JOIN dbo.fish_Rule c ON c.id = n.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 3 
-
-  update t SET t.veL = n.ri_min, t.veH = n.ri_max 
-      from dbo.real_interval n RIGHT JOIN dbo.fish_Rule c ON c.id = n.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 41
-
-  update t SET t.saltL = n.ri_min, t.saltH = n.ri_max 
-      from dbo.real_interval n RIGHT JOIN dbo.fish_Rule c ON c.id = n.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 49
-
-  update t SET t.PhosphateL = n.ri_min, t.PhosphateH = n.ri_max 
-      from dbo.real_interval n RIGHT JOIN dbo.fish_Rule c ON c.id = n.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 57
-
-  update t SET t.NitrateL = n.ri_min, t.NitrateH = n.ri_max 
-      from dbo.real_interval n RIGHT JOIN dbo.fish_Rule c ON c.id = n.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 65
-
-  update t SET t.HardnessL = n.ri_min, t.HardnessH = n.ri_max 
-      from dbo.real_interval n RIGHT JOIN dbo.fish_Rule c ON c.id = n.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 73
-
-  update t SET t.oxLD=n.ri_min, t.oxL=n.ri_low, t.oxC=n.ri_avg, t.oxH=n.ri_high, t.oxHD=n.ri_max
-      from dbo.real_interval n RIGHT JOIN dbo.fish_Rule c ON c.id = n.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 33
-  
-  update t SET t.phLD=ph.ri_min, t.phL=ph.ri_low, t.phC=ph.ri_avg, t.phH=ph.ri_high, t.phHD=ph.ri_max
-      from dbo.real_interval ph RIGHT JOIN dbo.fish_Rule c ON c.id = ph.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 9
-
-  update t SET t.tmLD=tm.ri_min, t.tmL=tm.ri_low, t.tmC=tm.ri_avg, t.tmH=tm.ri_high, t.tmHD=tm.ri_max
-      from dbo.real_interval tm RIGHT JOIN dbo.fish_Rule c ON c.id = tm.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 17
-
-  update t SET t.tuLD=tu.ri_min, t.tuL=tu.ri_low, t.tuC=tu.ri_avg, t.tuH=tu.ri_high, t.tuHD=tu.ri_max
-      from dbo.real_interval tu RIGHT JOIN dbo.fish_Rule c ON c.id = tu.ri_parent_id RIGHT JOIN @tbl t on t.fish_id=c.fish_id  
-        WHERE c.periodStart=-1 AND c.periodEnd=-1 AND ri_type = 25
-     
-  update t SET t.locked = c.locked, t.feedsOver=c.feedsOver, t.habitat=c.habitat, t.editor = c.editor
-     FROM @TBL t JOIN dbo.fish_Rule c ON t.fish_id=c.fish_id WHERE -1 = c.periodStart AND -1 = c.periodEnd
-  return
-end
+  RETURN
+    SELECT f.fish_id, CAST(f.fish_name AS varchar(32)) AS fish_name, CAST(f.fish_latin AS varchar(64)) AS fish_latin
+         , CAST(f.alt_Name AS varchar(255)) AS synonims
+         , f.food_Type, f.water_type, r.feedsOver, r.habitat
+         , tu.ri_min AS tuLD, tu.ri_low AS tuL, tu.ri_avg AS tuC, tu.ri_high AS tuH, tu.ri_max AS tuHD
+         , tm.ri_min AS tmLD, tm.ri_low AS tmL, tm.ri_avg AS tmC, tm.ri_high AS tmH, tm.ri_max AS tmHD
+         , ox.ri_min AS oxLD, ox.ri_low AS oxL, ox.ri_avg AS oxC, ox.ri_high AS oxH, ox.ri_max AS oxHD
+         , ph.ri_min AS phLD, ph.ri_low AS phL, ph.ri_avg AS phC, ph.ri_high AS phH, ph.ri_max AS phHD
+         , ve.ri_min AS veL, ve.ri_max AS veH
+         , dp.ri_min AS depthMin, dp.ri_max AS depthMax
+         , sa.ri_min AS saltL, sa.ri_max AS saltH
+         , ni.ri_max AS NitrateH, ni.ri_min AS NitrateL, po.ri_max AS PhosphateH, po.ri_min AS PhosphateL
+         , hd.ri_min AS HardnessL, hd.ri_max AS HardnessH
+         , CAST(NULL AS int) AS periodStart, CAST(NULL AS int) AS periodEnd
+         , CAST(r.editor AS varchar(128)) AS editor, r.locked
+         , f.fish_Type, f.fish_ability, f.react_color, f.fish_home_range AS home_range
+         , CAST(f.fish_distribution_area AS nvarchar(500)) AS distribution_area, f.stamp
+      FROM dbo.fish f
+      LEFT JOIN dbo.fish_Rule r      ON r.fish_Id = f.fish_id AND r.periodStart = -1 AND r.periodEnd = -1
+      LEFT JOIN dbo.real_interval dp ON dp.ri_parent_id = r.id AND dp.ri_type = 3
+      LEFT JOIN dbo.real_interval ph ON ph.ri_parent_id = r.id AND ph.ri_type = 9
+      LEFT JOIN dbo.real_interval tm ON tm.ri_parent_id = r.id AND tm.ri_type = 17
+      LEFT JOIN dbo.real_interval tu ON tu.ri_parent_id = r.id AND tu.ri_type = 25
+      LEFT JOIN dbo.real_interval ox ON ox.ri_parent_id = r.id AND ox.ri_type = 33
+      LEFT JOIN dbo.real_interval ve ON ve.ri_parent_id = r.id AND ve.ri_type = 41
+      LEFT JOIN dbo.real_interval sa ON sa.ri_parent_id = r.id AND sa.ri_type = 49
+      LEFT JOIN dbo.real_interval po ON po.ri_parent_id = r.id AND po.ri_type = 57
+      LEFT JOIN dbo.real_interval ni ON ni.ri_parent_id = r.id AND ni.ri_type = 65
+      LEFT JOIN dbo.real_interval hd ON hd.ri_parent_id = r.id AND hd.ri_type = 73
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_edit_fish_general' AND xtype = 'IF')
