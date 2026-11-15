@@ -2,6 +2,11 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-15: **Water bodies near a point (envfish-droid P1-09, docapi 1.34.0 `GET /news/near`).** New
+  `dbo.fn_lakes_near_json(@lakes, @lat, @lon, @radius_km)`: which of a JSON list of lake ids lie within the radius,
+  nearest first, by great-circle km to the nearer of source and mouth (`vw_lake`); NULL for a bad point/radius/list,
+  `[]` when none. Tests: `unit_test@LakesNear.sql` (5; failed first). Applied to local envionx.
+
 - 2026-11-15: **`dbo.fn_read_fish_edit_list` is now an inline TVF.** The multi-statement version built every
   fish (1,063) into a table variable with 10 UPDATEs before `wfFishViewer.LoadHabitat`'s `WHERE fish_id =` applied;
   the fish page hit the 30 s command timeout 24 times on prod since 2026-10-27 (plus 4 in `LoadUnEditedFish`). Same

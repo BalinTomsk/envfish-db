@@ -6368,6 +6368,51 @@ BEGIN
 END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
+--     SELECT dbo.fn_lakes_near_json(N'["0c44dfc7-849c-20c3-9db6-f2c06fc97a1f"]', 43.45, -80.49, 100);   -- Laurel Creek, ~3 km
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lakes_near_json' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_lakes_near_json
+GO
+-- fn_lakes_near_json : which of a list of water bodies lie within @radius_km of a point, nearest first.
+-- Called by: efj-backend docapi JdbcRiverQueryRepository.lakesNear (GET /api/v1/news/near: the water bodies that
+-- news stories are tagged with, for the envfish-droid News tab's Local filter).
+-- @lakes: a JSON array of lake_id GUID strings (any case); entries that are not a GUID or not a water body are ignored.
+-- Distance: great-circle km from the point to the nearer of the water body's source and mouth (dbo.vw_lake); a water
+-- body with neither point is left out. NULL for a bad point or radius (latitude outside -90..90, longitude outside
+-- -180..180, radius NULL or <= 0).
+-- Returns [{"lakeId","lakeName","state","country","distanceKm"}] (distanceKm to 0.1 km), or [] when none is near.
+CREATE FUNCTION dbo.fn_lakes_near_json( @lakes nvarchar(max), @lat float, @lon float, @radius_km float )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    IF @lat IS NULL OR @lon IS NULL OR @lat < -90 OR @lat > 90 OR @lon < -180 OR @lon > 180
+       OR @radius_km IS NULL OR @radius_km <= 0 OR ISJSON(@lakes) <> 1
+        RETURN NULL;
+
+    DECLARE @p geography = geography::Point(@lat, @lon, 4326);
+
+    RETURN ISNULL((
+        SELECT CONVERT(varchar(36), v.lake_id)            AS lakeId
+             , v.lake_name                                AS lakeName
+             , v.state                                    AS state
+             , v.country                                  AS country
+             , CAST(ROUND(d.km, 1) AS decimal(9, 1))      AS distanceKm
+          FROM (SELECT DISTINCT TRY_CONVERT(uniqueidentifier, j.[value]) AS id
+                  FROM OPENJSON(@lakes) j) ids
+          JOIN dbo.vw_lake v ON v.lake_id = ids.id
+         CROSS APPLY (SELECT CASE WHEN v.source_Lat BETWEEN -90 AND 90 AND v.source_Lon BETWEEN -180 AND 180
+                                  THEN @p.STDistance(geography::Point(v.source_Lat, v.source_Lon, 4326)) END AS s
+                           , CASE WHEN v.mouth_Lat BETWEEN -90 AND 90 AND v.mouth_Lon BETWEEN -180 AND 180
+                                  THEN @p.STDistance(geography::Point(v.mouth_Lat, v.mouth_Lon, 4326)) END AS m) g
+         CROSS APPLY (SELECT (CASE WHEN g.s IS NULL OR g.m < g.s THEN g.m ELSE g.s END) / 1000.0 AS km) d
+         WHERE ids.id IS NOT NULL
+           AND d.km IS NOT NULL
+           AND d.km <= @radius_km
+         ORDER BY d.km, v.lake_name
+           FOR JSON PATH, INCLUDE_NULL_VALUES
+    ), N'[]');
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
 --     SELECT dbo.fn_lake_weather_json('0d012b12-849c-20c3-8532-2f7a21cfcc58');
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_lake_weather_json' AND xtype = 'FN')
     DROP function dbo.fn_lake_weather_json
