@@ -2944,6 +2944,23 @@ CREATE TABLE dbo.user_spot
 GO
 CREATE INDEX IX_user_spot_user ON dbo.user_spot (user_spot_userid, user_spot_created DESC);
 GO
+-- ============================================================================
+-- dbo.user_follow : what a signed-in user follows in the Android app: water bodies (kind 1, dbo.lake) and fish
+-- (kind 2, dbo.fish). One row per account and target; at most 500 per account. Only its owner reads or changes it
+-- (sp_user_follow_set / fn_user_follow_list_json). Push alerts (later) read it to know whom to tell.
+-- ============================================================================
+CREATE TABLE dbo.user_follow
+    (
+        user_follow_userid  UNIQUEIDENTIFIER NOT NULL,   -- owner (dbo.Users.id)
+        user_follow_kind    TINYINT          NOT NULL,   -- 1 water body, 2 fish
+        user_follow_target  UNIQUEIDENTIFIER NOT NULL,   -- dbo.lake.lake_id or dbo.fish.fish_id
+        user_follow_created DATETIME2        NOT NULL CONSTRAINT DF_user_follow_created DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_user_follow PRIMARY KEY (user_follow_userid, user_follow_kind, user_follow_target),
+        CONSTRAINT CK_user_follow_kind CHECK (user_follow_kind IN (1, 2))
+    );
+GO
+CREATE INDEX IX_user_follow_target ON dbo.user_follow (user_follow_kind, user_follow_target);
+GO
 -- Upgrade an existing catch_memo table in place (idempotent; no-op on a fresh build).
 IF COL_LENGTH('dbo.catch_memo', 'catch_memo_weight') IS NULL
 BEGIN

@@ -4530,6 +4530,59 @@ END
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_follow_set' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_follow_set
+GO
+-- sp_user_follow_set : @userid starts (@follow = 1) or stops (@follow = 0) following a water body (@kind 1) or a fish
+-- (@kind 2). Repeating either is harmless, so a retried call is safe.
+--   @result  1 now followed (new or already), 0 now not followed (removed or never was), -1 the account already
+--            follows 500, -2 bad kind or the target is not a dbo.lake / dbo.fish row
+-- Called by: docapi FollowController POST /api/v1/follow (envfish-droid Follow buttons).
+CREATE OR ALTER PROCEDURE dbo.sp_user_follow_set
+    @userid UNIQUEIDENTIFIER,
+    @kind   TINYINT,
+    @target UNIQUEIDENTIFIER,
+    @follow BIT,
+    @result INT = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @userid IS NULL OR @target IS NULL OR @follow IS NULL OR @kind NOT IN (1, 2)
+    BEGIN
+        SET @result = -2;
+        RETURN;
+    END;
+    IF @follow = 0
+    BEGIN
+        DELETE FROM dbo.user_follow
+         WHERE user_follow_userid = @userid AND user_follow_kind = @kind AND user_follow_target = @target;
+        SET @result = 0;
+        RETURN;
+    END;
+    IF EXISTS (SELECT 1 FROM dbo.user_follow
+                WHERE user_follow_userid = @userid AND user_follow_kind = @kind AND user_follow_target = @target)
+    BEGIN
+        SET @result = 1;
+        RETURN;
+    END;
+    IF (@kind = 1 AND NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @target))
+       OR (@kind = 2 AND NOT EXISTS (SELECT 1 FROM dbo.fish WHERE fish_id = @target))
+    BEGIN
+        SET @result = -2;
+        RETURN;
+    END;
+    IF (SELECT COUNT(*) FROM dbo.user_follow WHERE user_follow_userid = @userid) >= 500
+    BEGIN
+        SET @result = -1;
+        RETURN;
+    END;
+    INSERT INTO dbo.user_follow (user_follow_userid, user_follow_kind, user_follow_target)
+    VALUES (@userid, @kind, @target);
+    SET @result = 1;
+END
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_add_catch_memo_photo' AND type = 'P')
     DROP PROCEDURE dbo.sp_add_catch_memo_photo
 GO
