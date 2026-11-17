@@ -5163,6 +5163,37 @@ END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_spot_list_json' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_user_spot_list_json
+GO
+-- fn_user_spot_list_json : @userid's saved spots, newest first, with the water body's name and place when the spot is
+-- on one. Returns a JSON array, '[]' when there are none.
+-- Called by: docapi SpotController GET /api/v1/spot/mine (envfish-droid saved spots).
+CREATE OR ALTER FUNCTION dbo.fn_user_spot_list_json (@userid UNIQUEIDENTIFIER)
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN COALESCE((
+        SELECT s.user_spot_id      AS spotId
+             , s.user_spot_name    AS name
+             , s.user_spot_lat     AS lat
+             , s.user_spot_lon     AS lon
+             , s.user_spot_note    AS note
+             , s.user_spot_lake_id AS lakeId
+             , v.lake_name         AS lakeName
+             , v.state             AS state
+             , v.country           AS country
+             , s.user_spot_created AS created
+             , s.user_spot_updated AS updated
+          FROM dbo.user_spot s
+          LEFT JOIN dbo.vw_lake v ON v.lake_id = s.user_spot_lake_id
+         WHERE s.user_spot_userid = @userid
+         ORDER BY s.user_spot_created DESC
+           FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]');
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_catch_memo_get' AND xtype = 'IF')
     DROP function dbo.fn_catch_memo_get
 GO

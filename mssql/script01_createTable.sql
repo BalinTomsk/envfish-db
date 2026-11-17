@@ -2924,6 +2924,26 @@ CREATE INDEX IX_catch_memo_lake ON dbo.catch_memo (catch_memo_lake_id, catch_mem
 GO
 CREATE INDEX IX_catch_memo_user ON dbo.catch_memo (catch_memo_userid);
 GO
+-- ============================================================================
+-- dbo.user_spot : a signed-in user's own saved places (the Android app's "Saved spots"): a named point, optionally
+-- on a water body, with a private note. Only its owner reads or changes it (sp_user_spot_save / sp_user_spot_delete /
+-- fn_user_spot_list_json); at most 500 per account. Not dbo.Spot, which holds the public access points.
+-- ============================================================================
+CREATE TABLE dbo.user_spot
+    (
+        user_spot_id       UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_user_spot PRIMARY KEY,  -- given by the caller (retry-safe)
+        user_spot_userid   UNIQUEIDENTIFIER NOT NULL,   -- owner (dbo.Users.id)
+        user_spot_lake_id  UNIQUEIDENTIFIER NULL,       -- the water body it is on, when known (dbo.lake.lake_id)
+        user_spot_name     NVARCHAR(128)    NOT NULL,
+        user_spot_lat      FLOAT            NOT NULL,
+        user_spot_lon      FLOAT            NOT NULL,
+        user_spot_note     NVARCHAR(1000)   NULL,
+        user_spot_created  DATETIME2        NOT NULL CONSTRAINT DF_user_spot_created DEFAULT SYSUTCDATETIME(),
+        user_spot_updated  DATETIME2        NULL
+    );
+GO
+CREATE INDEX IX_user_spot_user ON dbo.user_spot (user_spot_userid, user_spot_created DESC);
+GO
 -- Upgrade an existing catch_memo table in place (idempotent; no-op on a fresh build).
 IF COL_LENGTH('dbo.catch_memo', 'catch_memo_weight') IS NULL
 BEGIN
