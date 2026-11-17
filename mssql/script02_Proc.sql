@@ -4451,6 +4451,85 @@ GO
 
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_spot_save' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_spot_save
+GO
+-- sp_user_spot_save : creates or changes one of @userid's saved spots (dbo.user_spot). @id is the caller's, so a
+-- retried save updates instead of duplicating. A spot of another account is never touched. Coordinates must be on the
+-- globe and the name not blank; @lake_id that is not a dbo.lake row is stored as NULL.
+--   @result  1 inserted, 2 updated, 0 the id belongs to another account, -1 the account already has 500 spots,
+--            -2 bad name or coordinates
+-- Called by: docapi SpotController POST /api/v1/spot (envfish-droid saved spots).
+CREATE OR ALTER PROCEDURE dbo.sp_user_spot_save
+    @id      UNIQUEIDENTIFIER,
+    @userid  UNIQUEIDENTIFIER,
+    @name    NVARCHAR(128),
+    @lat     FLOAT,
+    @lon     FLOAT,
+    @lake_id UNIQUEIDENTIFIER = NULL,
+    @note    NVARCHAR(1000)   = NULL,
+    @result  INT              = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @name = NULLIF(LTRIM(RTRIM(@name)), N'');
+    SET @note = NULLIF(LTRIM(RTRIM(@note)), N'');
+    IF @id IS NULL OR @userid IS NULL OR @name IS NULL OR @lat IS NULL OR @lon IS NULL
+       OR @lat NOT BETWEEN -90 AND 90 OR @lon NOT BETWEEN -180 AND 180
+    BEGIN
+        SET @result = -2;
+        RETURN;
+    END;
+    IF @lake_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.lake WHERE lake_id = @lake_id)
+        SET @lake_id = NULL;
+
+    DECLARE @owner UNIQUEIDENTIFIER = (SELECT user_spot_userid FROM dbo.user_spot WHERE user_spot_id = @id);
+    IF @owner IS NOT NULL
+    BEGIN
+        IF @owner <> @userid
+        BEGIN
+            SET @result = 0;
+            RETURN;
+        END;
+        UPDATE dbo.user_spot
+           SET user_spot_name = @name, user_spot_lat = @lat, user_spot_lon = @lon, user_spot_lake_id = @lake_id,
+               user_spot_note = @note, user_spot_updated = SYSUTCDATETIME()
+         WHERE user_spot_id = @id;
+        SET @result = 2;
+        RETURN;
+    END;
+    IF (SELECT COUNT(*) FROM dbo.user_spot WHERE user_spot_userid = @userid) >= 500
+    BEGIN
+        SET @result = -1;
+        RETURN;
+    END;
+    INSERT INTO dbo.user_spot (user_spot_id, user_spot_userid, user_spot_lake_id, user_spot_name, user_spot_lat,
+                               user_spot_lon, user_spot_note)
+    VALUES (@id, @userid, @lake_id, @name, @lat, @lon, @note);
+    SET @result = 1;
+END
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_spot_delete' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_spot_delete
+GO
+-- sp_user_spot_delete : deletes one of @userid's saved spots. @deleted = 1 when it was theirs and is gone, else 0
+-- (no such spot, or another account's: the two are not told apart).
+-- Called by: docapi SpotController POST /api/v1/spot/{id}/delete.
+CREATE OR ALTER PROCEDURE dbo.sp_user_spot_delete
+    @id      UNIQUEIDENTIFIER,
+    @userid  UNIQUEIDENTIFIER,
+    @deleted INT = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM dbo.user_spot WHERE user_spot_id = @id AND user_spot_userid = @userid;
+    SET @deleted = @@ROWCOUNT;
+END
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_add_catch_memo_photo' AND type = 'P')
     DROP PROCEDURE dbo.sp_add_catch_memo_photo
 GO
