@@ -5194,6 +5194,39 @@ END
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_follow_list_json' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_user_follow_list_json
+GO
+-- fn_user_follow_list_json : what @userid follows, newest first: {"waters":[{lakeId, lakeName, locType, state,
+-- country, since}], "fish":[{fishId, fishName, latin, since}]}. A target deleted since is left out. Empty arrays when
+-- there are none.
+-- Called by: docapi FollowController GET /api/v1/follow/mine (envfish-droid Me tab "Following").
+CREATE OR ALTER FUNCTION dbo.fn_user_follow_list_json (@userid UNIQUEIDENTIFIER)
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    RETURN (
+        SELECT JSON_QUERY(COALESCE((
+                   SELECT v.lake_id AS lakeId, v.lake_name AS lakeName, v.locType AS locType, v.state AS state,
+                          v.country AS country, f.user_follow_created AS since
+                     FROM dbo.user_follow f
+                     JOIN dbo.vw_lake v ON v.lake_id = f.user_follow_target
+                    WHERE f.user_follow_userid = @userid AND f.user_follow_kind = 1
+                    ORDER BY f.user_follow_created DESC
+                      FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS waters
+             , JSON_QUERY(COALESCE((
+                   SELECT x.fish_id AS fishId, x.fish_name AS fishName, x.fish_latin AS latin,
+                          f.user_follow_created AS since
+                     FROM dbo.user_follow f
+                     JOIN dbo.fish x ON x.fish_id = f.user_follow_target
+                    WHERE f.user_follow_userid = @userid AND f.user_follow_kind = 2
+                    ORDER BY f.user_follow_created DESC
+                      FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]')) AS fish
+           FOR JSON PATH, WITHOUT_ARRAY_WRAPPER);
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_catch_memo_get' AND xtype = 'IF')
     DROP function dbo.fn_catch_memo_get
 GO
