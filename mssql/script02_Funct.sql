@@ -5097,6 +5097,72 @@ RETURN
 GO
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_catch_memo_mine_json' AND xtype = 'FN')
+    DROP FUNCTION dbo.fn_catch_memo_mine_json
+GO
+-- fn_catch_memo_mine_json : one account's own catch logs on every water body, newest catch first (the
+-- catch date, else when it was logged), at most @limit (1..200, default 50). Private ones included: the
+-- caller is their author. Each has its water body's name and place, the weather snapshot, can_edit (the
+-- portal's 60-day lock) and its visible photo ids. Returns a JSON array, '[]' when there are none.
+-- Called by: docapi CatchLogController GET /api/v1/catch/mine (envfish-droid's catch log), the account from
+-- cproxy's X-Fish-User.
+CREATE OR ALTER FUNCTION dbo.fn_catch_memo_mine_json (@userid UNIQUEIDENTIFIER, @limit INT = 50)
+RETURNS NVARCHAR(MAX)
+AS
+BEGIN
+    DECLARE @top INT = CASE WHEN @limit IS NULL OR @limit < 1 THEN 50 WHEN @limit > 200 THEN 200 ELSE @limit END;
+    RETURN COALESCE((
+        SELECT TOP (@top)
+               m.catch_memo_id                                          AS catchLogId
+             , m.catch_memo_lake_id                                     AS lakeId
+             , v.lake_name                                              AS lakeName
+             , v.state                                                  AS state
+             , v.country                                                AS country
+             , m.catch_memo_fish_id                                     AS fishId
+             , COALESCE(NULLIF(m.catch_memo_species, N''), f.fish_name) AS species
+             , m.catch_memo_angler                                      AS angler
+             , m.catch_memo_title                                       AS title
+             , m.catch_memo_text                                        AS [text]
+             , m.catch_memo_lat                                         AS lat
+             , m.catch_memo_lon                                         AS lon
+             , m.catch_memo_method                                      AS method
+             , m.catch_memo_tackle                                      AS tackle
+             , m.catch_memo_lure                                        AS lure
+             , m.catch_memo_catch_date                                  AS catchDate
+             , m.catch_memo_weight                                      AS weight
+             , m.catch_memo_weight_unit                                 AS weightUnit
+             , m.catch_memo_length                                      AS [length]
+             , m.catch_memo_length_unit                                 AS lengthUnit
+             , m.catch_memo_released                                    AS released
+             , m.catch_memo_private                                     AS [private]
+             , m.catch_memo_weather_temp                                AS [weather.temp]
+             , m.catch_memo_weather_pressure                            AS [weather.pressure]
+             , m.catch_memo_weather_text                                AS [weather.text]
+             , m.catch_memo_weather_icon                                AS [weather.icon]
+             , m.catch_memo_water_temp                                  AS [weather.water]
+             , m.catch_memo_created                                     AS created
+             , m.catch_memo_updated                                     AS updated
+             , CAST(CASE WHEN DATEDIFF(DAY, m.catch_memo_created, SYSUTCDATETIME()) <= 60 THEN 1 ELSE 0 END AS BIT) AS canEdit
+             , JSON_QUERY(COALESCE((
+                   SELECT p.catch_memo_photo_id          AS photoId
+                        , p.catch_memo_photo_ord         AS ord
+                        , p.catch_memo_photo_description AS [description]
+                        , p.catch_memo_photo_author      AS author
+                     FROM dbo.catch_memo_photo p
+                    WHERE p.catch_memo_photo_memoid = m.catch_memo_id
+                      AND p.catch_memo_photo_hidden = 0
+                    ORDER BY p.catch_memo_photo_ord, p.catch_memo_photo_stamp
+                      FOR JSON PATH), N'[]'))                           AS photos
+          FROM dbo.catch_memo m
+          LEFT JOIN dbo.vw_lake v ON v.lake_id = m.catch_memo_lake_id
+          LEFT JOIN dbo.fish    f ON f.fish_id = m.catch_memo_fish_id
+         WHERE m.catch_memo_userid = @userid
+         ORDER BY COALESCE(m.catch_memo_catch_date, m.catch_memo_created) DESC, m.catch_memo_created DESC
+           FOR JSON PATH, INCLUDE_NULL_VALUES), N'[]');
+END
+GO
+-----------------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_catch_memo_get' AND xtype = 'IF')
     DROP function dbo.fn_catch_memo_get
 GO

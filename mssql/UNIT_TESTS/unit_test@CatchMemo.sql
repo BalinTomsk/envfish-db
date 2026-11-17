@@ -66,6 +66,8 @@ GO
             (the row is KEPT with catch_memo_comment_deleted = 1)
   TEST 36 - sp_del_catch_memo_comment (soft): an admin can delete another user's comment (row kept,
             flagged deleted)
+  TEST 44 - fn_catch_memo_mine_json lists only the author's logs (private included), newest catch first
+  TEST 45 - fn_catch_memo_mine_json is '[]' for an account with no logs and caps @limit
 */
 
 -- ============================================================================
@@ -2101,4 +2103,86 @@ ELSE
     print 'TEST 43 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: write-state flags and photo count'
 
 ROLLBACK TRAN CM_Test43
+GO
+
+-- ============================================================================
+-- TEST 44: fn_catch_memo_mine_json lists only the author's logs (private included), newest catch first
+-- ============================================================================
+BEGIN TRAN CM_Test44
+    declare @test_name sysname = N'CM_Test44 [fn_catch_memo_mine_json] : own logs only, newest catch first'
+DECLARE @tStart datetime2, @ElapsedMs int, @J nvarchar(max), @N int, @First uniqueidentifier, @Photos int, @Lake nvarchar(200);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+DECLARE @Lake44 uniqueidentifier = (SELECT TOP 1 lake_id FROM dbo.vw_lake WHERE lake_name IS NOT NULL);
+DECLARE @Me44 uniqueidentifier = NEWID(), @Other44 uniqueidentifier = NEWID();
+DECLARE @Old44 uniqueidentifier = NEWID(), @New44 uniqueidentifier = NEWID(), @Theirs44 uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@Old44, @lake_id=@Lake44, @userid=@Me44, @species=N'Perch', @catch_date='2026-05-01';
+EXEC dbo.sp_add_catch_memo @id=@New44, @lake_id=@Lake44, @userid=@Me44, @species=N'Walleye', @catch_date='2026-06-01', @private=1;
+EXEC dbo.sp_add_catch_memo @id=@Theirs44, @lake_id=@Lake44, @userid=@Other44, @species=N'Pike', @catch_date='2026-07-01';
+EXEC dbo.sp_add_catch_memo_photo @memo_id=@New44, @userid=@Me44, @pic=0xFFD8FF01;
+
+-- 2. execute unit test
+
+SET @J = dbo.fn_catch_memo_mine_json(@Me44, 50);
+SELECT @N = COUNT(*) FROM OPENJSON(@J);
+SELECT @First = JSON_VALUE(@J, '$[0].catchLogId'), @Lake = JSON_VALUE(@J, '$[0].lakeName');
+SELECT @Photos = COUNT(*) FROM OPENJSON(@J, '$[0].photos');
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @N <> 2 OR @First <> @New44 OR @Photos <> 1 OR @Lake IS NULL
+   RAISERROR ('TEST 44 FAIL [%dms]: expected 2 own logs, the private June one first with 1 photo', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 44 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: own logs, newest catch first'
+
+ROLLBACK TRAN CM_Test44
+GO
+
+-- ============================================================================
+-- TEST 45: fn_catch_memo_mine_json is '[]' for an account with no logs and caps @limit
+-- ============================================================================
+BEGIN TRAN CM_Test45
+    declare @test_name sysname = N'CM_Test45 [fn_catch_memo_mine_json] : empty array + limit'
+DECLARE @tStart datetime2, @ElapsedMs int, @Empty nvarchar(max), @N int;
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test
+
+DECLARE @Lake45 uniqueidentifier = (SELECT TOP 1 lake_id FROM dbo.lake);
+DECLARE @Me45 uniqueidentifier = NEWID();
+DECLARE @A45 uniqueidentifier = NEWID(), @B45 uniqueidentifier = NEWID();
+EXEC dbo.sp_add_catch_memo @id=@A45, @lake_id=@Lake45, @userid=@Me45, @species=N'Bass';
+EXEC dbo.sp_add_catch_memo @id=@B45, @lake_id=@Lake45, @userid=@Me45, @species=N'Bass';
+
+-- 2. execute unit test
+
+SET @Empty = dbo.fn_catch_memo_mine_json(NEWID(), NULL);
+SELECT @N = COUNT(*) FROM OPENJSON(dbo.fn_catch_memo_mine_json(@Me45, 1));
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
+         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification
+
+IF @Empty <> N'[]' OR @N <> 1
+   RAISERROR ('TEST 45 FAIL [%dms]: expected [] for no logs and 1 row at @limit 1', 16, -1, @ElapsedMs)
+ELSE
+    print 'TEST 45 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: [] when none, @limit caps'
+
+ROLLBACK TRAN CM_Test45
 GO
