@@ -2,6 +2,14 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-20: **The moon factor counts only for a moon-sensitive fish. LIVE on prod 2026-11-20.**
+  `dbo.fn_fish_location_today` read any fish's `fish_lunar_catch_probability` curve, so pink salmon and kokanee
+  (curves kept from before the 2026-10-21 per-species check, `fish_moon_sensitive` = 0) still had their chance moved
+  by the moon while the Reasoning page said the phase was not counted: on 2026-11-20 kokanee x 0.625 at 815 stations
+  and pink salmon x 0.53 at 554. lunarFactor is now 1 unless `fish_moon_sensitive` = 1; the curves stay for
+  `get_fish`. Tests: `unit_test@MoonGate.sql` (3; tests 1 and 3 failed first), `@FlowFactor` 6/6. Checked on prod
+  through the gateway: kokanee at Okanagan Lake (curve 60 of 80) x 1, walleye (60 of 78) still x 0.769. CTRL skipped.
+
 - 2026-11-19: **Discharge (river flow) factor in the fish forecast. LIVE on prod 2026-11-19.** `fish.fish_flow_group`
   (A..I, 248 fish by genus, `flow_groups.csv` at the workspace root), `dbo.flow_response` (63 factor rows, STABLE = 1,
   at most 1.3, group I always 1, G only in spawn months), 7 flow columns on `CurrentWaterState`,
