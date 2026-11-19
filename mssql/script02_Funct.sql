@@ -7483,7 +7483,8 @@ GO
 -- probability: newToday = probability x monthFactor x lunarFactor x oxygenFactor x flowFactor, rounded and
 -- clamped 0..100 (a NULL probability counts as 100). Each factor is 0..1 and 1 when unknown:
 --   monthFactor       - the month's dbo.fish_catch_probability / the fish's highest month (its peak month = 1)
---   lunarFactor       - the moon day's dbo.fish_lunar_catch_probability / the fish's highest day (its best day = 1)
+--   lunarFactor       - the moon day's dbo.fish_lunar_catch_probability / the fish's highest day (its best day = 1),
+--                       only for a fish with fish_moon_sensitive = 1; 1 for every other fish, curve or not
 --   oxygenFactor      - dbo.fn_habitat_koef of the station's CurrentWaterState oxygen, habitat rule ri_type 33
 --   flowFactor        - dbo.flow_response.factor for the fish's fish_flow_group and the station's CurrentWaterState
 --                       flow_state (dbo.sp_fill_flow_state); 1 without a group, without a state, when the state is
@@ -7514,8 +7515,10 @@ RETURN
      CROSS APPLY ( SELECT ISNULL(MAX(CASE WHEN p.[month] = @month THEN p.probability END) * 1.0
                                  / NULLIF(MAX(p.probability), 0), 1.0) AS f
                      FROM dbo.fish_catch_probability p WHERE p.fish_id = fl.fish_Id ) m
-     CROSS APPLY ( SELECT ISNULL(MAX(CASE WHEN p.[day] = @moon_day THEN p.probability END) * 1.0
-                                 / NULLIF(MAX(p.probability), 0), 1.0) AS f
+     CROSS APPLY ( SELECT CASE WHEN fsh.fish_moon_sensitive = 1
+                               THEN ISNULL(MAX(CASE WHEN p.[day] = @moon_day THEN p.probability END) * 1.0
+                                           / NULLIF(MAX(p.probability), 0), 1.0)
+                               ELSE 1.0 END AS f
                      FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = fl.fish_Id ) l
      OUTER APPLY ( SELECT TOP 1 k.koef FROM habitat h
                     CROSS APPLY dbo.fn_habitat_koef(cws.oxygen, h.ri_min, h.ri_low, h.ri_avg, h.ri_high, h.ri_max) k
