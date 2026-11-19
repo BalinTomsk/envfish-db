@@ -10,6 +10,12 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   `get_fish`. Tests: `unit_test@MoonGate.sql` (3; tests 1 and 3 failed first), `@FlowFactor` 6/6. Checked on prod
   through the gateway: kokanee at Okanagan Lake (curve 60 of 80) x 1, walleye (60 of 78) still x 0.769. CTRL skipped.
 
+- 2026-11-19: **Service request counts for `stats/Default.aspx` (per hr / day / month).** `ServiceStatus.requestTotal`,
+  new `dbo.ServiceRequestCount` (5-minute buckets, FK cascade), `dbo.sp_service_request_count_add`, `@requests` on
+  `dbo.sp_service_status_report` (services send a running total; its growth is counted, a restart counts from zero, a
+  stale message counts nothing, buckets over 31 days deleted), `requestsHour` / `requestsDay` / `requestsMonth` on
+  `dbo.fn_service_status_list`. Tests: `unit_test@ServiceStatus.sql` TEST 11-16 (failed first). Applied to local envionx.
+
 - 2026-11-19: **Discharge (river flow) factor in the fish forecast. LIVE on prod 2026-11-19.** `fish.fish_flow_group`
   (A..I, 248 fish by genus, `flow_groups.csv` at the workspace root), `dbo.flow_response` (63 factor rows, STABLE = 1,
   at most 1.3, group I always 1, G only in spawn months), 7 flow columns on `CurrentWaterState`,
