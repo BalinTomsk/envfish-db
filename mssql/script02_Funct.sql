@@ -7337,6 +7337,93 @@ BEGIN
 END
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_station_flow_state' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_station_flow_state
+GO
+
+-- The discharge trend at one gauge (dbo.WaterData.mli) as of @at, from daily mean discharge (UTC days). Day 0 is the
+-- latest day with a reading at or before @at (-999, the source's no-reading marker, is skipped); it must be within 2 days of @at. One row, or no row when the data is too
+-- thin or suspect: day 0 missing or stale, fewer than 4 of days 0..7, a 30-day median of 0, any negative reading in the
+-- 30 days (tidal gauges, where a ratio means nothing), or day 0 more than 20 x day 1 (a glitch, e.g. 02244040 155 x).
+--   q0 / q_median_30d - day 0's mean and the median of the daily means of days 0..29, in dbo.WaterData's own unit
+--   q_ratio_1d / 2d   - q0 / day 1's mean, q0 / day 2's mean (NULL when that day has no reading)
+--   q_ratio_3_7d      - q0 / mean of the daily means of days 3..7 (needs 2 of them)
+--   days_since_peak   - the day (0..7) with the highest mean, when that mean is >= 1.5 x the median; else NULL
+--   flow_state        - first rule that matches (dbo.flow_response.flow_state):
+--     SPATE    q_ratio_1d >= 1.5 with q0 >= 2 x median, or q0 >= 3 x median and peaking today or still rising
+--     RISING   q_ratio_1d >= 1.15, or q_ratio_3_7d >= 1.15 while not dropping (q_ratio_1d >= 1)
+--     DROPPING a peak 1-7 days ago, q0 below it but still >= 1.5 x median (high water clearing)
+--     SETTLED  a peak 1-7 days ago and q0 back under 1.5 x median
+--     LOW      days 0, 1 and 2 all <= 0.5 x median
+--     FALLING  q_ratio_3_7d <= 0.85
+--     STABLE   anything else
+-- Rules and thresholds: discharge_response_review.md (Wisconsin DNR 3-day / 15 % classification).
+-- Called by the CurrentWaterState flow fill (step 4).
+-- SELECT * FROM dbo.fn_station_flow_state('04087000', SYSUTCDATETIME())
+CREATE FUNCTION dbo.fn_station_flow_state( @mli varchar(64), @at datetime2 )
+RETURNS TABLE
+AS
+RETURN
+    WITH last AS
+    (
+        SELECT CAST(MAX(w.stamp) AS date) AS day0
+          FROM dbo.WaterData w
+         WHERE w.mli = @mli AND w.stamp <= @at AND w.stamp > DATEADD(DAY, -2, @at) AND w.discharge IS NOT NULL
+           AND CAST(w.discharge AS int) <> -999
+    ),
+    daily AS
+    (
+        SELECT DATEDIFF(DAY, CAST(w.stamp AS date), l.day0) AS d, AVG(w.discharge) AS q, MIN(w.discharge) AS qmin
+          FROM last l
+          JOIN dbo.WaterData w ON w.mli = @mli AND w.stamp >= DATEADD(DAY, -29, l.day0) AND w.stamp < DATEADD(DAY, 1, l.day0)
+                              AND w.stamp <= @at AND w.discharge IS NOT NULL AND CAST(w.discharge AS int) <> -999
+         GROUP BY DATEDIFF(DAY, CAST(w.stamp AS date), l.day0)
+    ),
+    med AS
+    (
+        SELECT DISTINCT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY q) OVER () AS m FROM daily
+    ),
+    agg AS
+    (
+        SELECT MAX(CASE WHEN d = 0 THEN q END) AS q0
+             , MAX(CASE WHEN d = 1 THEN q END) AS q1
+             , MAX(CASE WHEN d = 2 THEN q END) AS q2
+             , AVG(CASE WHEN d BETWEEN 3 AND 7 THEN q END) AS q37
+             , SUM(CASE WHEN d BETWEEN 3 AND 7 THEN 1 ELSE 0 END) AS n37
+             , SUM(CASE WHEN d BETWEEN 0 AND 7 THEN 1 ELSE 0 END) AS n07
+             , MIN(qmin) AS qmin
+          FROM daily
+    ),
+    peak AS
+    (
+        SELECT TOP 1 d AS pd, q AS pq FROM daily WHERE d BETWEEN 0 AND 7 ORDER BY q DESC, d
+    ),
+    r AS
+    (
+        SELECT a.q0, m.m AS med
+             , a.q0 / NULLIF(a.q1, 0) AS r1
+             , a.q0 / NULLIF(a.q2, 0) AS r2
+             , CASE WHEN a.n37 >= 2 THEN a.q0 / NULLIF(a.q37, 0) END AS r37
+             , CASE WHEN p.pq >= 1.5 * m.m THEN p.pd END AS dsp
+             , p.pq, a.q1, a.q2
+          FROM agg a CROSS JOIN med m CROSS JOIN peak p
+         WHERE a.q0 IS NOT NULL AND a.n07 >= 4 AND a.qmin >= 0 AND m.m > 0 AND NOT (a.q0 > 20 * a.q1)
+    )
+    SELECT CAST(CASE
+                WHEN (r.r1 >= 1.5 AND r.q0 >= 2 * r.med)
+                  OR (r.q0 >= 3 * r.med AND (r.dsp = 0 OR ISNULL(r.r1, 1) >= 1))               THEN 'SPATE'
+                WHEN r.r1 >= 1.15 OR (r.r37 >= 1.15 AND ISNULL(r.r1, 1) >= 1)                 THEN 'RISING'
+                WHEN r.dsp BETWEEN 1 AND 7 AND r.q0 < r.pq AND r.q0 >= 1.5 * r.med            THEN 'DROPPING'
+                WHEN r.dsp BETWEEN 1 AND 7                                                    THEN 'SETTLED'
+                WHEN r.q0 <= 0.5 * r.med AND r.q1 <= 0.5 * r.med AND r.q2 <= 0.5 * r.med      THEN 'LOW'
+                WHEN r.r37 <= 0.85                                                            THEN 'FALLING'
+                ELSE 'STABLE' END AS varchar(10)) AS flow_state
+         , r.q0, r.med AS q_median_30d
+         , r.r1 AS q_ratio_1d, r.r2 AS q_ratio_2d, r.r37 AS q_ratio_3_7d
+         , CAST(r.dsp AS tinyint) AS days_since_peak
+      FROM r
+GO
+--------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_location_today' AND type IN ('FN','IF','TF'))
     DROP FUNCTION dbo.fn_fish_location_today
 GO
@@ -7393,11 +7480,14 @@ RETURN
 GO
 
 -- The forecast-map probability of every fish at every water station (dbo.fish_location), recomputed from the base
--- probability: newToday = probability x monthFactor x lunarFactor x oxygenFactor, rounded and
+-- probability: newToday = probability x monthFactor x lunarFactor x oxygenFactor x flowFactor, rounded and
 -- clamped 0..100 (a NULL probability counts as 100). Each factor is 0..1 and 1 when unknown:
 --   monthFactor       - the month's dbo.fish_catch_probability / the fish's highest month (its peak month = 1)
 --   lunarFactor       - the moon day's dbo.fish_lunar_catch_probability / the fish's highest day (its best day = 1)
 --   oxygenFactor      - dbo.fn_habitat_koef of the station's CurrentWaterState oxygen, habitat rule ri_type 33
+--   flowFactor        - dbo.flow_response.factor for the fish's fish_flow_group and the station's CurrentWaterState
+--                       flow_state (dbo.sp_fill_flow_state); 1 without a group, without a state, when the state is
+--                       more than 2 days old, or for a spawn_only row outside the fish's spawn months (fish_Rule)
 -- @month 1..12 and @moon_day 1..28 (dbo.fn_moon_day) are parameters so a run uses one value for every row.
 -- Called by dbo.spTotalUpdateProbability.
 -- SELECT TOP 10 * FROM dbo.fn_fish_location_today(MONTH(SYSUTCDATETIME()), dbo.fn_moon_day(SYSUTCDATETIME()))
@@ -7416,9 +7506,11 @@ RETURN
          , m.f AS monthFactor, l.f AS lunarFactor
          , ISNULL(o.koef, 1.00) AS oxygenFactor
          , CAST(CASE WHEN x.v > 100 THEN 100 WHEN x.v < 0 THEN 0 ELSE x.v END AS int) AS newToday
+         , fw.factor AS flowFactor, fw.flow_state AS flowState
       FROM dbo.fish_location fl
       LEFT JOIN dbo.WaterStation ws ON ws.id = fl.station_Id
       LEFT JOIN dbo.CurrentWaterState cws ON cws.mli = ws.mli
+      LEFT JOIN dbo.fish fsh ON fsh.fish_id = fl.fish_Id
      CROSS APPLY ( SELECT ISNULL(MAX(CASE WHEN p.[month] = @month THEN p.probability END) * 1.0
                                  / NULLIF(MAX(p.probability), 0), 1.0) AS f
                      FROM dbo.fish_catch_probability p WHERE p.fish_id = fl.fish_Id ) m
@@ -7428,7 +7520,18 @@ RETURN
      OUTER APPLY ( SELECT TOP 1 k.koef FROM habitat h
                     CROSS APPLY dbo.fn_habitat_koef(cws.oxygen, h.ri_min, h.ri_low, h.ri_avg, h.ri_high, h.ri_max) k
                     WHERE h.fish_Id = fl.fish_Id AND h.ri_type = 33 ) o
-     CROSS APPLY ( SELECT ROUND(ISNULL(fl.probability, 100) * m.f * l.f * ISNULL(o.koef, 1.00), 0) AS v ) x
+     CROSS APPLY ( SELECT CASE WHEN cws.flow_stamp > DATEADD(DAY, -2, SYSUTCDATETIME()) THEN cws.flow_state END AS flow_state ) fs
+     OUTER APPLY ( SELECT fr.factor, fr.spawn_only FROM dbo.flow_response fr
+                    WHERE fr.flow_group = fsh.fish_flow_group AND fr.flow_state = fs.flow_state ) fr
+     CROSS APPLY ( SELECT fs.flow_state
+                        , CAST(CASE WHEN fr.factor IS NULL THEN 1.00
+                                    WHEN fr.spawn_only = 1 AND NOT EXISTS (
+                                         SELECT 1 FROM dbo.fish_Rule r WHERE r.fish_Id = fl.fish_Id AND r.periodStart > 0 AND r.periodEnd > 0
+                                            AND (    (r.periodStart <= r.periodEnd AND @month BETWEEN r.periodStart AND r.periodEnd)
+                                                  OR (r.periodStart >  r.periodEnd AND (@month >= r.periodStart OR @month <= r.periodEnd)) ) )
+                                         THEN 1.00
+                                    ELSE fr.factor END AS decimal(4,2)) AS factor ) fw
+     CROSS APPLY ( SELECT ROUND(ISNULL(fl.probability, 100) * m.f * l.f * ISNULL(o.koef, 1.00) * fw.factor, 0) AS v ) x
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_reasoning_json' AND type IN ('FN','IF','TF'))
@@ -7436,16 +7539,19 @@ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_reasoning_json' AND t
 GO
 
 -- Why one fish has its forecast-map probability at one water station, and the same calculation for the 7 days from
--- @at. The value is dbo.fn_fish_location_today's (probability x month x lunar x oxygen, 0..100); this
+-- @at. The value is dbo.fn_fish_location_today's (probability x month x lunar x oxygen x flow, 0..100); this
 -- adds what each factor was made from so a page can explain it:
---   factors   - the three factors (0..1); base = fish_location.probability, today = the computed value
+--   factors   - the four factors (0..1); base = fish_location.probability, today = the computed value
 --   moon      - curve day (dbo.fn_moon_day), the fish's curve value that day and its best day (null without a curve)
 --   month     - this month's catch index, the fish's peak index and peak month (null without monthly rows)
 --   spawn     - spawn months (fish_Rule periods), inSpawnSeason = this month falls in one
 --   water     - the station's latest readings (CurrentWaterState); ranges = the fish's oxygen habitat
+--   flow      - the discharge trend (CurrentWaterState flow columns, dbo.sp_fill_flow_state): state (NULL when unknown or
+--               more than 2 days old), the fish's group, the flow_response note, ratios 1d / 2d / 3-7d, daysSincePeak,
+--               stamp; spawnOnly = the group's factor counts only in spawn months
 --   weather   - the station's weather row for that day (weather_Forecast), absent when there is none
---   week      - 7 days from @at, each at @at's time of day (so day 0 = today): date, moonDay, the three factors,
---               probability, weather. Water readings are carried
+--   week      - 7 days from @at, each at @at's time of day (so day 0 = today): date, moonDay, the four factors,
+--               probability, weather. Water readings and the flow state are carried
 --               forward unchanged (they are not forecast); the month and moon factors change day by day.
 -- Every number is metric, for every country (degC, km/h, mm, m3/s, m/s), as stored: the website converts
 -- to US units for a US visitor (2026-11-13). country is trimmed (WaterStation.country is padded, "US ").
@@ -7474,6 +7580,7 @@ BEGIN
          , CAST(t.monthFactor AS decimal(6,3))       AS [factors.month]
          , CAST(t.lunarFactor AS decimal(6,3))       AS [factors.lunar]
          , CAST(t.oxygenFactor AS decimal(6,3))      AS [factors.oxygen]
+         , CAST(t.flowFactor AS decimal(6,3))        AS [factors.flow]
          , @moon_day AS [moon.day]
          , (SELECT p.probability FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = f.fish_id AND p.[day] = @moon_day) AS [moon.value]
          , (SELECT MAX(p.probability) FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = f.fish_id) AS [moon.peak]
@@ -7492,6 +7599,12 @@ BEGIN
          , CAST(cws.oxygen AS decimal(9,2)) AS [water.oxygen]
          , CAST(cws.discharge AS decimal(12,3)) AS [water.discharge], CAST(cws.turbidity AS decimal(9,2)) AS [water.turbidity]
          , CAST(cws.ph AS decimal(5,2)) AS [water.ph], CAST(cws.velocity AS decimal(9,3)) AS [water.velocity]
+         , t.flowState AS [flow.state], f.fish_flow_group AS [flow.group]
+         , (SELECT fr.note FROM dbo.flow_response fr WHERE fr.flow_group = f.fish_flow_group AND fr.flow_state = t.flowState) AS [flow.note]
+         , (SELECT fr.spawn_only FROM dbo.flow_response fr WHERE fr.flow_group = f.fish_flow_group AND fr.flow_state = t.flowState) AS [flow.spawnOnly]
+         , CAST(cws.q_ratio_1d AS decimal(9,3)) AS [flow.ratio1d], CAST(cws.q_ratio_2d AS decimal(9,3)) AS [flow.ratio2d]
+         , CAST(cws.q_ratio_3_7d AS decimal(9,3)) AS [flow.ratio3to7d], cws.days_since_peak AS [flow.daysSincePeak]
+         , cws.flow_stamp AS [flow.stamp]
          , JSON_QUERY(( SELECT CAST(ri.ri_min AS decimal(9,2)) AS [min], CAST(ri.ri_low AS decimal(9,2)) AS low
                              , CAST(ri.ri_avg AS decimal(9,2)) AS [avg], CAST(ri.ri_high AS decimal(9,2)) AS high
                              , CAST(ri.ri_max AS decimal(9,2)) AS [max]
@@ -7505,7 +7618,8 @@ BEGIN
                          ORDER BY wf.tm DESC FOR JSON PATH, WITHOUT_ARRAY_WRAPPER )) AS weather
          , JSON_QUERY(( SELECT CONVERT(char(10), d.dt, 23) AS [date], d.md AS moonDay
                              , CAST(w.monthFactor AS decimal(6,3)) AS monthFactor, CAST(w.lunarFactor AS decimal(6,3)) AS lunarFactor
-                             , CAST(w.oxygenFactor AS decimal(6,3)) AS oxygenFactor, w.newToday AS probability
+                             , CAST(w.oxygenFactor AS decimal(6,3)) AS oxygenFactor, CAST(w.flowFactor AS decimal(6,3)) AS flowFactor
+                             , w.newToday AS probability
                              , JSON_QUERY(( SELECT TOP 1 wf.shortText AS conditions, CAST(wf.tmHigh AS decimal(5,1)) AS airHigh
                                                  , CAST(wf.tmLow AS decimal(5,1)) AS airLow, wf.pop AS precipChance
                                               FROM dbo.weather_Forecast wf WHERE wf.link = @station AND wf.dt = d.dt
