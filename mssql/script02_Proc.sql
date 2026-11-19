@@ -592,6 +592,77 @@ GO
 -- exec spGetPlaceByFish 'Burbot', 41, -82, 3
 
 ----------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_fill_flow_state' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_fill_flow_state
+GO
+
+-- Fills the flow columns of dbo.CurrentWaterState (flow_state, q_ratio_1d / 2d / 3_7d, q_median_30d, days_since_peak,
+-- flow_stamp) from dbo.fn_station_flow_state as of @at (default now). A station the function gives no row (too little
+-- or suspect data) gets NULLs, so an old state never lingers; every row it touches gets flow_stamp.
+--   @mli            one station only (tests, debugging); the age check is skipped
+--   @max_age_hours  skip the run when any row's flow_stamp is younger than this (0 = always run). The states come from
+--                   daily means, so a few runs a day are enough; a full run reads 30 days of dbo.WaterData per station
+--                   (about 35 s locally for 11,720 stations).
+-- An application lock lets one run at a time: a second caller returns -1 at once instead of waiting.
+-- Returns the number of stations that got a state, 0 when skipped, -1 when another run holds the lock.
+-- Called by dbo.spTotalUpdateProbability before it recomputes the forecast.
+-- EXEC dbo.sp_fill_flow_state @max_age_hours = 0
+CREATE PROCEDURE dbo.sp_fill_flow_state
+    @at             datetime2   = NULL,
+    @mli            varchar(64) = NULL,
+    @max_age_hours  int         = 6
+WITH EXEC AS CALLER
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @now datetime2 = SYSUTCDATETIME();
+    SET @at = ISNULL(@at, @now);
+
+    IF @mli IS NULL AND @max_age_hours > 0
+       AND EXISTS (SELECT 1 FROM dbo.CurrentWaterState WHERE flow_stamp > DATEADD(HOUR, -@max_age_hours, @now))
+        RETURN 0;
+
+    DECLARE @lock int;
+    EXEC @lock = sp_getapplock @Resource = 'sp_fill_flow_state', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0;
+    IF @lock < 0
+        RETURN -1;
+
+    BEGIN TRY
+        CREATE TABLE #f
+        (
+            mli             varchar(64) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,   -- prod tempdb is Cyrillic, the DB SQL_Latin1
+            flow_state      varchar(10) COLLATE DATABASE_DEFAULT,
+            q_median_30d    float,
+            q_ratio_1d      float,
+            q_ratio_2d      float,
+            q_ratio_3_7d    float,
+            days_since_peak tinyint
+        );
+        INSERT INTO #f (mli, flow_state, q_median_30d, q_ratio_1d, q_ratio_2d, q_ratio_3_7d, days_since_peak)
+        SELECT c.mli, f.flow_state, f.q_median_30d, f.q_ratio_1d, f.q_ratio_2d, f.q_ratio_3_7d, f.days_since_peak
+          FROM dbo.CurrentWaterState c
+         CROSS APPLY dbo.fn_station_flow_state(c.mli, @at) f
+         WHERE @mli IS NULL OR c.mli = @mli;
+
+        UPDATE c
+           SET c.flow_state = f.flow_state, c.q_median_30d = f.q_median_30d
+             , c.q_ratio_1d = f.q_ratio_1d, c.q_ratio_2d = f.q_ratio_2d, c.q_ratio_3_7d = f.q_ratio_3_7d
+             , c.days_since_peak = f.days_since_peak, c.flow_stamp = @now
+          FROM dbo.CurrentWaterState c
+          LEFT JOIN #f f ON f.mli = c.mli
+         WHERE @mli IS NULL OR c.mli = @mli;
+
+        DECLARE @n int = (SELECT COUNT(*) FROM #f);
+        EXEC sp_releaseapplock @Resource = 'sp_fill_flow_state', @LockOwner = 'Session';
+        RETURN @n;
+    END TRY
+    BEGIN CATCH
+        EXEC sp_releaseapplock @Resource = 'sp_fill_flow_state', @LockOwner = 'Session';
+        THROW;
+    END CATCH
+END
+GO
+----------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'spTotalUpdateProbability' AND xtype = 'P')
     DROP PROCEDURE dbo.spTotalUpdateProbability
 GO
@@ -600,6 +671,8 @@ GO
 -- base probability on every run: probability x month factor x lunar factor x oxygen factor,
 -- clamped 0..100 (dbo.fn_fish_location_today). Each factor counts once, so repeated runs never compound. Only rows
 -- whose value changes are written. Water readings older than 7 days are cleared first, so they stop counting.
+-- First refreshes the discharge trend (dbo.sp_fill_flow_state, which skips itself unless its data is 6 hours old);
+-- a failure there does not stop the forecast update.
 -- Called after every station update by the weather services: efcs-backend WeatherService
 -- (WeatherDataRepository) and OWMService (WeatherDataWorkerBase), efj-backend weather (WeatherDataRepository).
 -- Returns the number of rows whose today changed.
@@ -616,6 +689,14 @@ BEGIN
     DECLARE @now datetime2 = SYSUTCDATETIME();
     DECLARE @month tinyint = MONTH(@now);
     DECLARE @moon_day tinyint = dbo.fn_moon_day(@now);
+
+    BEGIN TRY
+        EXEC dbo.sp_fill_flow_state;
+    END TRY
+    BEGIN CATCH
+        IF XACT_STATE() = -1
+            THROW;
+    END CATCH
 
     BEGIN TRY
         BEGIN TRANSACTION;

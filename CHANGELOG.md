@@ -2,6 +2,20 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-19: **Discharge (river flow) factor in the fish forecast. LIVE on prod 2026-11-19.** `fish.fish_flow_group`
+  (A..I, 248 fish by genus, `flow_groups.csv` at the workspace root), `dbo.flow_response` (63 factor rows, STABLE = 1,
+  at most 1.3, group I always 1, G only in spawn months), 7 flow columns on `CurrentWaterState`,
+  `dbo.fn_station_flow_state(@mli, @at)` (SPATE / RISING / DROPPING / SETTLED / STABLE / FALLING / LOW from daily mean
+  discharge ratios), `dbo.sp_fill_flow_state` (called first by `spTotalUpdateProbability`, skips data under 6 h old),
+  `flowFactor` in `fn_fish_location_today`, and `factors.flow` / `flow` / `week[].flowFactor` in
+  `fn_fish_reasoning_json`. Research: `discharge_response_review.md`. Tests: `unit_test@FlowResponse.sql` (6),
+  `@StationFlowState` (11), `@FillFlowState` (3), `@FlowFactor` (6). **Prod-only collation trap fixed before the
+  apply:** `sp_fill_flow_state`'s `#f` text columns are `COLLATE DATABASE_DEFAULT`, since prod's tempdb is Cyrillic and
+  its database SQL_Latin1, so the `#f.mli = CurrentWaterState.mli` join raised Msg 468, which `spTotalUpdateProbability`
+  swallows (prod would never have filled a state). Rehearsed on a SQL_Latin1 database built from `ffi2.sql`. Verified
+  live: 40 walleye stations near Kitchener filled at 09:30 UTC; Speed River below Guelph RISING, flow 1.12, today 73.
+  CTRL skipped (user decision).
+
 - 2026-11-15: **Water bodies near a point (envfish-droid P1-09, docapi 1.34.0 `GET /news/near`).** New
   `dbo.fn_lakes_near_json(@lakes, @lat, @lon, @radius_km)`: which of a JSON list of lake ids lie within the radius,
   nearest first, by great-circle km to the nearer of source and mouth (`vw_lake`); NULL for a bad point/radius/list,

@@ -146,7 +146,15 @@ CREATE TABLE CurrentWaterState
     elevation      float,
     sid            bigint      NOT NULL,    -- sid comes from 
     velocity       float,
-    iterstamp      datetime2   NOT NULL
+    iterstamp      datetime2   NOT NULL,
+    -- discharge trend from dbo.WaterData daily means (dbo.fn_station_flow_state); NULL when the data is too thin
+    flow_state      varchar(10),            -- dbo.flow_response.flow_state: SPATE, RISING, DROPPING, SETTLED, STABLE, FALLING, LOW
+    q_ratio_1d      float,                  -- today's mean discharge / yesterday's
+    q_ratio_2d      float,                  -- today's / two days ago
+    q_ratio_3_7d    float,                  -- today's / mean of days 3..7 ago
+    q_median_30d    float,                  -- median daily mean of the last 30 days, in WaterData's own unit
+    days_since_peak tinyint,                -- day (0..7) of the highest daily mean, when it is >= 1.5 x q_median_30d
+    flow_stamp      datetime2               -- when the flow columns were computed
 );
 GO
 ALTER TABLE CurrentWaterState ADD CONSTRAINT PK_CurrentWaterState PRIMARY KEY CLUSTERED (mli);
@@ -225,6 +233,7 @@ CREATE TABLE fish
     habitat         nvarchar(255),
     fish_moon_sensitive bit,
     fish_migrate_pattern bit,
+    fish_flow_group char(1) NULL,             -- discharge-response group A..I (dbo.flow_response); NULL = flow does not change the forecast
     locked          bit,                      -- if administrator set this flag then do not allow to edit for editors
     editor          uniqueidentifier,
     sid             int not null identity(1,1),
@@ -245,6 +254,8 @@ ALTER TABLE dbo.fish_code ADD CONSTRAINT FK_fish_code_fish
     FOREIGN KEY (fish_id) REFERENCES dbo.fish (fish_id) ON DELETE CASCADE;
 GO
 ALTER TABLE fish ADD CONSTRAINT df_fish_id DEFAULT NEWSEQUENTIALID() FOR fish_id;
+GO
+ALTER TABLE dbo.fish ADD CONSTRAINT CK_fish_flow_group CHECK (fish_flow_group IN ('A','B','C','D','E','F','G','H','I'));
 GO
 CREATE UNIQUE NONCLUSTERED INDEX UK_fish_Latin ON fish(fish_Latin)    
 GO
@@ -641,6 +652,90 @@ CREATE TABLE dbo.fish_lunar_catch_probability
     CONSTRAINT CK_fish_lunar_catch_probability 
         CHECK (probability >= 0 AND probability <= 100)
 );
+GO
+
+-- dbo.flow_response : how much a discharge trend changes the catch chance of each fish group (dbo.fish.fish_flow_group).
+-- factor multiplies the forecast like the month / lunar / oxygen factors; steady flow (STABLE) = 1 for every group, so a
+-- normal day changes nothing, and a good state is a boost of at most 1.3 (the result is still clamped 0..100); note is the
+-- angler-facing reason. spawn_only = 1: the row applies only in the fish's spawn months (dbo.fish_Rule periods), factor 1
+-- otherwise. States come from dbo.CurrentWaterState.flow_state. Basis: discharge_response_review.md (2026-11-19).
+CREATE TABLE dbo.flow_response
+(
+    flow_group  char(1)       NOT NULL,
+    flow_state  varchar(10)   NOT NULL,
+    factor      decimal(4,2)  NOT NULL,
+    spawn_only  bit           NOT NULL CONSTRAINT DF_flow_response_spawn_only DEFAULT 0,
+    note        nvarchar(200) NOT NULL,
+    CONSTRAINT PK_flow_response PRIMARY KEY CLUSTERED (flow_group, flow_state),
+    CONSTRAINT CK_flow_response_group  CHECK (flow_group IN ('A','B','C','D','E','F','G','H','I')),
+    CONSTRAINT CK_flow_response_state  CHECK (flow_state IN ('SPATE','RISING','DROPPING','SETTLED','STABLE','FALLING','LOW')),
+    CONSTRAINT CK_flow_response_factor CHECK (factor >= 0 AND factor <= 1.5)
+);
+GO
+INSERT INTO dbo.flow_response (flow_group, flow_state, factor, spawn_only, note) VALUES
+ ('A','SPATE',    0.57, 0, N'Fish are on the move in high dirty water; try river mouths and estuaries'),
+ ('A','RISING',   0.86, 0, N'Rising water starts the run; fish travel instead of holding'),
+ ('A','DROPPING', 1.30, 0, N'Fresh fish in the river and the water is clearing: best time'),
+ ('A','SETTLED',  1.21, 0, N'Fish have settled into holding pools'),
+ ('A','STABLE',   1.00, 0, N'Steady flow: few new fish entering'),
+ ('A','FALLING',  1.00, 0, N'Dropping flow: fish hold in deep pools'),
+ ('A','LOW',      0.71, 0, N'Low water: runs stall and fish bite poorly'),
+ ('B','SPATE',    0.50, 0, N'Flood: trout shelter on the bottom and edges'),
+ ('B','RISING',   1.25, 0, N'First push of coloured water washes food into the drift: feeding burst'),
+ ('B','DROPPING', 1.12, 0, N'Water clearing after a high: hungry fish'),
+ ('B','SETTLED',  1.06, 0, N'Back to normal after a high'),
+ ('B','STABLE',   1.00, 0, N'Steady flow'),
+ ('B','FALLING',  1.00, 0, N'Slowly dropping flow'),
+ ('B','LOW',      0.62, 0, N'Low warm water stresses trout'),
+ ('C','SPATE',    0.42, 0, N'Flood: predators hide in slack water and see little'),
+ ('C','RISING',   0.68, 0, N'Rising flow lowers bass and muskie catch rates'),
+ ('C','DROPPING', 0.79, 0, N'Fish tight to banks and slack seams'),
+ ('C','SETTLED',  1.05, 0, N'Clear water back to normal: best time'),
+ ('C','STABLE',   1.00, 0, N'Steady flow'),
+ ('C','FALLING',  0.95, 0, N'Fish leave backwaters for the main channel'),
+ ('C','LOW',      0.79, 0, N'Low clear water: fish spooky, concentrated in pools'),
+ ('D','SPATE',    0.71, 0, N'Flood: fish pushed to current breaks and below dams'),
+ ('D','RISING',   1.12, 0, N'Stained water lets walleye feed in daylight'),
+ ('D','DROPPING', 1.18, 0, N'Fish packed below dams and on current breaks: best time'),
+ ('D','SETTLED',  1.06, 0, N'Back to normal after a high'),
+ ('D','STABLE',   1.00, 0, N'Steady flow'),
+ ('D','FALLING',  1.00, 0, N'Slowly dropping flow'),
+ ('D','LOW',      0.82, 0, N'Low clear water: mostly a night bite'),
+ ('E','SPATE',    1.00, 0, N'Flood: fish the slack edges and flooded margins'),
+ ('E','RISING',   1.25, 0, N'Rising muddy water carries food: active scent feeding'),
+ ('E','DROPPING', 1.19, 0, N'Fish leave flooded areas; fish drains and creek mouths'),
+ ('E','SETTLED',  1.06, 0, N'Back to normal after a high'),
+ ('E','STABLE',   1.00, 0, N'Steady flow'),
+ ('E','FALLING',  1.00, 0, N'Slowly dropping flow'),
+ ('E','LOW',      0.94, 0, N'Low water: fish in deep holes'),
+ ('F','SPATE',    0.87, 0, N'Fish spread into newly flooded forest'),
+ ('F','RISING',   1.25, 0, N'Rising water opens flooded feeding areas'),
+ ('F','DROPPING', 1.00, 0, N'Fish move back toward channels'),
+ ('F','SETTLED',  1.00, 0, N'Back to normal after a high'),
+ ('F','STABLE',   1.00, 0, N'Steady water level'),
+ ('F','FALLING',  0.75, 0, N'Floodplain draining'),
+ ('F','LOW',      0.75, 0, N'Low water'),
+ ('G','SPATE',    0.71, 1, N'Spawning season: flood, run on hold'),
+ ('G','RISING',   0.94, 1, N'Spawning season: rising flow, run building'),
+ ('G','DROPPING', 1.18, 1, N'Spawning season: high flow starting to drop moves fish upriver'),
+ ('G','SETTLED',  1.06, 1, N'Spawning season: back to normal after a high'),
+ ('G','STABLE',   1.00, 1, N'Spawning season: steady flow'),
+ ('G','FALLING',  1.00, 1, N'Spawning season: slowly dropping flow'),
+ ('G','LOW',      0.94, 1, N'Spawning season: low water'),
+ ('H','SPATE',    0.87, 0, N'Flood: fish below dams in slack water'),
+ ('H','RISING',   1.25, 0, N'Higher release flushes baitfish below the dam: feeding spree'),
+ ('H','DROPPING', 1.12, 0, N'Fish still gathered below the dam'),
+ ('H','SETTLED',  1.06, 0, N'Back to normal after a high'),
+ ('H','STABLE',   1.00, 0, N'Steady flow'),
+ ('H','FALLING',  1.00, 0, N'Slowly dropping flow'),
+ ('H','LOW',      0.87, 0, N'Low release'),
+ ('I','SPATE',    1.00, 0, N'No direct effect in a lake'),
+ ('I','RISING',   1.00, 0, N'No direct effect in a lake'),
+ ('I','DROPPING', 1.00, 0, N'No direct effect in a lake'),
+ ('I','SETTLED',  1.00, 0, N'No direct effect in a lake'),
+ ('I','STABLE',   1.00, 0, N'No direct effect in a lake'),
+ ('I','FALLING',  1.00, 0, N'No direct effect in a lake'),
+ ('I','LOW',      1.00, 0, N'No direct effect in a lake');
 GO
 ------------------------------------------------------------------------------------
 
