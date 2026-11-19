@@ -6080,6 +6080,31 @@ BEGIN
 END
 GO
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- Called by: dbo.sp_service_status_report only. Adds @requests to one 5-minute bucket of dbo.ServiceRequestCount and
+--   deletes this service's buckets older than 31 days (the page shows at most 30), so the table stays at about
+--   9,000 rows per service.
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'sp_service_request_count_add' AND type IN ('P'))
+    DROP PROCEDURE dbo.sp_service_request_count_add
+GO
+CREATE PROCEDURE dbo.sp_service_request_count_add
+    @serviceStatusId uniqueidentifier,
+    @bucketUtc       datetime2(0),
+    @requests        bigint
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.ServiceRequestCount SET requests = requests + @requests
+     WHERE serviceStatusId = @serviceStatusId AND bucketUtc = @bucketUtc;
+    IF @@ROWCOUNT = 0
+        INSERT INTO dbo.ServiceRequestCount (serviceStatusId, bucketUtc, requests) VALUES (@serviceStatusId, @bucketUtc, @requests);
+
+    DELETE FROM dbo.ServiceRequestCount
+     WHERE serviceStatusId = @serviceStatusId AND bucketUtc < DATEADD(day, -31, @bucketUtc);
+END
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 -- Called by: efcs-backend adminservice ServiceStatusRepository.ReportAsync, once per status message taken off
 --   fishfind.servicestatus.events. Upserts the (serviceName, machineName) row of dbo.ServiceStatus.
 --
@@ -6089,6 +6114,10 @@ GO
 --   @sentUtc         when the service sent the message; a message older than the row's lastSeenUtc arrived
 --                    out of order and is ignored, so a late heartbeat never revives a stopped service
 --   @lastActionUtc / @lastAction  the newest item the service processed; kept only when newer than the row's
+--   @requests        requests the process handled since it started (NULL from a service that does not count);
+--                    its growth over the row's requestTotal goes into the current 5-minute bucket of
+--                    dbo.ServiceRequestCount. A new process counts from zero. A stale message counts nothing,
+--                    the next newer one carries the same total. Buckets older than 31 days are deleted here.
 --
 --   Returns one row: applied = 1 when the row changed, 0 when the message was stale.
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -6103,7 +6132,8 @@ CREATE PROCEDURE dbo.sp_service_status_report
     @processStartUtc datetime2(0),
     @sentUtc         datetime2(0),
     @lastActionUtc   datetime2(0) = NULL,
-    @lastAction      nvarchar(256) = NULL
+    @lastAction      nvarchar(256) = NULL,
+    @requests        bigint = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -6118,6 +6148,12 @@ BEGIN
     SET @serviceName = LOWER(LTRIM(RTRIM(@serviceName)));
     SET @machineName = LOWER(LTRIM(RTRIM(@machineName)));
     IF @lastActionUtc IS NULL SET @lastAction = NULL;
+    IF @requests < 0 SET @requests = NULL;
+
+    DECLARE @now datetime2(0) = SYSUTCDATETIME();
+    DECLARE @bucket datetime2(0) = DATEADD(minute, DATEDIFF(minute, '2000-01-01', @now) / 5 * 5, CAST('2000-01-01' AS datetime2(0)));
+    DECLARE @id uniqueidentifier, @added bigint;
+    DECLARE @old TABLE (id uniqueidentifier, processStartUtc datetime2(0), requestTotal bigint);
 
     UPDATE dbo.ServiceStatus
        SET version       = ISNULL(@version, version),
@@ -6126,12 +6162,25 @@ BEGIN
            lastEvent     = @event,
            lastAction    = CASE WHEN @lastActionUtc >= ISNULL(lastActionUtc, '0001-01-01') THEN @lastAction ELSE lastAction END,
            lastActionUtc = CASE WHEN @lastActionUtc >= ISNULL(lastActionUtc, '0001-01-01') THEN @lastActionUtc ELSE lastActionUtc END,
+           requestTotal  = CASE WHEN @requests IS NULL THEN requestTotal
+                                WHEN @processStartUtc < ISNULL(restartUtc, startUtc) THEN requestTotal
+                                ELSE @requests END,
            updatedUtc    = SYSUTCDATETIME()
+    OUTPUT deleted.id, ISNULL(deleted.restartUtc, deleted.startUtc), deleted.requestTotal INTO @old
      WHERE serviceName = @serviceName AND machineName = @machineName
        AND lastSeenUtc <= @sentUtc;
 
-    IF @@ROWCOUNT > 0
+    IF EXISTS (SELECT 1 FROM @old)
     BEGIN
+        -- Same process: the growth of its total (a smaller total means its counter was reset). A later process
+        -- start: everything it counted is new. An older process start (a straggler from before a restart): nothing.
+        SELECT @id = id,
+               @added = CASE WHEN @requests IS NULL OR @processStartUtc < processStartUtc THEN NULL
+                             WHEN @processStartUtc = processStartUtc AND @requests >= requestTotal THEN @requests - requestTotal
+                             ELSE @requests END
+          FROM @old;
+        IF @added > 0
+            EXEC dbo.sp_service_request_count_add @id, @bucket, @added;
         SELECT applied = 1;
         RETURN;
     END
@@ -6142,8 +6191,12 @@ BEGIN
         RETURN;
     END
 
-    INSERT INTO dbo.ServiceStatus (serviceName, machineName, version, startUtc, restartUtc, lastSeenUtc, lastEvent, lastActionUtc, lastAction)
-    VALUES (@serviceName, @machineName, @version, @processStartUtc, NULL, @sentUtc, @event, @lastActionUtc, @lastAction);
+    INSERT INTO dbo.ServiceStatus (serviceName, machineName, version, startUtc, restartUtc, lastSeenUtc, lastEvent, lastActionUtc, lastAction, requestTotal)
+    OUTPUT inserted.id, inserted.startUtc, NULL INTO @old
+    VALUES (@serviceName, @machineName, @version, @processStartUtc, NULL, @sentUtc, @event, @lastActionUtc, @lastAction, @requests);
+    SET @id = (SELECT id FROM @old);
+    IF @requests > 0
+        EXEC dbo.sp_service_request_count_add @id, @bucket, @requests;
     SELECT applied = 1;
 END
 GO

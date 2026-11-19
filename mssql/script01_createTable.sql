@@ -2118,6 +2118,7 @@ CREATE TABLE ServiceStatus
     lastEvent     varchar(16)   NOT NULL,           -- 'start' | 'heartbeat' | 'stop'
     lastActionUtc datetime2(0)  NULL,               -- when the service last processed an item
     lastAction    nvarchar(256) NULL,               -- what it processed, e.g. 'station 05BH004'
+    requestTotal  bigint        NULL,               -- requests the latest process reported since it started
     updatedUtc    datetime2(0)  NOT NULL
 )
 GO
@@ -2130,6 +2131,24 @@ GO
 ALTER TABLE ServiceStatus ADD CONSTRAINT CK_SS_lastEvent CHECK (lastEvent IN ('start','heartbeat','stop'))
 GO
 CREATE UNIQUE NONCLUSTERED INDEX UK_ServiceStatus_name ON ServiceStatus(serviceName, machineName)
+GO
+-------------------------------------------------------------------------------------------------------
+--  Requests a service handled, in 5-minute buckets, for the per hour / day / month columns of
+--  stats/Default.aspx. Services send a running total since process start (requestTotal on
+--  ServiceStatus); dbo.sp_service_status_report adds its growth to the current bucket, so a lost or
+--  superseded heartbeat loses nothing. Buckets older than 31 days are deleted by the same procedure.
+-------------------------------------------------------------------------------------------------------
+CREATE TABLE ServiceRequestCount
+(
+    serviceStatusId uniqueidentifier NOT NULL,       -- ServiceStatus.id
+    bucketUtc       datetime2(0)     NOT NULL,       -- start of the 5-minute bucket
+    requests        bigint           NOT NULL
+)
+GO
+ALTER TABLE ServiceRequestCount ADD CONSTRAINT PK_ServiceRequestCount PRIMARY KEY CLUSTERED (serviceStatusId, bucketUtc)
+GO
+ALTER TABLE ServiceRequestCount ADD CONSTRAINT FK_SRC_ServiceStatus FOREIGN KEY (serviceStatusId)
+    REFERENCES ServiceStatus(id) ON DELETE CASCADE
 GO
 -------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------

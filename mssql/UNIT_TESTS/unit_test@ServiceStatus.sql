@@ -2,7 +2,8 @@ SET QUOTED_IDENTIFIER ON
 GO
 /*
   Unit tests for service status (sp_service_status_report / sp_service_status_delete / fn_service_status_list).
-  Uses the real table dbo.ServiceStatus (serviceName 'ut_svc'). Each test rolls back its own transaction.
+  Uses the real tables dbo.ServiceStatus and dbo.ServiceRequestCount (serviceName 'ut_svc'). Each test rolls back
+  its own transaction.
 
   TEST  1 - first report inserts the row, lower-cased, no restart
   TEST  2 - heartbeat moves lastSeenUtc and keeps the start
@@ -14,6 +15,12 @@ GO
   TEST  8 - fn_service_status_list: silent service is dead, no uptime
   TEST  9 - fn_service_status_list: 'stop' is dead even when fresh
   TEST 10 - sp_service_status_delete removes the row
+  TEST 11 - first report counts its whole request total
+  TEST 12 - same process counts only the growth of its total
+  TEST 13 - a restarted process counts its new total from zero
+  TEST 14 - a stale message or one without a total counts nothing
+  TEST 15 - fn_service_status_list sums the last hour / day / 30 days
+  TEST 16 - buckets older than 31 days are pruned; delete drops them
 */
 SET NOCOUNT ON;
 GO
@@ -210,4 +217,148 @@ SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
 IF @ok = 1 PRINT 'TEST 10 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: delete removes the row';
 ELSE RAISERROR ('TEST 10 FAIL [%dms]: row was not deleted', 16, -1, @ElapsedMs);
 ROLLBACK TRAN Test10
+GO
+BEGIN TRAN Test11
+DECLARE @tStart datetime2 = SYSUTCDATETIME(), @ElapsedMs int, @ok bit = 0;
+DECLARE @r TABLE (applied int);
+DECLARE @now datetime2(0) = SYSUTCDATETIME();
+DECLARE @earlier datetime2(0) = DATEADD(minute, -1, @now);
+BEGIN TRY
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @now, NULL, NULL, 5;
+    IF (SELECT SUM(c.requests) FROM dbo.ServiceRequestCount c JOIN dbo.ServiceStatus s ON s.id = c.serviceStatusId
+        WHERE s.serviceName = 'ut_svc') = 5
+       AND (SELECT requestTotal FROM dbo.ServiceStatus WHERE serviceName = 'ut_svc') = 5
+        SET @ok = 1;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS ErrorMessage, 'Test11' AS ErrorProcedure;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 11 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: first report counts its total';
+ELSE RAISERROR ('TEST 11 FAIL [%dms]: first request total not counted', 16, -1, @ElapsedMs);
+ROLLBACK TRAN Test11
+GO
+BEGIN TRAN Test12
+DECLARE @tStart datetime2 = SYSUTCDATETIME(), @ElapsedMs int, @ok bit = 0;
+DECLARE @r TABLE (applied int);
+DECLARE @now datetime2(0) = SYSUTCDATETIME();
+DECLARE @earlier datetime2(0) = DATEADD(minute, -1, @now);
+BEGIN TRY
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @earlier, NULL, NULL, 5;
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @now, NULL, NULL, 12;
+    IF (SELECT SUM(c.requests) FROM dbo.ServiceRequestCount c JOIN dbo.ServiceStatus s ON s.id = c.serviceStatusId
+        WHERE s.serviceName = 'ut_svc') = 12
+        SET @ok = 1;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS ErrorMessage, 'Test12' AS ErrorProcedure;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 12 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: same process counts the growth';
+ELSE RAISERROR ('TEST 12 FAIL [%dms]: request growth miscounted', 16, -1, @ElapsedMs);
+ROLLBACK TRAN Test12
+GO
+BEGIN TRAN Test13
+DECLARE @tStart datetime2 = SYSUTCDATETIME(), @ElapsedMs int, @ok bit = 0;
+DECLARE @r TABLE (applied int);
+DECLARE @now datetime2(0) = SYSUTCDATETIME();
+DECLARE @earlier datetime2(0) = DATEADD(minute, -1, @now);
+BEGIN TRY
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @earlier, NULL, NULL, 100;
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'start', '1.0.0',
+        '2026-10-02 10:00:00', @now, NULL, NULL, 3;
+    IF (SELECT SUM(c.requests) FROM dbo.ServiceRequestCount c JOIN dbo.ServiceStatus s ON s.id = c.serviceStatusId
+        WHERE s.serviceName = 'ut_svc') = 103
+        SET @ok = 1;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS ErrorMessage, 'Test13' AS ErrorProcedure;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 13 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: restart counts from zero';
+ELSE RAISERROR ('TEST 13 FAIL [%dms]: restart total miscounted', 16, -1, @ElapsedMs);
+ROLLBACK TRAN Test13
+GO
+BEGIN TRAN Test14
+DECLARE @tStart datetime2 = SYSUTCDATETIME(), @ElapsedMs int, @ok bit = 0;
+DECLARE @r TABLE (applied int);
+DECLARE @now datetime2(0) = SYSUTCDATETIME();
+DECLARE @earlier datetime2(0) = DATEADD(minute, -1, @now);
+BEGIN TRY
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @now, NULL, NULL, 10;
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @earlier, NULL, NULL, 50;
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @now;
+    IF (SELECT SUM(c.requests) FROM dbo.ServiceRequestCount c JOIN dbo.ServiceStatus s ON s.id = c.serviceStatusId
+        WHERE s.serviceName = 'ut_svc') = 10
+       AND (SELECT requestTotal FROM dbo.ServiceStatus WHERE serviceName = 'ut_svc') = 10
+        SET @ok = 1;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS ErrorMessage, 'Test14' AS ErrorProcedure;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 14 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: stale or countless message adds 0';
+ELSE RAISERROR ('TEST 14 FAIL [%dms]: stale or countless message was counted', 16, -1, @ElapsedMs);
+ROLLBACK TRAN Test14
+GO
+BEGIN TRAN Test15
+DECLARE @tStart datetime2 = SYSUTCDATETIME(), @ElapsedMs int, @ok bit = 0;
+DECLARE @r TABLE (applied int);
+DECLARE @now datetime2(0) = SYSUTCDATETIME();
+DECLARE @earlier datetime2(0) = DATEADD(minute, -1, @now);
+BEGIN TRY
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @now, NULL, NULL, 1;
+    DECLARE @id uniqueidentifier = (SELECT id FROM dbo.ServiceStatus WHERE serviceName = 'ut_svc');
+    INSERT INTO dbo.ServiceRequestCount (serviceStatusId, bucketUtc, requests) VALUES
+        (@id, DATEADD(minute, -30, @now), 10),
+        (@id, DATEADD(hour, -5, @now), 100),
+        (@id, DATEADD(day, -10, @now), 1000),
+        (@id, DATEADD(day, -31, @now), 10000);
+    IF EXISTS (SELECT 1 FROM dbo.fn_service_status_list(180) WHERE serviceName = 'ut_svc'
+        AND requestsHour = 11 AND requestsDay = 111 AND requestsMonth = 1111)
+        SET @ok = 1;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS ErrorMessage, 'Test15' AS ErrorProcedure;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 15 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: hour / day / 30-day sums';
+ELSE RAISERROR ('TEST 15 FAIL [%dms]: request window sums wrong', 16, -1, @ElapsedMs);
+ROLLBACK TRAN Test15
+GO
+BEGIN TRAN Test16
+DECLARE @tStart datetime2 = SYSUTCDATETIME(), @ElapsedMs int, @ok bit = 0;
+DECLARE @r TABLE (applied int);
+DECLARE @now datetime2(0) = SYSUTCDATETIME();
+DECLARE @earlier datetime2(0) = DATEADD(minute, -1, @now);
+DECLARE @d TABLE (deleted int);
+BEGIN TRY
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @earlier, NULL, NULL, 1;
+    DECLARE @id uniqueidentifier = (SELECT id FROM dbo.ServiceStatus WHERE serviceName = 'ut_svc');
+    INSERT INTO dbo.ServiceRequestCount (serviceStatusId, bucketUtc, requests)
+        VALUES (@id, DATEADD(day, -40, @now), 7);
+    INSERT INTO @r EXEC dbo.sp_service_status_report 'ut_svc', 'ut_host', 'heartbeat', '1.0.0',
+        '2026-10-01 10:00:00', @now, NULL, NULL, 2;
+    DECLARE @pruned bit = CASE WHEN EXISTS (SELECT 1 FROM dbo.ServiceRequestCount
+        WHERE serviceStatusId = @id AND bucketUtc < DATEADD(day, -31, @now)) THEN 0 ELSE 1 END;
+    INSERT INTO @d EXEC dbo.sp_service_status_delete @id;
+    IF @pruned = 1 AND NOT EXISTS (SELECT 1 FROM dbo.ServiceRequestCount WHERE serviceStatusId = @id)
+        SET @ok = 1;
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS ErrorMessage, 'Test16' AS ErrorProcedure;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 16 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: old buckets pruned, delete drops all';
+ELSE RAISERROR ('TEST 16 FAIL [%dms]: request buckets not pruned or deleted', 16, -1, @ElapsedMs);
+ROLLBACK TRAN Test16
 GO

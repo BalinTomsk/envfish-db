@@ -7173,6 +7173,9 @@ GO
 --   with the live state derived here, not stored: 'dead' when the service said 'stop' or has sent nothing for
 --   @deadAfterSeconds (a crashed or partitioned process just goes quiet), otherwise 'alive'.
 --   upSeconds is the time since the latest process start, for an alive service only (NULL when dead).
+--   requestsHour / requestsDay / requestsMonth: requests handled in the last 60 minutes / 24 hours / 30 days, from
+--   the 5-minute buckets of dbo.ServiceRequestCount (so each window is accurate to one bucket); NULL for a service
+--   that has never sent a request total.
 ------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_service_status_list' AND type IN ('FN','IF','TF'))
     DROP FUNCTION dbo.fn_service_status_list
@@ -7184,11 +7187,19 @@ RETURN
     SELECT s.id, s.serviceName, s.machineName, x.state, s.startUtc, s.restartUtc,
            upSeconds = CASE WHEN x.state = 'alive'
                             THEN DATEDIFF(second, ISNULL(s.restartUtc, s.startUtc), SYSUTCDATETIME()) END,
-           s.lastSeenUtc, s.lastEvent, s.lastActionUtc, s.lastAction, s.version
+           s.lastSeenUtc, s.lastEvent, s.lastActionUtc, s.lastAction, s.version,
+           requestsHour  = CASE WHEN s.requestTotal IS NOT NULL THEN ISNULL(r.requestsHour, 0) END,
+           requestsDay   = CASE WHEN s.requestTotal IS NOT NULL THEN ISNULL(r.requestsDay, 0) END,
+           requestsMonth = CASE WHEN s.requestTotal IS NOT NULL THEN ISNULL(r.requestsMonth, 0) END
       FROM dbo.ServiceStatus s
      CROSS APPLY (SELECT state = CASE WHEN s.lastEvent = 'stop'
                                         OR s.lastSeenUtc < DATEADD(second, -@deadAfterSeconds, SYSUTCDATETIME())
-                                      THEN 'dead' ELSE 'alive' END) x;
+                                      THEN 'dead' ELSE 'alive' END) x
+     OUTER APPLY (SELECT requestsHour  = SUM(CASE WHEN c.bucketUtc > DATEADD(minute, -60, SYSUTCDATETIME()) THEN c.requests ELSE 0 END),
+                         requestsDay   = SUM(CASE WHEN c.bucketUtc > DATEADD(hour, -24, SYSUTCDATETIME()) THEN c.requests ELSE 0 END),
+                         requestsMonth = SUM(c.requests)
+                    FROM dbo.ServiceRequestCount c
+                   WHERE c.serviceStatusId = s.id AND c.bucketUtc > DATEADD(day, -30, SYSUTCDATETIME())) r;
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_info_json' AND type IN ('FN','IF','TF'))
