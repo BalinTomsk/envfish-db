@@ -2,6 +2,15 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-21: **Account types, a bitmask (built, not on prod).** `dbo.UserType` (bit, code, name, sort: 1 registered,
+  2 paid, 4 scientist, 8 editor, 16 ai_agent, 32 admin) and `dbo.Users.userType int` (default 1, any combination).
+  `CH_Users_userType_admin`: the admin bit always comes with paid + scientist + editor and with `access = 255`
+  (cproxy's admin test), `CH_Users_userType_bits`: 1..63. `dbo.sp_user_type_set` is the only writer (adds 14 to an
+  admin mask, moves `access`, refuses unknown bits and an admin demoting themselves); `fn_user_type_list`,
+  `fn_user_type_get` (mask + codes + names). `TR_Users_SyncOutbox` / `sp_users_sync_outbox_take` carry the mask to
+  cproxy. Tests: `unit_test@UserType.sql` 7/7, `unit_test@UsersSyncOutbox.sql` temp tables widened. Applied to local
+  envionx; the migration (`ADMIN_WRITE_user_type.sql`, not committed) was also proved on a production-shaped copy in a
+  rolled-back transaction (2 admins -> 47). CTRL down: queued in ctrlLogBag. Prod: not applied.
 - 2026-11-20: **The moon factor counts only for a moon-sensitive fish. LIVE on prod 2026-11-20.**
   `dbo.fn_fish_location_today` read any fish's `fish_lunar_catch_probability` curve, so pink salmon and kokanee
   (curves kept from before the 2026-10-21 per-species check, `fish_moon_sensitive` = 0) still had their chance moved

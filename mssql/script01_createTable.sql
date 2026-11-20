@@ -1667,6 +1667,27 @@ GO
 
 -------------------------------------------------------------------------------------------------------
 -------------------------------------------------------------------------------------------------------
+-- UserType : the account-type FLAGS. Users.userType is a bitmask of these bits, so one account can be several
+-- types at once (e.g. paid + scientist). The bit values travel as they are: the users-sync stream carries the mask to
+-- cproxy (X-Fish-User-Type), docapi decodes it (UserType.java), and the app gets it from Account/MobileSession.ashx.
+-- A new type = a new power-of-two row here AND widening CH_Users_userType_bits on Users.
+CREATE TABLE UserType
+(
+    bit   int          NOT NULL,   -- 1 registered, 2 paid, 4 scientist, 8 editor, 16 ai_agent, 32 admin
+    code  varchar(16)  NOT NULL,   -- stable name of the bit (docapi, the app)
+    name  nvarchar(32) NOT NULL,   -- label shown on Account/Profile.aspx and in the app
+    sort  tinyint      NOT NULL    -- display order
+)
+GO
+ALTER TABLE UserType ADD CONSTRAINT PK_UserType PRIMARY KEY CLUSTERED (bit)
+GO
+CREATE UNIQUE NONCLUSTERED INDEX UK_UserType_code ON UserType(code)
+GO
+ALTER TABLE UserType ADD CONSTRAINT CH_UserType_bit CHECK (bit > 0 AND (bit & (bit - 1)) = 0)
+GO
+ALTER TABLE UserType ADD CONSTRAINT CH_UserType_code CHECK (code NOT LIKE '%[^a-z_]%' AND LEN(code) >= 3)
+GO
+-------------------------------------------------------------------------------------------------------
 CREATE TABLE Users
 (
     id         uniqueidentifier NOT NULL,
@@ -1693,6 +1714,7 @@ CREATE TABLE Users
                                                  -- correct the gateway's clock. The portal decides admin
                                                  -- by the AdminUserIds GUID list instead -- keep both
                                                  -- admin accounts at 255 so the two agree.
+                                                 -- 255 <=> the admin bit (32) of userType (CH_Users_userType_admin).
     suspended  BIT,
     ipaddr     varchar(32) NULL,
     addr       varchar(255) NULL,
@@ -1705,7 +1727,12 @@ CREATE TABLE Users
     deleted             bit NOT NULL,          -- 1 = soft-deleted (self/admin). Row is KEPT for history; its
                                                -- email/external-login identity is freed so the person can sign
                                                -- in again and get a brand-new profile (see spOAuthLoginOrCreateUser).
-    deletedUtc          datetime2 NULL
+    deletedUtc          datetime2 NULL,
+    userType            int NOT NULL               -- bitmask of dbo.UserType.bit: 1 registered, 2 paid, 4 scientist, 8 editor,
+                                                   -- 16 ai_agent, 32 admin; any combination. Admin always holds paid +
+                                                   -- scientist + editor too, and the admin bit and access = 255 always go
+                                                   -- together (CH_Users_userType_admin): change it only through
+                                                   -- dbo.sp_user_type_set, which keeps both rules.
 )
 GO
 
@@ -1739,6 +1766,17 @@ GO
 ALTER TABLE Users add constraint df_USer_authType default('Local') for authType;
 GO
 ALTER TABLE Users add constraint df_USer_deleted default(0) for deleted;
+GO
+ALTER TABLE Users add constraint df_Users_userType default(1) for userType;   -- registered
+GO
+-- At least one type, and only bits dbo.UserType defines (1+2+4+8+16+32 = 63). Widen when a bit is added.
+ALTER TABLE Users ADD CONSTRAINT CH_Users_userType_bits CHECK (userType BETWEEN 1 AND 63)
+GO
+-- One fact, two columns: cproxy grants admin from access = 255 (UserPrimeStore::is_admin) while the portal and the
+-- app read the admin bit (32). The CHECK keeps them from ever disagreeing about who is an admin, and makes an admin
+-- always hold the paid (2), scientist (4) and editor (8) features as well (2 + 4 + 8 = 14).
+ALTER TABLE Users ADD CONSTRAINT CH_Users_userType_admin
+    CHECK (((userType & 32) = 32 AND (userType & 14) = 14 AND access = 255) OR ((userType & 32) = 0 AND access <> 255))
 GO
 -- Email is unique only among LIVE users (deleted = 0), so a soft-deleted row keeps its real email
 -- on file without blocking the same person from re-registering with a fresh profile.
@@ -1806,6 +1844,8 @@ CREATE TABLE UsersSyncOutbox
     prime_expired  date                 NULL,       -- Users.prime_expired. NULL only on rows written before
                                                     -- these two columns existed (the ALTER on a live outbox
                                                     -- cannot invent a snapshot); the trigger always supplies it.
+    userType       int                  NULL,       -- Users.userType (bitmask). NULL only on rows written before the column
+                                                    -- existed, same reason as prime_expired.
     created_utc    datetime2            NOT NULL,
     dispatched_utc datetime2            NULL
 )
@@ -1845,11 +1885,11 @@ AS
 SET NOCOUNT ON
 BEGIN
     INSERT INTO dbo.UsersSyncOutbox
-        (action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc, prime, prime_expired)
+        (action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc, prime, prime_expired, userType)
     SELECT
           CASE WHEN EXISTS (SELECT 1 FROM deleted d WHERE d.id = i.id) THEN 'updated' ELSE 'created' END
         , i.id, i.UsersId, i.userName, i.email, i.lastVisit, i.access, i.suspended, i.authType, i.deleted, i.deletedUtc
-        , i.prime, i.prime_expired
+        , i.prime, i.prime_expired, i.userType
     FROM INSERTED i
 END
 GO

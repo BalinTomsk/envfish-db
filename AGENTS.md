@@ -121,6 +121,23 @@ per `(provider, providerUserId)` and FKs to `Users.id`; `Users.authType` is `'Lo
   name. (Until 2026-06-13 Google was special-cased to keep the email as `userName`.)
 - Cover any new provider in `mssql/UNIT_TESTS/unit_test@OAuthLogin.sql`.
 
+## Account types (`Users.userType` / `UserType`) — a bitmask
+
+`dbo.Users.userType` is a **bitmask** of `dbo.UserType.bit`, so an account can hold any combination:
+`1` registered (default), `2` paid, `4` scientist, `8` editor, `16` ai_agent, `32` admin.
+
+- **Admin always has paid + scientist + editor** (32 ⇒ 14), and **the admin bit and `access = 255` are one fact**
+  (cproxy grants admin from `access = 255`). `CH_Users_userType_admin` refuses any row breaking either rule, and
+  `CH_Users_userType_bits` refuses 0 and undefined bits. Change a mask only through **`dbo.sp_user_type_set`**:
+  it adds 14 to an admin mask and moves `access`. Called by `Account/Profile.aspx` (admins only).
+- **Adding a type** = a new power-of-two row in `script08_Data.sql` (+ the live-DB MERGE) **and** widening
+  `CH_Users_userType_bits` (63 today), docapi `UserType.java` and the app's `UserTypes.kt`.
+- `TR_Users_SyncOutbox` snapshots the mask, cproxy mirrors it (`users_sync.user_type`) and forwards it to docapi as
+  `X-Fish-User-Type: <mask>` (docapi `GET /api/v1/me` decodes it). Read paths: `fn_user_type_list`,
+  `fn_user_type_get` (mask + codes + names; MobileSession.ashx, Profile.aspx). Tests: `UNIT_TESTS/unit_test@UserType.sql`.
+- Types grant nothing else yet: editor pages still follow the portal's admin list. Wiring a bit to a permission is a
+  separate change.
+
 ## Per-user prime allocation (`Users.prime` / `Users_Prime`)
 
 Every account holds one prime in `dbo.Users.prime` and 365 in `dbo.Users_Prime` (one per
