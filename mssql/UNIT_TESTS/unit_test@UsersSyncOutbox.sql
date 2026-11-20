@@ -119,7 +119,7 @@ VALUES (@Id3, N'uo_user_t3c', 0x00000000000000000000000000000000, N'F', N'L', N'
 DECLARE @Taken TABLE (outbox_id bigint, action varchar(10), id uniqueidentifier, UsersId bigint,
     userName varchar(64), email varchar(128), lastVisit datetime2, access int, suspended bit,
     authType varchar(16), deleted bit, deletedUtc datetime2,
-    prime bigint, prime_expired date, created_utc datetime2);
+    prime bigint, prime_expired date, userType int, created_utc datetime2);
 INSERT INTO @Taken EXEC dbo.sp_users_sync_outbox_take @batchSize = 2;
 
 SELECT @Cnt = COUNT(*) FROM @Taken WHERE id IN (@Id1, @Id2, @Id3);
@@ -204,7 +204,7 @@ SELECT @Prime = prime, @PrimeExpired = prime_expired FROM dbo.UsersSyncOutbox WH
 DECLARE @Taken5 TABLE (outbox_id bigint, action varchar(10), id uniqueidentifier, UsersId bigint,
     userName varchar(64), email varchar(128), lastVisit datetime2, access int, suspended bit,
     authType varchar(16), deleted bit, deletedUtc datetime2,
-    prime bigint, prime_expired date, created_utc datetime2);
+    prime bigint, prime_expired date, userType int, created_utc datetime2);
 INSERT INTO @Taken5 EXEC dbo.sp_users_sync_outbox_take @batchSize = 1000;
 SELECT @TakenPrime = prime, @TakenExpired = prime_expired FROM @Taken5 WHERE id = @U5;
 

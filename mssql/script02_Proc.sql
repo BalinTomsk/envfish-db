@@ -5090,7 +5090,7 @@ BEGIN
     SET NOCOUNT ON;
     SELECT TOP (@batchSize)
           outbox_id, action, id, UsersId, userName, email, lastVisit, access, suspended, authType, deleted, deletedUtc
-        , prime, prime_expired, created_utc
+        , prime, prime_expired, userType, created_utc
     FROM dbo.UsersSyncOutbox
     WHERE dispatched_utc IS NULL
     ORDER BY outbox_id;
@@ -6442,5 +6442,54 @@ BEGIN
         UPDATE dbo.Spot SET lake_Id = t.lake_id
           FROM dbo.Spot
           JOIN #lnk t ON t.spot_id = dbo.Spot.spot_id;
+END
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.procedures WHERE NAME = 'sp_user_type_set' AND type = 'P')
+    DROP PROCEDURE dbo.sp_user_type_set
+GO
+-- sp_user_type_set : the one way to change dbo.Users.userType, a bitmask of dbo.UserType.bit (1 registered, 2 paid,
+-- 4 scientist, 8 editor, 16 ai_agent, 32 admin). Called by Account/Profile.aspx (fishfind-frontend aspnet,
+-- SaveUserType: an admin's "Account type" checkboxes). Keeps CH_Users_userType_admin true:
+--   * the admin bit always brings paid + scientist + editor with it (added here, whatever the caller sent);
+--   * admin sets access = 255, dropping admin turns 255 into 0, anything else leaves access as it is.
+-- The UPDATE fires TR_Users_SyncOutbox, so cproxy's mirror learns the new mask on the next dispatch.
+-- Refuses (severity 16): an empty mask or one with a bit dbo.UserType does not define, an unknown or deleted account,
+-- and an admin taking admin off their own account (@changedBy = @userId) -- nobody could undo that from the page.
+-- Returns one row: userType (the stored mask), access.
+CREATE PROCEDURE dbo.sp_user_type_set
+      @userId    uniqueidentifier
+    , @userType  int
+    , @changedBy uniqueidentifier = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @known int = (SELECT ISNULL(SUM(bit), 0) FROM dbo.UserType);
+    IF @userType IS NULL OR @userType <= 0 OR (@userType & ~@known) <> 0
+    BEGIN
+        RAISERROR('Unknown user type.', 16, 1);
+        RETURN;
+    END
+    IF (@userType & 32) = 32
+        SET @userType = @userType | 14;   -- admin always has paid (2), scientist (4) and editor (8)
+    DECLARE @current int = (SELECT userType FROM dbo.Users WHERE id = @userId AND deleted = 0);
+    IF @current IS NULL
+    BEGIN
+        RAISERROR('Unknown account.', 16, 1);
+        RETURN;
+    END
+    IF @changedBy = @userId AND (@current & 32) = 32 AND (@userType & 32) = 0
+    BEGIN
+        RAISERROR('An admin cannot remove admin from their own account.', 16, 1);
+        RETURN;
+    END
+    IF @current <> @userType
+        UPDATE dbo.Users
+           SET userType = @userType
+             , access   = CASE WHEN (@userType & 32) = 32 THEN 255 WHEN access = 255 THEN 0 ELSE access END
+         WHERE id = @userId;
+    SELECT userType, access FROM dbo.Users WHERE id = @userId;
 END
 GO

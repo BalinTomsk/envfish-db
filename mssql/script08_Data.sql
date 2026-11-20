@@ -1,4 +1,14 @@
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- dbo.UserType : the account-type bits a dbo.Users.userType mask combines (default 1 = registered).
+INSERT INTO UserType (bit, code, name, sort) VALUES
+   (32, 'admin',      N'Admin',           1)
+ , ( 1, 'registered', N'Registered user', 2)
+ , ( 2, 'paid',       N'Paid user',       3)
+ , ( 4, 'scientist',  N'Scientist',       4)
+ , ( 8, 'editor',     N'Editor',          5)
+ , (16, 'ai_agent',   N'AI agent',        6)
+GO
+------------------------------------------------------------------------------------------------------------------------------------------------------------
 -- https://en.wikipedia.org/wiki/Body_of_water
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
 --  1 - lake, 2 - river,  4 - stream, 8 - pond, 16 - marsh, 64 - creek

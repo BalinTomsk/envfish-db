@@ -7707,3 +7707,39 @@ BEGIN
        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES );
 END
 GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- fn_user_type_list : every account-type bit (dbo.UserType) in display order: bit, code, name, sort.
+-- Called by Account/Profile.aspx (fishfind-frontend aspnet, BindUserTypes: the "Account type" checkboxes).
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_type_list' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_user_type_list
+GO
+CREATE FUNCTION dbo.fn_user_type_list()
+RETURNS TABLE
+AS
+RETURN
+    SELECT bit, code, name, sort FROM dbo.UserType
+GO
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+-- fn_user_type_get : one live account's type mask, and the codes / labels of its bits in display order
+-- (codes 'admin,registered,paid,scientist,editor', names 'Admin, Registered user, ...'). No row for an unknown or
+-- deleted account. Called by Account/MobileSession.ashx (fishfind-frontend aspnet, user.type / user.types in the app's
+-- sign-in answer) and Account/Profile.aspx (BindUserTypes, the boxes ticked).
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'fn_user_type_get' AND xtype = 'IF')
+    DROP FUNCTION dbo.fn_user_type_get
+GO
+CREATE FUNCTION dbo.fn_user_type_get( @userId uniqueidentifier )
+RETURNS TABLE
+AS
+RETURN
+    SELECT u.userType AS mask
+         , (SELECT STRING_AGG(t.code, ',') WITHIN GROUP (ORDER BY t.sort)
+              FROM dbo.UserType t WHERE (u.userType & t.bit) <> 0) AS codes
+         , (SELECT STRING_AGG(t.name, N', ') WITHIN GROUP (ORDER BY t.sort)
+              FROM dbo.UserType t WHERE (u.userType & t.bit) <> 0) AS names
+    FROM dbo.Users u
+    WHERE u.id = @userId AND u.deleted = 0
+GO
