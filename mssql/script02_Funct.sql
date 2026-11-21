@@ -4516,18 +4516,20 @@ GO
 -- ForecastRepository and docapi GET /api/v1/forecast/plot/{sid}.
 -- Metric for every country (degC, mm, m, m3/s), as stored: the website converts to US units for a US
 -- visitor (2026-11-13). The document's "units" object names them.
+-- "pressure" (hPa, mean sea level, from dbo.weather_Forecast) feeds the pressure line on every chart.
 -- select dbo.fn_forecast_plot_json (142266, '4db64c3d-95cc-4e19-85be-c2a46582f813' )
 -- select dbo.fn_forecast_plot_json (266745, '4f023204-cdaf-4fae-bf7f-e9319794e8ff' )
 CREATE FUNCTION dbo.fn_forecast_plot_json( @sid int, @fish_guid varchar(255) )
 RETURNS nvarchar(MAX)
 AS
 BEGIN
-  DECLARE @rst TABLE (dt date, tm float , lvl float , prc float , dis float , tu float);
+  DECLARE @rst TABLE (dt date, tm float , lvl float , prc float , dis float , tu float, pr float);
   DECLARE @TemperatureList varchar(2000) = '';
   DECLARE @WaterLevelList  varchar(2000) = '';
   DECLARE @DischargeList  varchar(2000) = '';
   DECLARE @Precipitation  varchar(2000) = '';
   DECLARE @Turbidity  varchar(2000) = '';
+  DECLARE @Pressure   varchar(2000) = '';
   DECLARE @DatesList  varchar(2000) = '';
   DECLARE @country char(2) = '';
   DECLARE @state nvarchar(255) = '';
@@ -4542,6 +4544,7 @@ BEGIN
   DECLARE @WaterStateDate varchar(32) = (SELECT TOP 1 CAST(stamp AS varchar(32)) FROM [WaterData] where mli = @mli ORDER BY stamp DESC);
   UPDATE t SET t.tm  = ( CASE WHEN f.dt = CAST(getutcdate() AS DATE) THEN f.air_temperature ELSE f.tmDay END )
     , t.prc = (COALESCE(f.[gpfDay], 0) + COALESCE(f.[gpfNight], 0))/2.0
+    , t.pr  = f.pressure    -- hPa (mean sea level); NULL when the provider sent none -> a gap, never 0
     FROM @rst t JOIN weather_Forecast f WITH (NOLOCK) ON (CAST(f.dt AS DATE) = t.dt) 
     WHERE f.mli = @mli;
   UPDATE t SET t.lvl = elevation, t.dis = discharge, t.tu = turbidity 
@@ -4569,6 +4572,9 @@ BEGIN
   SELECT @Turbidity =  @Turbidity + ',' + dbo.fn_get_float_as_string(tu) + '' FROM @rst ORDER BY dt ASC
   SET @Turbidity = RIGHT(@Turbidity, LEN(@Turbidity)-1)
 
+  SELECT @Pressure =  @Pressure + ',' + dbo.fn_get_float_as_string(pr) + '' FROM @rst ORDER BY dt ASC
+  SET @Pressure = RIGHT(@Pressure, LEN(@Pressure)-1)
+
   DECLARE @placeDesc varchar(max) = (SELECT TOP 1 REPLACE(locDesc, '"', '''') FROM WaterStation WITH (NOLOCK) WHERE id = @waterStation);
   IF @placeDesc IS NULL SET @placeDesc = 'unknown'
 
@@ -4586,13 +4592,14 @@ BEGIN
 	+ ', "stamp":"' + COALESCE(@WaterStateDate, '') + '"'
 	+ ', "lakeid":"' + COALESCE(CAST(@lakeid as varchar(36)), '') + '"'
 	+ ', "lakename":"' + COALESCE(@lakeName, N'') + '"'
-	+ N', "units":{"temperature":"°C","precipitation":"mm","level":"m","discharge":"m³/s"}'
+	+ N', "units":{"temperature":"°C","precipitation":"mm","level":"m","discharge":"m³/s","pressure":"hPa"}'
 	+ ', "date":['          + @DatesList        + ']'
 	+ ', "discharge":['     + @DischargeList   + ']'
 	+ ', "precipitation":[' + @Precipitation   + ']'
 	+ ', "temperature":['   + @TemperatureList + ']'
 	+ ', "turbidity":['     + @Turbidity       + ']'
-	+ ', "level":['         + @WaterLevelList  + ']';
+	+ ', "level":['         + @WaterLevelList  + ']'
+	+ ', "pressure":['      + @Pressure        + ']';
 
   RETURN '{' + @result + '}';
 end;

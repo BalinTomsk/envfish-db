@@ -21,6 +21,7 @@ GO
   TEST 2 - Station whose lakeid is an orphan -> "lakename" is empty, document still valid JSON
   TEST 3 - A lake name containing a double quote is escaped, so the document stays parseable
   TEST 4 - Station with no WaterData row and no lakeid -> valid document, "stamp" and "lakeid" empty
+  TEST 5 - "pressure" array: weather_Forecast hPa on its day, null on a day without pressure
 */
 
 -- ===================================================================================
@@ -194,4 +195,43 @@ ELSE
     RAISERROR ('TEST 4 FAIL [%dms]: expected valid JSON with empty stamp and lakeid, got isjson=%d', 16, -1, @ElapsedMs, @isJson);
 
 ROLLBACK TRAN Test04ForecastPlotNoWaterData
+GO
+
+-- ===================================================================================
+-- TEST 5: the chart's pressure line. Today's weather_Forecast pressure (hPa) lands at today's index
+--         (15: the axis starts 15 days back), a day without pressure is null - a gap, never 0.
+-- ===================================================================================
+BEGIN TRAN Test05ForecastPlotPressure
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @json nvarchar(MAX), @p15 nvarchar(16), @p16 nvarchar(16), @n int, @unit nvarchar(8);
+BEGIN TRY SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+DECLARE @St5 uniqueidentifier = NEWID();
+INSERT INTO dbo.WaterStation (id, MLI, state, lat, lon, country, locDesc, locType, locName, county, sid, lakeName, supported)
+VALUES (@St5, N'UT_FPJ_5', 'ON', 43.40, -80.50, 'CA', N'UT FPJ PRESSURE STATION', 2, N'UT FPJ Station 5', N'', 990405, N'', 1);
+INSERT INTO dbo.weather_Forecast (link, tmHigh, tmLow, gpfDay, gpfNight, dt, tm, mli, pressure)
+VALUES (@St5, 10, 2, 0, 0, CAST(GETDATE() AS date), '23:00', N'UT_FPJ_5', 1013)
+     , (@St5, 11, 3, 0, 0, DATEADD(day, 1, CAST(GETDATE() AS date)), '23:00', N'UT_FPJ_5', NULL);
+
+SET @json = dbo.fn_forecast_plot_json(990405, '00000000-0000-0000-0000-000000000000');
+SET @p15  = JSON_VALUE(@json, '$.pressure[15]');
+SET @p16  = JSON_VALUE(@json, '$.pressure[16]');
+SET @unit = JSON_VALUE(@json, '$.units.pressure');
+SELECT @n = COUNT(*) FROM OPENJSON(@json, '$.pressure');
+
+END TRY
+BEGIN CATCH
+    SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_MESSAGE() AS ErrorMessage, ERROR_LINE() AS ErrorLine;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+IF ISJSON(@json) = 1 AND @p15 = N'1013' AND @p16 IS NULL AND @unit = N'hPa'
+   AND @n = (SELECT COUNT(*) FROM OPENJSON(@json, '$.date'))
+    PRINT 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: pressure 1013 today, null gap tomorrow';
+ELSE
+    RAISERROR ('TEST 5 FAIL [%dms]: pressure[15]=%s pressure[16]=%s unit=%s n=%d', 16, -1,
+               @ElapsedMs, @p15, @p16, @unit, @n);
+
+ROLLBACK TRAN Test05ForecastPlotPressure
 GO

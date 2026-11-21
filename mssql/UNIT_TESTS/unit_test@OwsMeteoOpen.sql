@@ -26,6 +26,8 @@ GO
   TEST 1 - Visual Crossing document -> rows written, US units converted to metric
   TEST 2 - Open-Meteo document -> still shredded exactly as before (no regression)
   TEST 3 - a shape the procedure does not understand -> writes nothing and does not throw
+  TEST 6 - decimal pressure_msl (1003.7) -> stored rounded, not NULL
+  TEST 7 - a later document without pressure keeps the stored pressure
 */
 SET NOCOUNT ON;
 GO
@@ -364,4 +366,123 @@ ELSE
     print 'TEST 5 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: observation-only provider type wrote nothing and did not throw'
 
 IF @@TRANCOUNT > 0 ROLLBACK TRAN Test05ObservationTypeNoOp
+GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 6: Open-Meteo sends pressure_msl as a decimal (1003.7). TRY_CONVERT(int, N'1003.7') is
+--         NULL, which until 2026-11-21 dropped pressure for every raw Open-Meteo station.
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test06DecimalPressure
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Lake6 uniqueidentifier = NEWID(), @St6 uniqueidentifier = NEWID();
+DECLARE @Mli6 varchar(64) = 'UT_OWS_OM6';
+DECLARE @dd6 varchar(10) = CONVERT(varchar(10), CAST(GETDATE() AS date), 23);
+DECLARE @press6 int, @err6 nvarchar(2048), @msg6 nvarchar(4000);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test : the decimal values Open-Meteo really returns
+
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake6, 2, N'UT OWS Lake 6');
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@St6, @Mli6, 44.00, -70.00, 'US', N'unit-test station', 2, N'UT OWS Station 6', N'', 960106, @Lake6, N'UT OWS Lake 6', 1);
+
+DECLARE @om6 nvarchar(max) =
+    N'{"hourly":{"time":["' + @dd6 + N'T22:00","' + @dd6 + N'T23:00"],'
+  + N'"temperature_2m":[15.0,16.0],"relative_humidity_2m":[80,82],'
+  + N'"precipitation_probability":[10,20],"pressure_msl":[1004.6,1003.7],'
+  + N'"wind_speed_10m":[5.0,5.5],"wind_direction_10m":[180,191],'
+  + N'"weather_code":[0,0],"rain":[0.0,0.0]},'
+  + N'"daily":{"time":["' + @dd6 + N'"],"temperature_2m_max":[24.7],"temperature_2m_min":[11.8]}}';
+
+-- 2. execute unit test
+
+UPDATE dbo.ows_meteo SET type = 2, ows = @om6, stamp = GETDATE() WHERE mli = @Mli6;
+SELECT @press6 = pressure FROM dbo.weather_Forecast WHERE mli = @Mli6 AND dt = CAST(GETDATE() AS date);
+
+END TRY
+BEGIN CATCH
+    SET @err6 = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification : last hour of the day (23:00) = 1003.7 -> 1004
+
+IF @err6 IS NOT NULL
+BEGIN
+    SET @msg6 = N'TEST 6 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err6;
+    RAISERROR (@msg6, 16, -1)
+END
+ELSE IF ISNULL(@press6, -1) <> 1004
+BEGIN
+    SET @msg6 = N'TEST 6 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: pressure expected 1004, got '
+              + ISNULL(CAST(@press6 AS varchar), 'NULL');
+    RAISERROR (@msg6, 16, -1)
+END
+ELSE
+    print 'TEST 6 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: decimal pressure_msl stored as 1004'
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test06DecimalPressure
+GO
+-- ---------------------------------------------------------------------------------------
+-- TEST 7: a provider without pressure (weather.gov /forecast, TWC) must not erase a pressure
+--         already stored for that day -- MERGE uses COALESCE(src.pressure, t.pressure)
+-- ---------------------------------------------------------------------------------------
+BEGIN TRAN Test07KeepPressure
+DECLARE @tStart datetime2, @ElapsedMs int;
+DECLARE @Lake7 uniqueidentifier = NEWID(), @St7 uniqueidentifier = NEWID();
+DECLARE @Mli7 varchar(64) = 'UT_OWS_KP7';
+DECLARE @dd7 varchar(10) = CONVERT(varchar(10), CAST(GETDATE() AS date), 23);
+DECLARE @press7 int, @tmHigh7 float, @err7 nvarchar(2048), @msg7 nvarchar(4000);
+BEGIN TRY  SET NOCOUNT ON;
+SET @tStart = SYSUTCDATETIME();
+
+-- 1. prepare data for unit test : Open-Meteo stores 1012 hPa for today
+
+INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake7, 2, N'UT OWS Lake 7');
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
+VALUES (@St7, @Mli7, 44.00, -70.00, 'US', N'unit-test station', 2, N'UT OWS Station 7', N'', 960107, @Lake7, N'UT OWS Lake 7', 1);
+
+DECLARE @om7 nvarchar(max) =
+    N'{"hourly":{"time":["' + @dd7 + N'T23:00"],"temperature_2m":[16.0],"relative_humidity_2m":[82],'
+  + N'"precipitation_probability":[20],"pressure_msl":[1012.2],"wind_speed_10m":[5.5],'
+  + N'"wind_direction_10m":[191],"weather_code":[0],"rain":[0.0]},'
+  + N'"daily":{"time":["' + @dd7 + N'"],"temperature_2m_max":[24.7],"temperature_2m_min":[11.8]}}';
+UPDATE dbo.ows_meteo SET type = 2, ows = @om7, stamp = GETDATE() WHERE mli = @Mli7;
+
+-- 2. execute unit test : weather.gov canonical envelope for the same day, no pressureHpa
+
+DECLARE @wg7 nvarchar(max) =
+    N'{"schema":"fishfind.weather.forecast/v1","provider":"weather-gov","providerType":5,'
+  + N'"mli":"UT_OWS_KP7","days":[{"date":"' + @dd7 + N'","time":"12:00:00","tempHighC":20,'
+  + N'"tempLowC":9,"tempC":18,"pressureHpa":null}]}';
+UPDATE dbo.ows_meteo SET type = 5, ows = @wg7, stamp = GETDATE() WHERE mli = @Mli7;
+
+SELECT @press7 = pressure, @tmHigh7 = tmHigh
+  FROM dbo.weather_Forecast WHERE mli = @Mli7 AND dt = CAST(GETDATE() AS date);
+
+END TRY
+BEGIN CATCH
+    SET @err7 = ERROR_MESSAGE();
+    IF XACT_STATE() = -1 ROLLBACK TRAN;
+END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+
+-- 3. result verification : weather.gov's temperature wins, the stored pressure stays
+
+IF @err7 IS NOT NULL
+BEGIN
+    SET @msg7 = N'TEST 7 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: ' + @err7;
+    RAISERROR (@msg7, 16, -1)
+END
+ELSE IF ISNULL(@press7, -1) <> 1012 OR ABS(ISNULL(@tmHigh7, -999) - 20) > 0.001
+BEGIN
+    SET @msg7 = N'TEST 7 FAIL [' + CAST(@ElapsedMs AS varchar) + N'ms]: pressure=' + ISNULL(CAST(@press7 AS varchar), 'NULL')
+              + N' (want 1012) tmHigh=' + ISNULL(CAST(@tmHigh7 AS varchar), 'NULL') + N' (want 20)';
+    RAISERROR (@msg7, 16, -1)
+END
+ELSE
+    print 'TEST 7 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: no-pressure provider kept 1012'
+
+IF @@TRANCOUNT > 0 ROLLBACK TRAN Test07KeepPressure
 GO
