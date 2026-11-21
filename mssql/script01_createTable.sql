@@ -234,6 +234,7 @@ CREATE TABLE fish
     fish_moon_sensitive bit,
     fish_migrate_pattern bit,
     fish_flow_group char(1) NULL,             -- discharge-response group A..I (dbo.flow_response); NULL = flow does not change the forecast
+    fish_pressure_group char(2) NULL,         -- air-pressure (weather front) group P1..P9 (dbo.pressure_response); NULL = no effect
     locked          bit,                      -- if administrator set this flag then do not allow to edit for editors
     editor          uniqueidentifier,
     sid             int not null identity(1,1),
@@ -256,6 +257,8 @@ GO
 ALTER TABLE fish ADD CONSTRAINT df_fish_id DEFAULT NEWSEQUENTIALID() FOR fish_id;
 GO
 ALTER TABLE dbo.fish ADD CONSTRAINT CK_fish_flow_group CHECK (fish_flow_group IN ('A','B','C','D','E','F','G','H','I'));
+GO
+ALTER TABLE dbo.fish ADD CONSTRAINT CK_fish_pressure_group CHECK (fish_pressure_group IN ('P1','P2','P3','P4','P5','P6','P7','P8','P9'));
 GO
 CREATE UNIQUE NONCLUSTERED INDEX UK_fish_Latin ON fish(fish_Latin)    
 GO
@@ -736,6 +739,144 @@ INSERT INTO dbo.flow_response (flow_group, flow_state, factor, spawn_only, note)
  ('I','STABLE',   1.00, 0, N'No direct effect in a lake'),
  ('I','FALLING',  1.00, 0, N'No direct effect in a lake'),
  ('I','LOW',      1.00, 0, N'No direct effect in a lake');
+GO
+
+-- dbo.pressure_response : how a weather front (read from the air-pressure curve) changes the catch chance of each fish
+-- group (dbo.fish.fish_pressure_group). Day 0 = FRONT, the pressure low with a real swing around it; PRE_3..PRE_1 are the
+-- days before it, POST_1..POST_3 the days after; FALLING / RISING = a 4 hPa+ day without a front nearby; STABLE = 1.
+-- The forecast uses 1 + (factor - 1) x dbo.StationPressureDay.weight, so a weak or summer front moves it less.
+-- P1 bass/pike/muskie, P2 walleye/sauger, P3 crappie/sunfish, P4 stream trout, P5 migrants, P6 catfish/carp/sturgeon,
+-- P7 deep cold-water fish (no effect), P8 inshore salt/estuary predators, P9 yellow perch (P2 at half strength).
+-- Mostly angler experience, not measured catch: the two direct studies found no pressure effect on feeding, so the
+-- values stay within 0.70..1.20 until a backtest. Basis: pressure_response_review.md (2026-11-21).
+CREATE TABLE dbo.pressure_response
+(
+    pressure_group  char(2)       NOT NULL,
+    pressure_state  varchar(8)    NOT NULL,
+    factor          decimal(4,2)  NOT NULL,
+    note            nvarchar(200) NOT NULL,
+    CONSTRAINT PK_pressure_response PRIMARY KEY CLUSTERED (pressure_group, pressure_state),
+    CONSTRAINT CK_pressure_response_group  CHECK (pressure_group IN ('P1','P2','P3','P4','P5','P6','P7','P8','P9')),
+    CONSTRAINT CK_pressure_response_state  CHECK (pressure_state IN ('PRE_3','PRE_2','PRE_1','FRONT','POST_1','POST_2','POST_3','FALLING','RISING','STABLE')),
+    CONSTRAINT CK_pressure_response_factor CHECK (factor >= 0.5 AND factor <= 1.5)
+);
+GO
+INSERT INTO dbo.pressure_response (pressure_group, pressure_state, factor, note) VALUES
+ ('P1','PRE_3',  1.00, N'Front coming in 3 days: normal pattern'),
+ ('P1','PRE_2',  1.05, N'Front in 2 days: clouds building, fish moving up'),
+ ('P1','PRE_1',  1.20, N'Day before the front: feeding spree, shallow and chasing - best day'),
+ ('P1','FRONT',  0.95, N'Front passing: wind and rain, early bite then slow'),
+ ('P1','POST_1', 0.70, N'Bluebird day after the front: tight to cover or deep, slow finesse baits'),
+ ('P1','POST_2', 0.80, N'Second day after the front: still slow, fish deeper'),
+ ('P1','POST_3', 0.92, N'Third day after the front: fish recovering'),
+ ('P1','FALLING', 1.08, N'Pressure falling: fish more active'),
+ ('P1','RISING', 0.90, N'Pressure rising: clearing, bite slows'),
+ ('P1','STABLE', 1.00, N'Steady pressure'),
+ ('P2','PRE_3',  1.00, N'Front coming in 3 days'),
+ ('P2','PRE_2',  1.05, N'Front in 2 days: wind and cloud help the daytime bite'),
+ ('P2','PRE_1',  1.15, N'Day before the front: walleye chop, fish shallow - best day'),
+ ('P2','FRONT',  1.10, N'Front passing: wind and cloud keep the bite on'),
+ ('P2','POST_1', 0.75, N'Clear calm day after the front: deep and tight to bottom, short night bite'),
+ ('P2','POST_2', 0.85, N'Second day after the front: still deep'),
+ ('P2','POST_3', 0.95, N'Third day after the front: back toward normal'),
+ ('P2','FALLING', 1.08, N'Pressure falling: low light, better bite'),
+ ('P2','RISING', 0.90, N'Pressure rising: clear sky, fish deeper'),
+ ('P2','STABLE', 1.00, N'Steady pressure'),
+ ('P3','PRE_3',  1.00, N'Front coming in 3 days'),
+ ('P3','PRE_2',  1.05, N'Front in 2 days: fish active and shallower'),
+ ('P3','PRE_1',  1.10, N'Day before the front: active, shallow schools'),
+ ('P3','FRONT',  0.95, N'Front passing: mixed bite'),
+ ('P3','POST_1', 0.75, N'Day after the front: fish suspend deeper, light bites; spring spawners leave beds'),
+ ('P3','POST_2', 0.85, N'Second day after the front: still deep and tight to cover'),
+ ('P3','POST_3', 0.95, N'Third day after the front: normal pattern, a little deeper'),
+ ('P3','FALLING', 1.05, N'Pressure falling: fish active'),
+ ('P3','RISING', 0.90, N'Pressure rising: fish deeper'),
+ ('P3','STABLE', 1.00, N'Steady pressure'),
+ ('P4','PRE_3',  1.00, N'Front coming in 3 days'),
+ ('P4','PRE_2',  1.00, N'Front in 2 days'),
+ ('P4','PRE_1',  1.10, N'Day before the front: overcast brings hatches, bolder fish'),
+ ('P4','FRONT',  1.05, N'Front passing: overcast, good hatches'),
+ ('P4','POST_1', 0.90, N'Bright cold day after the front: slower, fish nymphs deep'),
+ ('P4','POST_2', 0.95, N'Second day after the front: mostly back to normal'),
+ ('P4','POST_3', 1.00, N'Third day after the front: normal'),
+ ('P4','FALLING', 1.05, N'Pressure falling: overcast helps'),
+ ('P4','RISING', 0.95, N'Pressure rising: bright sky, slower'),
+ ('P4','STABLE', 1.00, N'Steady pressure'),
+ ('P5','PRE_3',  1.00, N'Front coming in 3 days'),
+ ('P5','PRE_2',  1.00, N'Front in 2 days'),
+ ('P5','PRE_1',  1.10, N'Day before the front: staging fish active (rain will move the run)'),
+ ('P5','FRONT',  1.00, N'Front passing: watch the river flow'),
+ ('P5','POST_1', 0.90, N'Day after the front: slower in lakes and estuaries'),
+ ('P5','POST_2', 1.00, N'Second day after the front'),
+ ('P5','POST_3', 1.00, N'Third day after the front'),
+ ('P5','FALLING', 1.05, N'Pressure falling: staging fish active'),
+ ('P5','RISING', 1.00, N'Pressure rising'),
+ ('P5','STABLE', 1.00, N'Steady pressure'),
+ ('P6','PRE_3',  1.00, N'Front coming in 3 days'),
+ ('P6','PRE_2',  1.00, N'Front in 2 days'),
+ ('P6','PRE_1',  1.10, N'Day before the front: low light and runoff scent - good'),
+ ('P6','FRONT',  1.10, N'Front passing: catfish and carp feed through the storm'),
+ ('P6','POST_1', 0.90, N'Day after the front: a little slower'),
+ ('P6','POST_2', 1.00, N'Second day after the front: normal'),
+ ('P6','POST_3', 1.00, N'Third day after the front: normal'),
+ ('P6','FALLING', 1.05, N'Pressure falling: good scent-feeding conditions'),
+ ('P6','RISING', 0.95, N'Pressure rising: slightly slower'),
+ ('P6','STABLE', 1.00, N'Steady pressure'),
+ ('P7','PRE_3',  1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P7','PRE_2',  1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P7','PRE_1',  1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P7','FRONT',  1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P7','POST_1', 1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P7','POST_2', 1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P7','POST_3', 1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P7','FALLING', 1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P7','RISING', 1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P7','STABLE', 1.00, N'Deep cold-water fish: a front makes no difference at their depth'),
+ ('P8','PRE_3',  1.00, N'Front coming in 3 days'),
+ ('P8','PRE_2',  1.10, N'Front in 2 days: wind pushes bait, fish feeding'),
+ ('P8','PRE_1',  1.20, N'Day before the front: strong pre-front bite - best day'),
+ ('P8','FRONT',  0.95, N'Front passing: dirty water, mixed bite'),
+ ('P8','POST_1', 0.70, N'Cold wind after the front empties the flats; fish go deep or into canals'),
+ ('P8','POST_2', 0.80, N'Second day after the front: still slow'),
+ ('P8','POST_3', 0.95, N'Third day after the front: recovering'),
+ ('P8','FALLING', 1.08, N'Pressure falling: fish feeding ahead of weather'),
+ ('P8','RISING', 0.90, N'Pressure rising: cooler, slower'),
+ ('P8','STABLE', 1.00, N'Steady pressure'),
+ ('P9','PRE_3',  1.00, N'Front coming in 3 days'),
+ ('P9','PRE_2',  1.02, N'Front in 2 days'),
+ ('P9','PRE_1',  1.07, N'Day before the front: slightly better bite'),
+ ('P9','FRONT',  1.05, N'Front passing: slightly better bite'),
+ ('P9','POST_1', 0.88, N'Day after the front: perch a little slower and deeper'),
+ ('P9','POST_2', 0.93, N'Second day after the front'),
+ ('P9','POST_3', 0.97, N'Third day after the front'),
+ ('P9','FALLING', 1.04, N'Pressure falling'),
+ ('P9','RISING', 0.95, N'Pressure rising'),
+ ('P9','STABLE', 1.00, N'Steady pressure');
+GO
+
+-- dbo.StationPressureDay : each station's daily air pressure (hPa, from dbo.weather_Forecast) and its place in the weather
+-- front cycle (dbo.fn_station_pressure_days), filled by dbo.sp_fill_pressure_state for 3 days back .. 7 days ahead and
+-- kept afterwards (400 days) as the history a backtest against catch logs needs.
+--   state     PRE_3..POST_3 / FALLING / RISING / STABLE (dbo.pressure_response); NULL when fewer than 5 of the 7 days
+--             around dt have pressure
+--   front_dt  the front (pressure low) the state is counted from; swing_hpa = fall into it + rise after it
+--   strength  0.5 for a 6-10 hPa swing .. 1.0 at 15 hPa+;  season 1.0, 0.6 in summer, 0.4 under ice
+--   weight    strength x season: the forecast uses 1 + (factor - 1) x weight
+CREATE TABLE dbo.StationPressureDay
+(
+    mli        varchar(64)   NOT NULL,
+    dt         date          NOT NULL,
+    hpa        int           NULL,
+    d1_hpa     smallint      NULL,          -- change from the day before
+    state      varchar(8)    NULL,
+    front_dt   date          NULL,
+    swing_hpa  smallint      NULL,
+    strength   decimal(3,2)  NULL,
+    season     decimal(3,2)  NULL,
+    weight     decimal(3,2)  NULL,
+    stamp      datetime2     NOT NULL,
+    CONSTRAINT PK_StationPressureDay PRIMARY KEY CLUSTERED (mli, dt)
+);
 GO
 ------------------------------------------------------------------------------------
 

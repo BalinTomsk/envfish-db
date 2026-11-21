@@ -23,7 +23,7 @@ INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, created, stamp, fish_moon_
 INSERT INTO dbo.WaterStation (id, mli, lakeName, locType) VALUES (@S, 'UTFLF_001', N'Utflf Lake', 1);
 INSERT INTO dbo.CurrentWaterState (mli, stamp, sid, iterstamp, flow_state, flow_stamp) VALUES ('UTFLF_001', SYSUTCDATETIME(), -1, SYSUTCDATETIME(), 'RISING', SYSUTCDATETIME());
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, stamp) VALUES (@S, @F, 80, GETUTCDATE());
-SELECT @k = flowFactor, @v = newToday FROM dbo.fn_fish_location_today(6, 10) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @k = flowFactor, @v = newToday FROM dbo.fn_fish_location_today(6, 10, NULL) WHERE station_Id = @S AND fish_Id = @F;
 IF ISNULL(@k, 0) <> 1.25 OR ISNULL(@v, 0) <> 100 RAISERROR ('TEST 1 FAIL: trout on RISING must be 1.25 and 100', 16, -1)
 ELSE PRINT 'TEST 1 PASS: trout on rising flow 1.25, today 80 -> 100'
 ROLLBACK TRAN FLF_Test1
@@ -37,7 +37,7 @@ INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, created, stamp, fish_moon_
 INSERT INTO dbo.WaterStation (id, mli, lakeName, locType) VALUES (@S, 'UTFLF_002', N'Utflf Lake', 1);
 INSERT INTO dbo.CurrentWaterState (mli, stamp, sid, iterstamp, flow_state, flow_stamp) VALUES ('UTFLF_002', SYSUTCDATETIME(), -1, SYSUTCDATETIME(), 'SPATE', SYSUTCDATETIME());
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, stamp) VALUES (@S, @F, 80, GETUTCDATE());
-SELECT @k = flowFactor, @v = newToday FROM dbo.fn_fish_location_today(6, 10) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @k = flowFactor, @v = newToday FROM dbo.fn_fish_location_today(6, 10, NULL) WHERE station_Id = @S AND fish_Id = @F;
 IF ISNULL(@k, 0) <> 0.42 OR ISNULL(@v, 0) <> 34 RAISERROR ('TEST 2 FAIL: bass in a SPATE must be 0.42 and 34', 16, -1)
 ELSE PRINT 'TEST 2 PASS: bass in a spate 0.42, today 80 -> 34'
 ROLLBACK TRAN FLF_Test2
@@ -52,7 +52,7 @@ INSERT INTO dbo.WaterStation (id, mli, lakeName, locType) VALUES (@S, 'UTFLF_003
 INSERT INTO dbo.CurrentWaterState (mli, stamp, sid, iterstamp, flow_state, flow_stamp)
      VALUES ('UTFLF_003', SYSUTCDATETIME(), -1, SYSUTCDATETIME(), 'SPATE', DATEADD(DAY, -3, SYSUTCDATETIME()));
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, stamp) VALUES (@S, @F, 80, GETUTCDATE());
-SELECT @k = flowFactor FROM dbo.fn_fish_location_today(6, 10) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @k = flowFactor FROM dbo.fn_fish_location_today(6, 10, NULL) WHERE station_Id = @S AND fish_Id = @F;
 IF ISNULL(@k, 0) <> 1 RAISERROR ('TEST 3 FAIL: a 3-day-old state must count as unknown', 16, -1)
 ELSE PRINT 'TEST 3 PASS: a state older than 2 days gives factor 1'
 ROLLBACK TRAN FLF_Test3
@@ -66,7 +66,7 @@ INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, created, stamp, fish_moon_
 INSERT INTO dbo.WaterStation (id, mli, lakeName, locType) VALUES (@S, 'UTFLF_004', N'Utflf Lake', 1);
 INSERT INTO dbo.CurrentWaterState (mli, stamp, sid, iterstamp, flow_state, flow_stamp) VALUES ('UTFLF_004', SYSUTCDATETIME(), -1, SYSUTCDATETIME(), 'SPATE', SYSUTCDATETIME());
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, stamp) VALUES (@S, @F, 80, GETUTCDATE());
-SELECT @k = flowFactor FROM dbo.fn_fish_location_today(6, 10) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @k = flowFactor FROM dbo.fn_fish_location_today(6, 10, NULL) WHERE station_Id = @S AND fish_Id = @F;
 IF ISNULL(@k, 0) <> 1 RAISERROR ('TEST 4 FAIL: a fish without a group must be factor 1', 16, -1)
 ELSE PRINT 'TEST 4 PASS: a fish without a group gives factor 1'
 ROLLBACK TRAN FLF_Test4
@@ -81,8 +81,8 @@ INSERT INTO dbo.fish_Rule (fish_Id, periodStart, periodEnd) VALUES (@F, 5, 6);  
 INSERT INTO dbo.WaterStation (id, mli, lakeName, locType) VALUES (@S, 'UTFLF_005', N'Utflf Lake', 1);
 INSERT INTO dbo.CurrentWaterState (mli, stamp, sid, iterstamp, flow_state, flow_stamp) VALUES ('UTFLF_005', SYSUTCDATETIME(), -1, SYSUTCDATETIME(), 'DROPPING', SYSUTCDATETIME());
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, stamp) VALUES (@S, @F, 80, GETUTCDATE());
-SELECT @in  = flowFactor FROM dbo.fn_fish_location_today(6, 10) WHERE station_Id = @S AND fish_Id = @F;
-SELECT @out = flowFactor FROM dbo.fn_fish_location_today(9, 10) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @in  = flowFactor FROM dbo.fn_fish_location_today(6, 10, NULL) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @out = flowFactor FROM dbo.fn_fish_location_today(9, 10, NULL) WHERE station_Id = @S AND fish_Id = @F;
 IF ISNULL(@in, 0) <> 1.18 OR ISNULL(@out, 0) <> 1 RAISERROR ('TEST 5 FAIL: sturgeon must be 1.18 in June, 1 in September', 16, -1)
 ELSE PRINT 'TEST 5 PASS: sturgeon 1.18 in a spawn month, 1 outside it'
 ROLLBACK TRAN FLF_Test5

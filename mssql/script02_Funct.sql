@@ -7497,9 +7497,119 @@ RETURN
         END AS decimal(5,2)) AS koef
 GO
 
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_station_pressure_days' AND type IN ('FN','IF','TF'))
+    DROP FUNCTION dbo.fn_station_pressure_days
+GO
+
+-- Where each day from @from to @to sits in the weather-front cycle, from the station's daily air pressure
+-- (dbo.weather_Forecast.pressure, hPa; the daily value of a day = average of its rows). @mli NULL = every station.
+-- A day T is a FRONT (the pressure low) when its pressure is the lowest of T-3..T+2, lower than the day before, at
+-- least 6 hPa under the highest of the 3 days before and at least 4 hPa under the highest of the 2 days after.
+-- Each day is then counted from the nearest front within 3 days (the later one on a tie): PRE_3, PRE_2, PRE_1, FRONT,
+-- POST_1, POST_2, POST_3. Without a front: FALLING (4 hPa+ lower than the day before), RISING (4 hPa+ higher) or
+-- STABLE. NULL state when fewer than 5 of the 7 days around the day have pressure.
+-- strength = 0.5 for a swing (fall + rise) up to 10 hPa, 1.0 from 15 hPa, linear between; 1.0 without a front.
+-- Rules and their basis: pressure_response_review.md section 2. Called by dbo.sp_fill_pressure_state.
+-- SELECT * FROM dbo.fn_station_pressure_days('02HB004', DATEADD(DAY, -3, CAST(GETDATE() AS date)), DATEADD(DAY, 7, CAST(GETDATE() AS date)))
+CREATE FUNCTION dbo.fn_station_pressure_days( @mli varchar(64), @from date, @to date )
+RETURNS TABLE
+AS
+RETURN
+    WITH n AS
+    (
+        SELECT a.i * 10 + b.i AS i
+          FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) a(i)
+         CROSS JOIN (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) b(i)
+    ),
+    cal AS
+    (
+        SELECT DATEADD(DAY, n.i - 6, @from) AS dt FROM n WHERE DATEADD(DAY, n.i - 6, @from) <= DATEADD(DAY, 6, @to)
+    ),
+    p AS
+    (
+        SELECT wf.mli, wf.dt, AVG(CAST(wf.pressure AS float)) AS hpa
+          FROM dbo.weather_Forecast wf
+         WHERE wf.pressure IS NOT NULL
+           AND wf.dt BETWEEN DATEADD(DAY, -6, @from) AND DATEADD(DAY, 6, @to)
+           AND (@mli IS NULL OR wf.mli = @mli)
+         GROUP BY wf.mli, wf.dt
+    ),
+    d AS
+    (
+        SELECT st.mli, cal.dt, p.hpa
+          FROM (SELECT DISTINCT mli FROM p) st
+         CROSS JOIN cal
+          LEFT JOIN p ON p.mli = st.mli AND p.dt = cal.dt
+    ),
+    w AS
+    (
+        SELECT d.mli, d.dt, d.hpa
+             , MIN(d.hpa)   OVER (PARTITION BY d.mli ORDER BY d.dt ROWS BETWEEN 3 PRECEDING AND 2 FOLLOWING) AS low6
+             , MAX(d.hpa)   OVER (PARTITION BY d.mli ORDER BY d.dt ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING) AS before_max
+             , MAX(d.hpa)   OVER (PARTITION BY d.mli ORDER BY d.dt ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING) AS after_max
+             , LAG(d.hpa)   OVER (PARTITION BY d.mli ORDER BY d.dt) AS prev1
+             , COUNT(d.hpa) OVER (PARTITION BY d.mli ORDER BY d.dt ROWS BETWEEN 3 PRECEDING AND 3 FOLLOWING) AS n7
+          FROM d
+    ),
+    t AS
+    (
+        SELECT w.*
+             , CASE WHEN w.hpa IS NOT NULL AND w.hpa <= w.low6 AND (w.prev1 IS NULL OR w.hpa < w.prev1)
+                         AND w.before_max - w.hpa >= 6 AND w.after_max - w.hpa >= 4 THEN 1 ELSE 0 END AS is_front
+             , (w.before_max - w.hpa) + (w.after_max - w.hpa) AS swing
+          FROM w
+    ),
+    -- the calendar is dense (one row per day), so the front k days away is LEAD / LAG by k rows: one pass, no self-join
+    k AS
+    (
+        SELECT t.*
+             , LEAD(t.is_front, 1) OVER (PARTITION BY t.mli ORDER BY t.dt) AS fp1, LAG(t.is_front, 1) OVER (PARTITION BY t.mli ORDER BY t.dt) AS fm1
+             , LEAD(t.is_front, 2) OVER (PARTITION BY t.mli ORDER BY t.dt) AS fp2, LAG(t.is_front, 2) OVER (PARTITION BY t.mli ORDER BY t.dt) AS fm2
+             , LEAD(t.is_front, 3) OVER (PARTITION BY t.mli ORDER BY t.dt) AS fp3, LAG(t.is_front, 3) OVER (PARTITION BY t.mli ORDER BY t.dt) AS fm3
+             , LEAD(t.swing, 1) OVER (PARTITION BY t.mli ORDER BY t.dt) AS sp1, LAG(t.swing, 1) OVER (PARTITION BY t.mli ORDER BY t.dt) AS sm1
+             , LEAD(t.swing, 2) OVER (PARTITION BY t.mli ORDER BY t.dt) AS sp2, LAG(t.swing, 2) OVER (PARTITION BY t.mli ORDER BY t.dt) AS sm2
+             , LEAD(t.swing, 3) OVER (PARTITION BY t.mli ORDER BY t.dt) AS sp3, LAG(t.swing, 3) OVER (PARTITION BY t.mli ORDER BY t.dt) AS sm3
+          FROM t
+    ),
+    -- offset = days from the day to its nearest front (+ = ahead); nearest first, the later front on a tie
+    o AS
+    (
+        SELECT k.*
+             , CASE WHEN k.is_front = 1 THEN 0 WHEN k.fp1 = 1 THEN 1 WHEN k.fm1 = 1 THEN -1 WHEN k.fp2 = 1 THEN 2
+                    WHEN k.fm2 = 1 THEN -2 WHEN k.fp3 = 1 THEN 3 WHEN k.fm3 = 1 THEN -3 END AS foff
+          FROM k
+    ),
+    r AS
+    (
+        SELECT o.mli, o.dt, o.hpa, o.prev1, o.n7, o.foff
+             , CASE o.foff WHEN 0 THEN o.swing WHEN 1 THEN o.sp1 WHEN -1 THEN o.sm1 WHEN 2 THEN o.sp2
+                          WHEN -2 THEN o.sm2 WHEN 3 THEN o.sp3 WHEN -3 THEN o.sm3 END AS fswing
+          FROM o
+    )
+    SELECT r.mli, r.dt
+         , CAST(ROUND(r.hpa, 0) AS int) AS hpa
+         , CAST(ROUND(r.hpa - r.prev1, 0) AS smallint) AS d1_hpa
+         , CAST(CASE WHEN r.n7 < 5 THEN NULL
+                     WHEN r.foff IS NOT NULL THEN
+                          CASE r.foff WHEN 3 THEN 'PRE_3' WHEN 2 THEN 'PRE_2' WHEN 1 THEN 'PRE_1' WHEN 0 THEN 'FRONT'
+                                     WHEN -1 THEN 'POST_1' WHEN -2 THEN 'POST_2' ELSE 'POST_3' END
+                     WHEN r.hpa - r.prev1 <= -4 THEN 'FALLING'
+                     WHEN r.hpa - r.prev1 >=  4 THEN 'RISING'
+                     ELSE 'STABLE' END AS varchar(8)) AS state
+         , CASE WHEN r.n7 >= 5 AND r.foff IS NOT NULL THEN DATEADD(DAY, r.foff, r.dt) END AS front_dt
+         , CASE WHEN r.n7 >= 5 THEN CAST(ROUND(r.fswing, 0) AS smallint) END AS swing_hpa
+         , CAST(CASE WHEN r.n7 < 5 THEN NULL
+                     WHEN r.foff IS NULL OR r.fswing >= 15 THEN 1.0
+                     WHEN r.fswing <= 10 THEN 0.5
+                     ELSE 0.5 + (r.fswing - 10) * 0.1 END AS decimal(3,2)) AS strength
+      FROM r
+     WHERE r.dt BETWEEN @from AND @to
+GO
+
 -- The forecast-map probability of every fish at every water station (dbo.fish_location), recomputed from the base
--- probability: newToday = probability x monthFactor x lunarFactor x oxygenFactor x flowFactor, rounded and
--- clamped 0..100 (a NULL probability counts as 100). Each factor is 0..1 and 1 when unknown:
+-- probability: newToday = probability x monthFactor x lunarFactor x oxygenFactor x flowFactor x pressureFactor, rounded
+-- and clamped 0..100 (a NULL probability counts as 100). Each factor is 0..1 and 1 when unknown:
 --   monthFactor       - the month's dbo.fish_catch_probability / the fish's highest month (its peak month = 1)
 --   lunarFactor       - the moon day's dbo.fish_lunar_catch_probability / the fish's highest day (its best day = 1),
 --                       only for a fish with fish_moon_sensitive = 1; 1 for every other fish, curve or not
@@ -7507,10 +7617,14 @@ GO
 --   flowFactor        - dbo.flow_response.factor for the fish's fish_flow_group and the station's CurrentWaterState
 --                       flow_state (dbo.sp_fill_flow_state); 1 without a group, without a state, when the state is
 --                       more than 2 days old, or for a spawn_only row outside the fish's spawn months (fish_Rule)
--- @month 1..12 and @moon_day 1..28 (dbo.fn_moon_day) are parameters so a run uses one value for every row.
--- Called by dbo.spTotalUpdateProbability.
--- SELECT TOP 10 * FROM dbo.fn_fish_location_today(MONTH(SYSUTCDATETIME()), dbo.fn_moon_day(SYSUTCDATETIME()))
-CREATE FUNCTION dbo.fn_fish_location_today( @month tinyint, @moon_day tinyint )
+--   pressureFactor    - 1 + (dbo.pressure_response.factor - 1) x weight, for the fish's fish_pressure_group and the
+--                       station's dbo.StationPressureDay row for @day (dbo.sp_fill_pressure_state); 1 without a group,
+--                       without a row or state, when @day is NULL, or when the row is more than 2 days old
+-- @month 1..12, @moon_day 1..28 (dbo.fn_moon_day) and @day (the date whose weather-front state counts) are parameters
+-- so a run uses one value for every row.
+-- Called by dbo.spTotalUpdateProbability and dbo.fn_fish_reasoning_json.
+-- SELECT TOP 10 * FROM dbo.fn_fish_location_today(MONTH(SYSUTCDATETIME()), dbo.fn_moon_day(SYSUTCDATETIME()), CAST(SYSUTCDATETIME() AS date))
+CREATE FUNCTION dbo.fn_fish_location_today( @month tinyint, @moon_day tinyint, @day date )
 RETURNS TABLE
 AS
 RETURN
@@ -7526,6 +7640,7 @@ RETURN
          , ISNULL(o.koef, 1.00) AS oxygenFactor
          , CAST(CASE WHEN x.v > 100 THEN 100 WHEN x.v < 0 THEN 0 ELSE x.v END AS int) AS newToday
          , fw.factor AS flowFactor, fw.flow_state AS flowState
+         , pw.factor AS pressureFactor, ps.state AS pressureState
       FROM dbo.fish_location fl
       LEFT JOIN dbo.WaterStation ws ON ws.id = fl.station_Id
       LEFT JOIN dbo.CurrentWaterState cws ON cws.mli = ws.mli
@@ -7552,7 +7667,12 @@ RETURN
                                                   OR (r.periodStart >  r.periodEnd AND (@month >= r.periodStart OR @month <= r.periodEnd)) ) )
                                          THEN 1.00
                                     ELSE fr.factor END AS decimal(4,2)) AS factor ) fw
-     CROSS APPLY ( SELECT ROUND(ISNULL(fl.probability, 100) * m.f * l.f * ISNULL(o.koef, 1.00) * fw.factor, 0) AS v ) x
+     OUTER APPLY ( SELECT spd.state, spd.weight FROM dbo.StationPressureDay spd
+                    WHERE spd.mli = ws.mli AND spd.dt = @day AND spd.stamp > DATEADD(DAY, -2, SYSUTCDATETIME()) ) ps
+     OUTER APPLY ( SELECT pr.factor FROM dbo.pressure_response pr
+                    WHERE pr.pressure_group = fsh.fish_pressure_group AND pr.pressure_state = ps.state ) prr
+     CROSS APPLY ( SELECT CAST(1.00 + (ISNULL(prr.factor, 1.00) - 1.00) * ISNULL(ps.weight, 0.00) AS decimal(4,2)) AS factor ) pw
+     CROSS APPLY ( SELECT ROUND(ISNULL(fl.probability, 100) * m.f * l.f * ISNULL(o.koef, 1.00) * fw.factor * pw.factor, 0) AS v ) x
 GO
 --------------------------------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_reasoning_json' AND type IN ('FN','IF','TF'))
@@ -7560,7 +7680,7 @@ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'fn_fish_reasoning_json' AND t
 GO
 
 -- Why one fish has its forecast-map probability at one water station, and the same calculation for the 7 days from
--- @at. The value is dbo.fn_fish_location_today's (probability x month x lunar x oxygen x flow, 0..100); this
+-- @at. The value is dbo.fn_fish_location_today's (probability x month x lunar x oxygen x flow x pressure, 0..100); this
 -- adds what each factor was made from so a page can explain it:
 --   factors   - the four factors (0..1); base = fish_location.probability, today = the computed value
 --   moon      - curve day (dbo.fn_moon_day), the fish's curve value that day and its best day (null without a curve)
@@ -7570,9 +7690,13 @@ GO
 --   flow      - the discharge trend (CurrentWaterState flow columns, dbo.sp_fill_flow_state): state (NULL when unknown or
 --               more than 2 days old), the fish's group, the flow_response note, ratios 1d / 2d / 3-7d, daysSincePeak,
 --               stamp; spawnOnly = the group's factor counts only in spawn months
+--   pressure  - the weather-front state for @at's date (dbo.StationPressureDay, dbo.sp_fill_pressure_state): state, the
+--               fish's group, the pressure_response note, hpa, change from the day before, frontDate, swing, strength,
+--               season, weight, and series = the 7 days around it (date, hpa, state); null state = unknown
 --   weather   - the station's weather row for that day (weather_Forecast), absent when there is none
---   week      - 7 days from @at, each at @at's time of day (so day 0 = today): date, moonDay, the four factors,
---               probability, weather. Water readings and the flow state are carried
+--   week      - 7 days from @at, each at @at's time of day (so day 0 = today): date, moonDay, the factors,
+--               pressureState, probability, weather. The pressure state is each day's own (forecast pressure);
+--               water readings and the flow state are carried
 --               forward unchanged (they are not forecast); the month and moon factors change day by day.
 -- Every number is metric, for every country (degC, km/h, mm, m3/s, m/s), as stored: the website converts
 -- to US units for a US visitor (2026-11-13). country is trimmed (WaterStation.country is padded, "US ").
@@ -7602,6 +7726,7 @@ BEGIN
          , CAST(t.lunarFactor AS decimal(6,3))       AS [factors.lunar]
          , CAST(t.oxygenFactor AS decimal(6,3))      AS [factors.oxygen]
          , CAST(t.flowFactor AS decimal(6,3))        AS [factors.flow]
+         , CAST(t.pressureFactor AS decimal(6,3))    AS [factors.pressure]
          , @moon_day AS [moon.day]
          , (SELECT p.probability FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = f.fish_id AND p.[day] = @moon_day) AS [moon.value]
          , (SELECT MAX(p.probability) FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = f.fish_id) AS [moon.peak]
@@ -7626,6 +7751,14 @@ BEGIN
          , CAST(cws.q_ratio_1d AS decimal(9,3)) AS [flow.ratio1d], CAST(cws.q_ratio_2d AS decimal(9,3)) AS [flow.ratio2d]
          , CAST(cws.q_ratio_3_7d AS decimal(9,3)) AS [flow.ratio3to7d], cws.days_since_peak AS [flow.daysSincePeak]
          , cws.flow_stamp AS [flow.stamp]
+         , t.pressureState AS [pressure.state], f.fish_pressure_group AS [pressure.group]
+         , (SELECT pr.note FROM dbo.pressure_response pr WHERE pr.pressure_group = f.fish_pressure_group AND pr.pressure_state = t.pressureState) AS [pressure.note]
+         , spd.hpa AS [pressure.hpa], spd.d1_hpa AS [pressure.change1d], spd.front_dt AS [pressure.frontDate]
+         , spd.swing_hpa AS [pressure.swingHpa], spd.strength AS [pressure.strength], spd.season AS [pressure.season]
+         , spd.weight AS [pressure.weight], spd.stamp AS [pressure.stamp]
+         , JSON_QUERY(ISNULL(( SELECT CONVERT(char(10), s3.dt, 23) AS [date], s3.hpa, s3.state FROM dbo.StationPressureDay s3
+                                WHERE s3.mli = ws.mli AND s3.dt BETWEEN DATEADD(DAY, -3, @day0) AND DATEADD(DAY, 3, @day0)
+                                ORDER BY s3.dt FOR JSON PATH ), '[]')) AS [pressure.series]
          , JSON_QUERY(( SELECT CAST(ri.ri_min AS decimal(9,2)) AS [min], CAST(ri.ri_low AS decimal(9,2)) AS low
                              , CAST(ri.ri_avg AS decimal(9,2)) AS [avg], CAST(ri.ri_high AS decimal(9,2)) AS high
                              , CAST(ri.ri_max AS decimal(9,2)) AS [max]
@@ -7640,6 +7773,7 @@ BEGIN
          , JSON_QUERY(( SELECT CONVERT(char(10), d.dt, 23) AS [date], d.md AS moonDay
                              , CAST(w.monthFactor AS decimal(6,3)) AS monthFactor, CAST(w.lunarFactor AS decimal(6,3)) AS lunarFactor
                              , CAST(w.oxygenFactor AS decimal(6,3)) AS oxygenFactor, CAST(w.flowFactor AS decimal(6,3)) AS flowFactor
+                             , CAST(w.pressureFactor AS decimal(6,3)) AS pressureFactor, w.pressureState
                              , w.newToday AS probability
                              , JSON_QUERY(( SELECT TOP 1 wf.shortText AS conditions, CAST(wf.tmHigh AS decimal(5,1)) AS airHigh
                                                  , CAST(wf.tmLow AS decimal(5,1)) AS airLow, wf.pop AS precipChance
@@ -7648,14 +7782,15 @@ BEGIN
                           FROM ( VALUES (0), (1), (2), (3), (4), (5), (6) ) n(i)
                          CROSS APPLY ( SELECT DATEADD(DAY, n.i, @day0) AS dt ) d0
                          CROSS APPLY ( SELECT d0.dt, dbo.fn_moon_day(DATEADD(DAY, n.i, @at)) AS md ) d
-                         CROSS APPLY ( SELECT x.* FROM dbo.fn_fish_location_today(MONTH(d.dt), d.md) x
+                         CROSS APPLY ( SELECT x.* FROM dbo.fn_fish_location_today(MONTH(d.dt), d.md, d.dt) x
                                         WHERE x.station_Id = @station AND x.fish_Id = @fish_id ) w
                          ORDER BY n.i FOR JSON PATH )) AS week
       FROM dbo.WaterStation ws
       JOIN dbo.fish f ON f.fish_id = @fish_id
       LEFT JOIN dbo.Lake l ON l.Lake_id = ws.lakeId
       LEFT JOIN dbo.CurrentWaterState cws ON cws.mli = ws.mli
-     CROSS APPLY ( SELECT TOP 1 x.* FROM dbo.fn_fish_location_today(@month, @moon_day) x
+      LEFT JOIN dbo.StationPressureDay spd ON spd.mli = ws.mli AND spd.dt = @day0
+     CROSS APPLY ( SELECT TOP 1 x.* FROM dbo.fn_fish_location_today(@month, @moon_day, @day0) x
                     WHERE x.station_Id = @station AND x.fish_Id = @fish_id ) t
      WHERE ws.id = @station
        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER );

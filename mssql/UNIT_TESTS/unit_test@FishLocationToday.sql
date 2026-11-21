@@ -80,7 +80,7 @@ INSERT INTO dbo.WaterStation (id, mli, lakeName, locType, locName, locDesc, coun
 VALUES (@S, 'UTFLT_003', 'Utflt Lake', 1, 'Utflt Station 3', 'Utflt station', 'Utflt', 45.0, -75.0, 'CA', 'ON', 'TEST', GETUTCDATE(), 1, 990503);
 INSERT INTO dbo.fish_catch_probability (fish_id, [month], probability) VALUES (@F, 5, 150), (@F, 8, 300), (@F, 12, 30);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp) VALUES (@S, @F, 80, 80, GETUTCDATE());
-SELECT @v = newToday, @k = monthFactor FROM dbo.fn_fish_location_today(5, 1) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @v = newToday, @k = monthFactor FROM dbo.fn_fish_location_today(5, 1, NULL) WHERE station_Id = @S AND fish_Id = @F;
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage
@@ -106,7 +106,7 @@ INSERT INTO dbo.WaterStation (id, mli, lakeName, locType, locName, locDesc, coun
 VALUES (@S, 'UTFLT_004', 'Utflt Lake', 1, 'Utflt Station 4', 'Utflt station', 'Utflt', 45.0, -75.0, 'CA', 'ON', 'TEST', GETUTCDATE(), 1, 990504);
 INSERT INTO dbo.fish_lunar_catch_probability (fish_id, [day], probability) VALUES (@F, 14, 92), (@F, 21, 46), (@F, 24, 42);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp) VALUES (@S, @F, 80, 80, GETUTCDATE());
-SELECT @v = newToday, @k = lunarFactor FROM dbo.fn_fish_location_today(1, 21) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @v = newToday, @k = lunarFactor FROM dbo.fn_fish_location_today(1, 21, NULL) WHERE station_Id = @S AND fish_Id = @F;
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage
@@ -137,7 +137,7 @@ INSERT INTO dbo.CurrentWaterState (mli, oxygen, stamp, iterstamp, sid) VALUES ('
 INSERT INTO dbo.fish_catch_probability (fish_id, [month], probability) VALUES (@F, 6, 100), (@F, 7, 200);
 INSERT INTO dbo.fish_lunar_catch_probability (fish_id, [day], probability) VALUES (@F, 1, 90), (@F, 10, 45);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp) VALUES (@S, @F, 100, 100, GETUTCDATE());
-SELECT @v = newToday FROM dbo.fn_fish_location_today(6, 10) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @v = newToday FROM dbo.fn_fish_location_today(6, 10, NULL) WHERE station_Id = @S AND fish_Id = @F;
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage
@@ -197,8 +197,8 @@ VALUES (@S, 'UTFLT_007', 'Utflt Lake', 1, 'Utflt Station 7', 'Utflt station', 'U
        (@S2, 'UTFLT_008', 'Utflt Lake', 1, 'Utflt Station 8', 'Utflt station', 'Utflt', 45.0, -75.0, 'CA', 'ON', 'TEST', GETUTCDATE(), 1, 990508);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, today, stamp)
 VALUES (@S, @F, 130, 0, GETUTCDATE()), (@S2, @F, NULL, 0, GETUTCDATE());
-SELECT @hi  = newToday FROM dbo.fn_fish_location_today(1, 1) WHERE station_Id = @S  AND fish_Id = @F;
-SELECT @nul = newToday FROM dbo.fn_fish_location_today(1, 1) WHERE station_Id = @S2 AND fish_Id = @F;
+SELECT @hi  = newToday FROM dbo.fn_fish_location_today(1, 1, NULL) WHERE station_Id = @S  AND fish_Id = @F;
+SELECT @nul = newToday FROM dbo.fn_fish_location_today(1, 1, NULL) WHERE station_Id = @S2 AND fish_Id = @F;
 END TRY
 BEGIN CATCH
     SELECT ERROR_NUMBER() AS ErrorNumber, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage
