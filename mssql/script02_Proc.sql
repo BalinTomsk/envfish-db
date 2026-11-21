@@ -3163,7 +3163,7 @@ BEGIN
                 , t.icon              = src.icon
                 , t.pop               = src.pop
                 , t.tm                = src.tm
-                , t.pressure          = src.pressure
+                , t.pressure          = COALESCE(src.pressure, t.pressure)   -- a provider without pressure keeps the stored one
                 , t.rain_today        = src.rain_today
                 , t.air_temperature   = src.air_temperature
                 , t.tmDay             = src.tmDay
@@ -3402,7 +3402,7 @@ BEGIN
                     , t.icon              = LEFT(src.icon, 255)
                     , t.pop               = src.pop
                     , t.tm                = src.tm
-                    , t.pressure          = src.pressure
+                    , t.pressure          = COALESCE(src.pressure, t.pressure)   -- a provider without pressure keeps the stored one
                     , t.rain_today        = src.rain_today
                     , t.air_temperature   = src.air_temperature
                     , t.tmDay             = src.tmDay
@@ -3479,7 +3479,8 @@ BEGIN
         ),
         hourly_pressure AS
         (
-            SELECT CAST([key] AS int) AS idx, TRY_CONVERT(int, [value]) AS pressure
+            -- pressure_msl is a decimal (1004.6); TRY_CONVERT(int, N'1004.6') is NULL, so round via float
+            SELECT CAST([key] AS int) AS idx, TRY_CONVERT(int, ROUND(TRY_CONVERT(float, [value]), 0)) AS pressure
             FROM OPENJSON(@js, '$.hourly.pressure_msl')
         ),
         hourly_wind_speed AS
@@ -3686,7 +3687,7 @@ BEGIN
                 , t.icon              = LEFT(src.icon, 255)
                 , t.pop               = src.pop
                 , t.tm                = src.tm
-                , t.pressure          = src.pressure
+                , t.pressure          = COALESCE(src.pressure, t.pressure)   -- a provider without pressure keeps the stored one
                 , t.rain_today        = src.rain_today
                 , t.air_temperature   = src.air_temperature
                 , t.tmDay             = src.tmDay
@@ -3859,7 +3860,7 @@ BEGIN
                 , t.icon              = src.icon
                 , t.pop               = src.pop
                 , t.tm                = src.tm
-                , t.pressure          = src.pressure
+                , t.pressure          = COALESCE(src.pressure, t.pressure)   -- a provider without pressure keeps the stored one
                 , t.rain_today        = src.rain_today
                 , t.air_temperature   = src.air_temperature
                 , t.tmDay             = src.tmDay
