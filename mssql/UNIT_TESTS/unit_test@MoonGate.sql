@@ -22,7 +22,7 @@ INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, created, stamp, fish_moon_
 INSERT INTO dbo.fish_lunar_catch_probability (fish_id, [day], probability) VALUES (@F, 10, 50), (@F, 20, 100);
 INSERT INTO dbo.WaterStation (id, mli, lakeName, locType) VALUES (@S, 'UTMNG_001', N'Utmng Lake', 1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, stamp) VALUES (@S, @F, 80, GETUTCDATE());
-SELECT @k = lunarFactor, @v = newToday FROM dbo.fn_fish_location_today(6, 10) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @k = lunarFactor, @v = newToday FROM dbo.fn_fish_location_today(6, 10, NULL) WHERE station_Id = @S AND fish_Id = @F;
 IF ISNULL(@k, 0) <> 1 OR ISNULL(@v, 0) <> 80 RAISERROR ('TEST 1 FAIL: no moon flag must give lunar 1, 80', 16, -1)
 ELSE PRINT 'TEST 1 PASS: no moon flag, curve ignored: lunar 1, 80'
 ROLLBACK TRAN MNG_Test1
@@ -36,7 +36,7 @@ INSERT INTO dbo.fish (fish_id, fish_name, fish_latin, created, stamp, fish_moon_
 INSERT INTO dbo.fish_lunar_catch_probability (fish_id, [day], probability) VALUES (@F, 10, 50), (@F, 20, 100);
 INSERT INTO dbo.WaterStation (id, mli, lakeName, locType) VALUES (@S, 'UTMNG_002', N'Utmng Lake', 1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, probability, stamp) VALUES (@S, @F, 80, GETUTCDATE());
-SELECT @k = lunarFactor, @v = newToday FROM dbo.fn_fish_location_today(6, 10) WHERE station_Id = @S AND fish_Id = @F;
+SELECT @k = lunarFactor, @v = newToday FROM dbo.fn_fish_location_today(6, 10, NULL) WHERE station_Id = @S AND fish_Id = @F;
 IF ISNULL(@k, 0) <> 0.5 OR ISNULL(@v, 0) <> 40 RAISERROR ('TEST 2 FAIL: moon flag must give lunar 0.5, 40', 16, -1)
 ELSE PRINT 'TEST 2 PASS: moon flag, day 10 of best 100: lunar 0.5, 40'
 ROLLBACK TRAN MNG_Test2

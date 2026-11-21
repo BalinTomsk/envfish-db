@@ -663,16 +663,104 @@ BEGIN
 END
 GO
 ----------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'sp_fill_pressure_state' AND xtype = 'P')
+    DROP PROCEDURE dbo.sp_fill_pressure_state
+GO
+
+-- Fills dbo.StationPressureDay for 3 days back .. 7 days ahead of @at's date (default now) from
+-- dbo.fn_station_pressure_days, so the forecast can read each station's weather-front state per day without scanning
+-- the weather. The rows of that window are replaced (forecast pressure changes between runs); older rows are kept as
+-- history for 400 days. Adds the season weight: 0.4 under ice (no day above 0 degC in the 5 days to dt, at least 3
+-- known), 0.6 in summer (June-August, December-February south of the equator), else 1.0; weight = strength x season.
+--   @mli            one station only (tests, debugging); the age check is skipped
+--   @max_age_hours  skip the run when any row's stamp is younger than this (0 = always run)
+-- An application lock lets one run at a time: a second caller returns -1 at once instead of waiting.
+-- Returns the number of rows written, 0 when skipped, -1 when another run holds the lock.
+-- Called by dbo.spTotalUpdateProbability before it recomputes the forecast.
+-- EXEC dbo.sp_fill_pressure_state @max_age_hours = 0
+CREATE PROCEDURE dbo.sp_fill_pressure_state
+    @at             datetime2   = NULL,
+    @mli            varchar(64) = NULL,
+    @max_age_hours  int         = 6
+WITH EXEC AS CALLER
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @now datetime2 = SYSUTCDATETIME();
+    SET @at = ISNULL(@at, @now);
+    DECLARE @from date = DATEADD(DAY, -3, CAST(@at AS date));
+    DECLARE @to   date = DATEADD(DAY,  7, CAST(@at AS date));
+
+    IF @mli IS NULL AND @max_age_hours > 0
+       AND EXISTS (SELECT 1 FROM dbo.StationPressureDay WHERE stamp > DATEADD(HOUR, -@max_age_hours, @now))
+        RETURN 0;
+
+    DECLARE @lock int;
+    EXEC @lock = sp_getapplock @Resource = 'sp_fill_pressure_state', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0;
+    IF @lock < 0
+        RETURN -1;
+
+    BEGIN TRY
+        CREATE TABLE #p
+        (
+            mli        varchar(64) COLLATE DATABASE_DEFAULT NOT NULL,   -- prod tempdb is Cyrillic, the DB SQL_Latin1
+            dt         date        NOT NULL,
+            hpa        int,
+            d1_hpa     smallint,
+            state      varchar(8)  COLLATE DATABASE_DEFAULT,
+            front_dt   date,
+            swing_hpa  smallint,
+            strength   decimal(3,2),
+            season     decimal(3,2),
+            PRIMARY KEY (mli, dt)
+        );
+        INSERT INTO #p (mli, dt, hpa, d1_hpa, state, front_dt, swing_hpa, strength)
+        SELECT f.mli, f.dt, f.hpa, f.d1_hpa, f.state, f.front_dt, f.swing_hpa, f.strength
+          FROM dbo.fn_station_pressure_days(@mli, @from, @to) f;
+
+        UPDATE p
+           SET p.season = CASE WHEN ice.n >= 3 AND ice.hi <= 0 THEN 0.40
+                               WHEN ISNULL(ws.lat, 45) >= 0 AND MONTH(p.dt) IN (6, 7, 8) THEN 0.60
+                               WHEN ws.lat < 0 AND MONTH(p.dt) IN (12, 1, 2) THEN 0.60
+                               ELSE 1.00 END
+          FROM #p p
+         OUTER APPLY ( SELECT TOP 1 w.lat FROM dbo.WaterStation w WHERE w.mli = p.mli ) ws
+         OUTER APPLY ( SELECT MAX(wf.tmHigh) AS hi, COUNT(*) AS n FROM dbo.weather_Forecast wf
+                        WHERE wf.mli = p.mli AND wf.dt BETWEEN DATEADD(DAY, -4, p.dt) AND p.dt ) ice;
+
+        BEGIN TRANSACTION;
+            DELETE FROM dbo.StationPressureDay
+             WHERE dt BETWEEN @from AND @to AND (@mli IS NULL OR mli = @mli);
+            INSERT INTO dbo.StationPressureDay (mli, dt, hpa, d1_hpa, state, front_dt, swing_hpa, strength, season, weight, stamp)
+            SELECT mli, dt, hpa, d1_hpa, state, front_dt, swing_hpa, strength, season
+                 , CAST(strength * season AS decimal(3,2)), @now
+              FROM #p;
+            DECLARE @n int = @@ROWCOUNT;
+            IF @mli IS NULL
+                DELETE FROM dbo.StationPressureDay WHERE dt < DATEADD(DAY, -400, CAST(@at AS date));
+        COMMIT TRANSACTION;
+
+        EXEC sp_releaseapplock @Resource = 'sp_fill_pressure_state', @LockOwner = 'Session';
+        RETURN @n;
+    END TRY
+    BEGIN CATCH
+        IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+        EXEC sp_releaseapplock @Resource = 'sp_fill_pressure_state', @LockOwner = 'Session';
+        THROW;
+    END CATCH
+END
+GO
+----------------------------------------------------------------------------------------------------------------------------
 IF EXISTS (SELECT * FROM sysobjects WHERE NAME = 'spTotalUpdateProbability' AND xtype = 'P')
     DROP PROCEDURE dbo.spTotalUpdateProbability
 GO
 
 -- Recomputes dbo.fish_location.today (what the forecast map shows) for every fish at every water station, from the
--- base probability on every run: probability x month factor x lunar factor x oxygen factor,
+-- base probability on every run: probability x month x lunar x oxygen x flow x pressure factor,
 -- clamped 0..100 (dbo.fn_fish_location_today). Each factor counts once, so repeated runs never compound. Only rows
 -- whose value changes are written. Water readings older than 7 days are cleared first, so they stop counting.
--- First refreshes the discharge trend (dbo.sp_fill_flow_state, which skips itself unless its data is 6 hours old);
--- a failure there does not stop the forecast update.
+-- First refreshes the discharge trend (dbo.sp_fill_flow_state) and the weather-front state (dbo.sp_fill_pressure_state),
+-- each of which skips itself unless its data is 6 hours old; a failure there does not stop the forecast update.
 -- Called after every station update by the weather services: efcs-backend WeatherService
 -- (WeatherDataRepository) and OWMService (WeatherDataWorkerBase), efj-backend weather (WeatherDataRepository).
 -- Returns the number of rows whose today changed.
@@ -699,6 +787,14 @@ BEGIN
     END CATCH
 
     BEGIN TRY
+        EXEC dbo.sp_fill_pressure_state;
+    END TRY
+    BEGIN CATCH
+        IF XACT_STATE() = -1
+            THROW;
+    END CATCH
+
+    BEGIN TRY
         BEGIN TRANSACTION;
 
         UPDATE [CurrentWaterState] SET oxygen = NULL
@@ -708,7 +804,7 @@ BEGIN
             SET fl.today = x.newToday,
                 fl.stamp = GETUTCDATE()
         FROM dbo.fish_location fl
-        JOIN dbo.fn_fish_location_today(@month, @moon_day) x ON x.station_Id = fl.station_Id AND x.fish_Id = fl.fish_Id
+        JOIN dbo.fn_fish_location_today(@month, @moon_day, CAST(@now AS date)) x ON x.station_Id = fl.station_Id AND x.fish_Id = fl.fish_Id
         WHERE fl.today IS NULL OR fl.today <> x.newToday;
 
         SET @return_value = @@ROWCOUNT;
