@@ -440,3 +440,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Local docs
+/docs/
