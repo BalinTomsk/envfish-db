@@ -3993,3 +3993,16 @@ CREATE TYPE env.StationDayRows AS TABLE
     PRIMARY KEY (sid, dt)
 );
 GO
+
+-- env.Setting: switches of the [env] boundary, one row per name. probability_source = 'legacy' (default, also when the
+-- row is missing: dbo.spTotalUpdateProbability writes dbo.fish_location.today from CurrentWaterState /
+-- StationPressureDay) or 'env' (env.sp_update_probability writes it from env.StationState / env.StationDay, and
+-- dbo.spTotalUpdateProbability returns at once). Flipping it is the step 5 cut-over, and flipping it back the rollback.
+CREATE TABLE env.Setting
+(
+    name   varchar(64)   NOT NULL,
+    value  varchar(255)  NOT NULL,
+    stamp  datetime2(0)  NOT NULL CONSTRAINT DF_env_Setting_stamp DEFAULT (SYSUTCDATETIME()),
+    CONSTRAINT PK_env_Setting PRIMARY KEY CLUSTERED (name)
+);
+GO

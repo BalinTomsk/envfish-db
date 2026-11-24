@@ -764,6 +764,8 @@ GO
 -- Called after every station update by the weather services: efcs-backend WeatherService
 -- (WeatherDataRepository) and OWMService (WeatherDataWorkerBase), efj-backend weather (WeatherDataRepository).
 -- Returns the number of rows whose today changed.
+-- Does NOTHING (returns 0 at once, no fills either) while env.Setting probability_source = 'env': then
+-- env.sp_update_probability, called by env_service, writes fish_location.today (env_service plan step 5).
 -- EXEC spTotalUpdateProbability
 ----------------------------------------------------------------------------------------------------------------------------
 CREATE PROCEDURE dbo.spTotalUpdateProbability
@@ -772,6 +774,10 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
+
+    -- the env path owns fish_location.today once env.Setting says so (env_service plan step 5)
+    IF env.fn_probability_source() = 'env'
+        RETURN 0;
 
     DECLARE @return_value int = 0;
     DECLARE @now datetime2 = SYSUTCDATETIME();
@@ -6667,5 +6673,75 @@ BEGIN
     SET NOCOUNT ON;
     DELETE FROM env.StationDay WHERE dt < @from;
     SELECT @@ROWCOUNT AS rows_deleted;
+END
+GO
+
+IF OBJECT_ID('env.sp_update_probability', 'P') IS NOT NULL
+    DROP PROCEDURE env.sp_update_probability
+GO
+-- dbo.spTotalUpdateProbability on the env path: recomputes dbo.fish_location.today from env.fn_fish_location_today and
+-- writes only the rows whose value changes. No fill step (env_service runs the flow / pressure fills in MySQL before it
+-- pushes) and no oxygen UPDATE (the function ignores oxygen older than 7 days). Works only while env.Setting
+-- probability_source = 'env': otherwise it returns -1 and writes nothing. One run at a time (applock, no wait: -2).
+-- Returns (and SELECTs) the rows changed. Called by: env_service (C#) HandOverJob, after the pushes.
+CREATE PROCEDURE env.sp_update_probability
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF env.fn_probability_source() <> 'env'
+    BEGIN
+        SELECT -1 AS rows_changed;
+        RETURN -1;
+    END
+
+    DECLARE @lock int;
+    EXEC @lock = sp_getapplock @Resource = 'env.sp_update_probability', @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0;
+    IF @lock < 0
+    BEGIN
+        SELECT -2 AS rows_changed;
+        RETURN -2;
+    END
+
+    BEGIN TRY
+        DECLARE @now datetime2 = SYSUTCDATETIME();
+        DECLARE @n int;
+        UPDATE fl
+           SET fl.today = x.newToday, fl.stamp = GETUTCDATE()
+          FROM dbo.fish_location fl
+          JOIN env.fn_fish_location_today(MONTH(@now), dbo.fn_moon_day(@now), CAST(@now AS date)) x
+            ON x.station_Id = fl.station_Id AND x.fish_Id = fl.fish_Id
+         WHERE fl.today IS NULL OR fl.today <> x.newToday;
+        SET @n = @@ROWCOUNT;
+        EXEC sp_releaseapplock @Resource = 'env.sp_update_probability', @LockOwner = 'Session';
+        SELECT @n AS rows_changed;
+        RETURN @n;
+    END TRY
+    BEGIN CATCH
+        EXEC sp_releaseapplock @Resource = 'env.sp_update_probability', @LockOwner = 'Session';
+        THROW;
+    END CATCH
+END
+GO
+
+IF OBJECT_ID('env.sp_push_species', 'P') IS NOT NULL
+    DROP PROCEDURE env.sp_push_species
+GO
+-- dbo.spPushSpeciesFromLakeToStation (lake species -> fish_location rows of the lake's stations) for env_service, run
+-- before env.sp_update_probability. Works only while env.Setting probability_source = 'env' (else returns -1): until
+-- then the Java weather service runs the species push. Returns 0 when it ran.
+-- Called by: env_service (C#) HandOverJob.
+CREATE PROCEDURE env.sp_push_species
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF env.fn_probability_source() <> 'env'
+    BEGIN
+        SELECT -1 AS result;
+        RETURN -1;
+    END
+    EXEC dbo.spPushSpeciesFromLakeToStation;
+    SELECT 0 AS result;
+    RETURN 0;
 END
 GO

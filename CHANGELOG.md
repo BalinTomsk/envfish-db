@@ -2,6 +2,17 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-25: **The fish model on schema `env`, behind a switch** (env_service plan step 5; built, local envionx only).
+  `env.Setting` (script01), `env.fn_probability_source()`, `env.fn_fish_location_today` (= dbo.fn_fish_location_today on
+  `env.StationState` / `env.StationDay`; oxygen older than 7 days ignored), `env.fn_probability_diff()` (script02_Funct),
+  `env.sp_update_probability`, `env.sp_push_species` (script02_Proc). `dbo.spTotalUpdateProbability` returns at once while
+  `probability_source` = 'env'. Tests `unit_test@EnvProbability.sql` 5/5 (failed first): both functions give the same
+  newToday on 10,063 rows with all flow and pressure states in play. Prod: `mssql/Docs/ADMIN_WRITE_env_step5.sql`
+  (proven from scratch and twice; changes nothing while the setting is empty), then `ADMIN_WRITE_env_cutover.sql`;
+  daily comparison `prod_step5_diff.sql`. CTRL: `ctrlLogBag/pending/20261125-02_env_step5.sql`. Note:
+  `unit_test@FishLocationToday.sql` inserts explicit WaterStation.sid, so it passes only in the harness database (live
+  envionx has sid as IDENTITY).
+
 - 2026-11-25: **Schema `env` (SQL Server), env_service's boundary** (env_service plan step 4, built, applied to local
   envionx only). `env.StationState` / `env.StationDay` (pressure in mm Hg) + table types `env.StationStateRows` /
   `env.StationDayRows` (script01_createTable), `env.fn_station_list()` (script02_Funct: every WaterStation with a
