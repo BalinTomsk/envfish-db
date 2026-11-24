@@ -69,6 +69,12 @@ mysql/tools
 tools/*
 mssql/ffi2.sql
 mysql/ffi2.sql
+mysql/envdata/ffi2.sql
+mysql/envdata/UNIT_TESTS/ffi2.sql
+mysql/envdata/UNIT_TESTS/config.ini
+mysql/envdata/UNIT_TESTS/cleaned.txt
+mysql/envdata/UNIT_TESTS/result.txt
+mysql/envdata/UNIT_TESTS/dbname.ini
 
 
 # Visual Studio 2017 auto generated files
@@ -443,3 +449,5 @@ FodyWeavers.xsd
 
 # Local docs
 /docs/
+mysql/[Dd]ocs/
+mssql/[Dd]ocs/

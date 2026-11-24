@@ -584,6 +584,33 @@ The guest cap (first 100 rows) is **not** here — docapi applies it. This repla
   Also proven: both control-panel scripts apply cleanly and idempotently, the upgraded schema is
   byte-identical to a fresh build from the sources, and the rollback restores the previous definitions exactly.
 
+## MySQL `envdata` (`mysql/envdata/`) — water and weather data
+
+A **second, separate** MySQL database: the transactional water/weather store on the `debian-mysql` droplet (MySQL 8.4
+LTS, `mysql/Docs/install_mysql.md`), not the Winhost news database above. It replaces the MSSQL water/weather tables
+(`WaterData`, `CurrentWaterState`, `ows_meteo`, `weather_Forecast`, `StationPressureDay`, ...); MSSQL keeps the fish
+domain and `WaterStation` as the station master. Writers: waterservice and weather (C#, csnode). Reader and the bridge
+to MSSQL: env_service. Plan: `efcs-backend/service/env_service/docs/env_service_plan.md` (gitignored).
+
+- **Own build and harness**, same rules as `mysql/`: `script0.sql`, `script01_createTable.sql`,
+  `script01_createView.sql`, `script02_Proc.sql`, concatenated by `envdata/generate_db_script_ffi2.cmd` (add new
+  scriptNN files there); `envdata/build.cmd <host> <user> <database>`; tests in `envdata/UNIT_TESTS`
+  (`autorun.bat`, a copy of the `mysql/UNIT_TESTS` harness; `config.ini` is local and gitignored).
+- **Conventions** (headers of `script0.sql` / `script02_Proc.sql`): UTC everywhere; metric; **air pressure in mm Hg**
+  (`mm = hPa x 0.750062`, `DECIMAL(5,1)`), never hPa; pH is the real value. No application touches a table: views for
+  reads, procedures for writes, each naming its caller. Procedures have no parameter defaults (callers pass NULL) and
+  **never start, commit or roll back a transaction**, so a test can wrap them; `sp_water_reading_rotate` (partition
+  DDL) is the one exception and its tests clean up by hand. Batches arrive as one JSON array parameter (`JSON_TABLE`).
+  An unknown station `mli` is `SIGNAL SQLSTATE '45000'`.
+- **The fills** (`sp_fill_water_reading_day`, `sp_fill_flow_state`, `sp_fill_pressure_state`) read at READ COMMITTED
+  and restore the caller's isolation: under REPEATABLE READ an `INSERT ... SELECT` share-locks every row it reads and
+  would block the collectors for the whole run. Flow and pressure are the ported MSSQL rules; their parity with
+  `fn_station_flow_state` / `fn_station_pressure_days` was proved 2026-11-25 on local envionx data (see CHANGELOG).
+- **Window functions:** give calls that share a partition/order a **named `WINDOW`**. Written inline, MySQL 8.0 runs
+  each `LEAD`/`LAG` as its own pass (12 passes = 33 s of a 47 s pressure fill; one named window: 10 s).
+- **`water_reading` is partitioned by UTC day** (`p_YYYYMMDD` + `p_max`), kept 30 days by dropping partitions, never by
+  row deletes. It has no foreign key (partitioned InnoDB cannot).
+
 ## Changelog
 
 Moved to [`CHANGELOG.md`](./CHANGELOG.md) (same directory) for readability.

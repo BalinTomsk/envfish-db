@@ -7885,3 +7885,25 @@ RETURN
     FROM dbo.Users u
     WHERE u.id = @userId AND u.deleted = 0
 GO
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID('env.fn_station_list') AND type IN ('FN','IF','TF'))
+    DROP FUNCTION env.fn_station_list
+GO
+-- The station master for env_service's hourly mirror into MySQL envdata (sp_station_mirror): every dbo.WaterStation
+-- with a coordinate and a country, plus hasFish = its water body has >= 1 species in dbo.lake_fish (the weather
+-- collection criterion). The full list every time (~11,700 rows): hasFish changes without a WaterStation stamp, so an
+-- incremental "since" would miss it. NULL locName -> ''. Column names are the mirror's JSON names.
+-- Called by: env_service (C#) StationMirrorJob.
+-- SELECT * FROM env.fn_station_list()
+CREATE FUNCTION env.fn_station_list()
+RETURNS TABLE
+AS
+RETURN
+    SELECT w.sid, w.MLI AS mli, w.id, RTRIM(w.country) AS country, NULLIF(RTRIM(w.state), '') AS state, w.lat, w.lon,
+           w.tz, w.locType, ISNULL(w.locName, '') AS locName, w.lakeId, w.lakeName, w.elevation, w.agency,
+           CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.lake_fish f WHERE f.lake_Id = w.lakeId) THEN 1 ELSE 0 END AS bit) AS hasFish,
+           w.supported, w.stamp
+      FROM dbo.WaterStation w
+     WHERE w.lat IS NOT NULL AND w.lon IS NOT NULL AND w.country IS NOT NULL
+GO
