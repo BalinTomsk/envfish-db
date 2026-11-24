@@ -6590,3 +6590,82 @@ BEGIN
     SELECT userType, access FROM dbo.Users WHERE id = @userId;
 END
 GO
+
+----------------------------------------------------------------------------------------------------------------------------
+-- Schema [env] procedures: env_service's writes into SQL Server (see the [env] block in script01_createTable.sql).
+----------------------------------------------------------------------------------------------------------------------------
+IF OBJECT_ID('env.sp_push_station_state', 'P') IS NOT NULL
+    DROP PROCEDURE env.sp_push_station_state
+GO
+-- Upserts env.StationState by sid from envdata's v_station_state, exactly as pushed (a NULL replaces a value: envdata
+-- has already merged partial readings). Returns the rows written.
+-- Called by: env_service (C#) HandOverJob, 1,000 rows per call.
+CREATE PROCEDURE env.sp_push_station_state
+    @rows env.StationStateRows READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE s
+       SET s.mli = r.mli, s.ts = r.ts, s.discharge = r.discharge, s.turbidity = r.turbidity, s.oxygen = r.oxygen,
+           s.ph = r.ph, s.elevation = r.elevation, s.flow_state = r.flow_state, s.q_ratio_1d = r.q_ratio_1d,
+           s.q_ratio_2d = r.q_ratio_2d, s.q_ratio_3_7d = r.q_ratio_3_7d, s.q_median_30d = r.q_median_30d,
+           s.days_since_peak = r.days_since_peak, s.flow_stamp = r.flow_stamp, s.pushed = SYSUTCDATETIME()
+      FROM env.StationState s
+      JOIN @rows r ON r.sid = s.sid;
+    DECLARE @n int = @@ROWCOUNT;
+
+    INSERT INTO env.StationState (sid, mli, ts, discharge, turbidity, oxygen, ph, elevation, flow_state, q_ratio_1d,
+                                  q_ratio_2d, q_ratio_3_7d, q_median_30d, days_since_peak, flow_stamp)
+    SELECT r.sid, r.mli, r.ts, r.discharge, r.turbidity, r.oxygen, r.ph, r.elevation, r.flow_state, r.q_ratio_1d,
+           r.q_ratio_2d, r.q_ratio_3_7d, r.q_median_30d, r.days_since_peak, r.flow_stamp
+      FROM @rows r
+     WHERE NOT EXISTS (SELECT 1 FROM env.StationState s WHERE s.sid = r.sid);
+    SET @n = @n + @@ROWCOUNT;
+    SELECT @n AS rows_written;
+END
+GO
+
+IF OBJECT_ID('env.sp_push_station_day', 'P') IS NOT NULL
+    DROP PROCEDURE env.sp_push_station_day
+GO
+-- Upserts env.StationDay by (sid, dt) from envdata's v_station_day (3 days back .. 15 ahead), as pushed.
+-- Returns the rows written. Called by: env_service (C#) HandOverJob, 1,000 rows per call.
+CREATE PROCEDURE env.sp_push_station_day
+    @rows env.StationDayRows READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE d
+       SET d.tm_day = r.tm_day, d.tm_high = r.tm_high, d.tm_low = r.tm_low, d.pop = r.pop, d.weather_code = r.weather_code,
+           d.pressure_mm = r.pressure_mm, d.pressure_state = r.pressure_state, d.front_dt = r.front_dt,
+           d.swing_mm = r.swing_mm, d.strength = r.strength, d.season = r.season, d.pressure_weight = r.pressure_weight,
+           d.pushed = SYSUTCDATETIME()
+      FROM env.StationDay d
+      JOIN @rows r ON r.sid = d.sid AND r.dt = d.dt;
+    DECLARE @n int = @@ROWCOUNT;
+
+    INSERT INTO env.StationDay (sid, dt, tm_day, tm_high, tm_low, pop, weather_code, pressure_mm, pressure_state,
+                                front_dt, swing_mm, strength, season, pressure_weight)
+    SELECT r.sid, r.dt, r.tm_day, r.tm_high, r.tm_low, r.pop, r.weather_code, r.pressure_mm, r.pressure_state,
+           r.front_dt, r.swing_mm, r.strength, r.season, r.pressure_weight
+      FROM @rows r
+     WHERE NOT EXISTS (SELECT 1 FROM env.StationDay d WHERE d.sid = r.sid AND d.dt = r.dt);
+    SET @n = @n + @@ROWCOUNT;
+    SELECT @n AS rows_written;
+END
+GO
+
+IF OBJECT_ID('env.sp_station_day_trim', 'P') IS NOT NULL
+    DROP PROCEDURE env.sp_station_day_trim
+GO
+-- Deletes env.StationDay rows before @from (env_service passes today - 3, the start of the window it pushes).
+-- Returns the rows deleted. Called by: env_service (C#) HandOverJob, after the push.
+CREATE PROCEDURE env.sp_station_day_trim
+    @from date
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM env.StationDay WHERE dt < @from;
+    SELECT @@ROWCOUNT AS rows_deleted;
+END
+GO

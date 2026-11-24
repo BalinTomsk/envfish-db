@@ -3915,3 +3915,81 @@ GO
 -- Production carries this as the auto-named DF__StationFa__stamp__717C48C9; given a stable name here.
 ALTER TABLE dbo.StationFailure ADD CONSTRAINT DF_StationFailure_stamp DEFAULT (GETDATE()) FOR stamp
 GO
+
+--------------------------------------------------------------------------------------------
+-- Schema [env]: the boundary between SQL Server and env_service (efcs-backend/service/env_service), which owns the
+-- water and weather data in MySQL envdata (env_service_plan.md). env_service WRITES only through env.sp_* and READS only
+-- env.fn_station_list; the fish model reads these tables instead of CurrentWaterState / StationPressureDay /
+-- weather_Forecast once it is re-pointed (plan step 5). Until then they are filled in shadow and read by nothing.
+-- Pressure is in mm Hg (envdata's one unit), never hPa.
+--------------------------------------------------------------------------------------------
+IF SCHEMA_ID('env') IS NULL EXEC('CREATE SCHEMA env');
+GO
+
+-- env.StationState: per station (sid = dbo.WaterStation.sid) the newest reading and the discharge trend, as env_service
+-- computes them in envdata (station_current). Written by env.sp_push_station_state only.
+CREATE TABLE env.StationState
+(
+    sid              int           NOT NULL,
+    mli              varchar(64)   NOT NULL,
+    ts               datetime2(0)  NOT NULL,     -- the newest reading that carried a value (UTC)
+    discharge        float         NULL,
+    turbidity        float         NULL,
+    oxygen           float         NULL,
+    ph               decimal(4,2)  NULL,
+    elevation        float         NULL,
+    flow_state       varchar(10)   NULL,         -- dbo.flow_response.flow_state
+    q_ratio_1d       float         NULL,
+    q_ratio_2d       float         NULL,
+    q_ratio_3_7d     float         NULL,
+    q_median_30d     float         NULL,
+    days_since_peak  tinyint       NULL,
+    flow_stamp       datetime2(0)  NULL,
+    pushed           datetime2(0)  NOT NULL CONSTRAINT DF_env_StationState_pushed DEFAULT (SYSUTCDATETIME()),
+    CONSTRAINT PK_env_StationState PRIMARY KEY CLUSTERED (sid)
+);
+GO
+CREATE INDEX IX_env_StationState_mli ON env.StationState (mli);
+GO
+
+-- env.StationDay: per station and day (3 back .. 15 ahead) the weather and the weather-front state the fish model
+-- reads (envdata v_station_day). pressure_mm in mm Hg. Written by env.sp_push_station_day, trimmed by
+-- env.sp_station_day_trim.
+CREATE TABLE env.StationDay
+(
+    sid              int           NOT NULL,
+    dt               date          NOT NULL,
+    tm_day           float         NULL,
+    tm_high          float         NULL,
+    tm_low           float         NULL,
+    pop              int           NULL,
+    weather_code     int           NULL,
+    pressure_mm      decimal(5,1)  NULL,
+    pressure_state   varchar(8)    NULL,         -- dbo.pressure_response.pressure_state
+    front_dt         date          NULL,
+    swing_mm         decimal(4,1)  NULL,
+    strength         decimal(3,2)  NULL,
+    season           decimal(3,2)  NULL,
+    pressure_weight  decimal(3,2)  NULL,         -- strength x season: the forecast uses 1 + (factor - 1) x weight
+    pushed           datetime2(0)  NOT NULL CONSTRAINT DF_env_StationDay_pushed DEFAULT (SYSUTCDATETIME()),
+    CONSTRAINT PK_env_StationDay PRIMARY KEY CLUSTERED (sid, dt)
+);
+GO
+
+-- Table-valued parameters of the two push procedures (env_service sends 1,000 rows per call).
+CREATE TYPE env.StationStateRows AS TABLE
+(
+    sid int NOT NULL PRIMARY KEY, mli varchar(64) NOT NULL, ts datetime2(0) NOT NULL,
+    discharge float NULL, turbidity float NULL, oxygen float NULL, ph decimal(4,2) NULL, elevation float NULL,
+    flow_state varchar(10) NULL, q_ratio_1d float NULL, q_ratio_2d float NULL, q_ratio_3_7d float NULL,
+    q_median_30d float NULL, days_since_peak tinyint NULL, flow_stamp datetime2(0) NULL
+);
+GO
+CREATE TYPE env.StationDayRows AS TABLE
+(
+    sid int NOT NULL, dt date NOT NULL, tm_day float NULL, tm_high float NULL, tm_low float NULL, pop int NULL,
+    weather_code int NULL, pressure_mm decimal(5,1) NULL, pressure_state varchar(8) NULL, front_dt date NULL,
+    swing_mm decimal(4,1) NULL, strength decimal(3,2) NULL, season decimal(3,2) NULL, pressure_weight decimal(3,2) NULL,
+    PRIMARY KEY (sid, dt)
+);
+GO

@@ -1,0 +1,19 @@
+-- envdata/script0.sql: preamble of the MySQL `envdata` database (water and weather data).
+--
+-- envdata is NOT the news database in ../ (that one lives on Winhost). It is the transactional water/weather
+-- store on the debian-mysql droplet (MySQL 8.4 LTS, see ../Docs/install_mysql.md), written by waterservice and
+-- weather (C#, csnode) and read by env_service (efcs-backend/service/env_service). Plan and rules:
+-- efcs-backend/service/env_service/docs/env_service_plan.md.
+--
+-- Like ../script0.sql this does not CREATE DATABASE / USE: the target database is selected by the connection.
+--
+-- Conventions of every envdata script:
+--   * all times are UTC (DATETIME, no zone); the server runs default-time-zone = +00:00 and the procedures use
+--     UTC_TIMESTAMP() / UTC_DATE() explicitly anyway;
+--   * metric units; air pressure in mm Hg (mm = hPa x 0.750062), never hPa;
+--   * no application reads or writes a table: only the views and procedures in script01_createView.sql and
+--     script02_Proc.sql, each of which names its caller;
+--   * MySQL procedures have no parameter defaults: callers pass NULL where a default is described;
+--   * no procedure here starts, commits or rolls back a transaction, so a caller (or a unit test) can wrap any of
+--     them in its own. sp_water_reading_rotate is the one exception by nature: partition DDL commits implicitly.
+SET NAMES utf8mb4;

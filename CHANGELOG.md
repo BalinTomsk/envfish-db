@@ -2,6 +2,42 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-25: **Schema `env` (SQL Server), env_service's boundary** (env_service plan step 4, built, applied to local
+  envionx only). `env.StationState` / `env.StationDay` (pressure in mm Hg) + table types `env.StationStateRows` /
+  `env.StationDayRows` (script01_createTable), `env.fn_station_list()` (script02_Funct: every WaterStation with a
+  coordinate + `hasFish` from lake_fish), `env.sp_push_station_state`, `env.sp_push_station_day`, `env.sp_station_day_trim`
+  (script02_Proc). Nothing reads `env` until step 5. Tests `unit_test@EnvHandOver.sql` 4/4 (all failed first). Found:
+  the live `WaterStation.sid` is an IDENTITY and `lat`/`lon`/`country`/`locName` are nullable, unlike script01.
+  Prod: `mssql/Docs/ADMIN_WRITE_env_schema.sql` (guarded, proven from empty and twice), not applied. CTRL: queued as
+  `ctrlLogBag/pending/20261125-01_env_schema.sql`.
+
+- 2026-11-25: **envdata `sp_water_backfill`** (one-off load of MSSQL WaterData by EnvService.Migrator, env_service plan
+  step 3): already-converted rows of many stations per call, existing values win, unknown stations and empty rows skipped,
+  `station_current` refreshed. Tests `unit_test@EnvdataBackfill.sql` 5 (all failed first), suite 65/65 on local 8.0.46 and
+  on debian-mysql 8.4.13; applied to `envdata`. Found while rehearsing: `WaterData.pressure` units are per station (mm Hg
+  704..716, hPa ~1,013, and 845..885 hPa STATION pressure at high Utah gauges), so > 800 = hPa.
+
+- 2026-11-25: **MySQL `envdata` applied on debian-mysql** (8.4.13): the `mysql/envdata` tests 60/60 there first (throwaway
+  database), then the schema into `envdata` (10 tables, 8 views, 20 procedures, 34 day partitions). Accounts
+  `waterservice` / `weather` (EXECUTE + the views each reads, REQUIRE SSL). No data until waterservice / weather 11.0.0
+  are deployed.
+
+- 2026-11-25: **MySQL `envdata`: the water/weather schema (built, not applied anywhere).** New `mysql/envdata/`
+  (own build + harness; AGENTS.md "MySQL envdata"): 10 tables (`station` mirror + ingest state, `water_reading`
+  partitioned by day, `station_current`, `water_reading_day`, `weather_raw`, `weather_day`, `station_pressure_day`,
+  `weather_gov_station`, `provider_coverage`, `job_run`), 8 views, 20 procedures, ported from the MSSQL objects the
+  C# waterservice / weather and the fish model use. Pressure stored in mm Hg; front rules restated (4.5 / 3.0 mm,
+  strength 7.5 .. 11.25 mm). Fixed on the way (MSSQL keeps the bugs until it is retired): US pH was stored truncated
+  and divided by 10 (`CurrentWaterState.ph` 0.0 .. 0.88 for all 538 US stations locally); "% saturation" dissolved
+  oxygen overwrote mg/L; only the first USGS series of a new day reached `CurrentWaterState` (trigger fired on INSERT
+  only); an unmapped series wrote an empty `WaterData` row; unknown `tmHigh` was stored as 0 degC and could read as
+  ice; `WaterData.pressure` holds mm Hg before 2026-11-13 and hPa after (the backfill must convert by value).
+  Tests: `envdata/UNIT_TESTS` 60/60 on MySQL 8.0.46 (4 mutations re-checked: 3 caught; the 4th, the time bound in
+  `sp_station_current_refresh`, is only a read bound). **Parity on local envionx** (5.8 M readings to 2026-11-13,
+  147 k forecast rows): flow state, median, ratios and peak day identical for all 7,433 stations; pressure state,
+  front date and season identical for all 69,630 station-days (3,455 fronts); strength differs by <= 0.01 on 2 %
+  (mm rounding). Full fills: flow 15 s, pressure 14 s (47 s before the named-window rewrite).
+
 - 2026-11-21: **Account types, a bitmask (built, not on prod).** `dbo.UserType` (bit, code, name, sort: 1 registered,
   2 paid, 4 scientist, 8 editor, 16 ai_agent, 32 admin) and `dbo.Users.userType int` (default 1, any combination).
   `CH_Users_userType_admin`: the admin bit always comes with paid + scientist + editor and with `access = 255`
