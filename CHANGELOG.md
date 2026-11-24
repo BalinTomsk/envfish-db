@@ -2,6 +2,13 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-25: **envdata read views for env_service's REST API** (plan step 6a; applied to debian-mysql envdata 2026-11-24 with env_service 0.3.0; was
+  debian-mysql). `v_station_info` (every station: identity + water-body link, no back-off columns; read whole by the
+  env_service station cache) and `v_weather_day` (stored weather of any day with that day's pressure state; callers
+  filter by sid + date range, a primary-key range, unlike the windowed `v_station_day`). Tests
+  `unit_test@EnvdataRead.sql` 3 (all failed first), suite 68/68 on local 8.0.46. Apply = the whole
+  `script01_createView.sql` (CREATE OR REPLACE; runbook env_service `docs/do-update.md` "Step 6a").
+
 - 2026-11-25: **The fish model on schema `env`, behind a switch** (env_service plan step 5; built, local envionx only).
   `env.Setting` (script01), `env.fn_probability_source()`, `env.fn_fish_location_today` (= dbo.fn_fish_location_today on
   `env.StationState` / `env.StationDay`; oxygen older than 7 days ignored), `env.fn_probability_diff()` (script02_Funct),

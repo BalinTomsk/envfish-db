@@ -101,3 +101,30 @@ SELECT s.station_id AS sid, s.mli, w.dt
   JOIN station s ON s.station_id = w.station_id
   LEFT JOIN station_pressure_day p ON p.station_id = w.station_id AND p.dt = w.dt
  WHERE w.dt BETWEEN UTC_DATE() - INTERVAL 3 DAY AND UTC_DATE() + INTERVAL 15 DAY;
+
+-- ------------------------------------------------------------------------------------------------------------
+-- v_station_info: one row per station, its identity and water-body link (no ingest back-off columns).
+-- sid = MSSQL WaterStation.sid; lake_id = the MSSQL lake GUID (NULL = not linked to a water body).
+-- upd_data = the newest reading that reached station_current; weather_stamp = the last weather payload saved.
+-- Called by: env_service (REST station cache: /api/v1/env/stations/*, /api/v1/env/lakes/*), read whole (~12,000 rows).
+-- ------------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_station_info AS
+SELECT s.station_id AS sid, s.mli, s.ws_id, s.country, s.state, s.lat, s.lon, s.tz, s.loc_type, s.loc_name
+     , s.lake_id, s.lake_name, s.elevation, s.agency, s.has_fish, s.supported, s.upd_data, s.weather_stamp
+  FROM station s;
+
+-- ------------------------------------------------------------------------------------------------------------
+-- v_weather_day: per station and day, the stored weather (15 days back .. 15 ahead) with that day's pressure
+-- state when sp_fill_pressure_state computed one. pressure_mm = the provider's value in mm Hg (weather_day).
+-- No date window (unlike v_station_day): the caller filters WHERE sid = ? AND dt BETWEEN ? AND ?, a primary-key range.
+-- Called by: env_service (REST: /api/v1/env/stations/{sid}/weather, /api/v1/env/lakes/{lakeId}/weather).
+-- ------------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_weather_day AS
+SELECT w.station_id AS sid, w.dt, w.tm
+     , w.tm_high, w.tm_low, w.tm_day, w.air_temperature
+     , w.gpf_day, w.gpf_night, w.rain_today, w.pop, w.humidity
+     , w.wind_max_speed, w.wind_degree, w.wind_direction
+     , w.pressure_mm, w.weather_code, w.icon, w.short_text, w.long_text, w.provider_type, w.stamp
+     , p.state AS pressure_state, p.d1_mm, p.front_dt, p.swing_mm, p.strength
+  FROM weather_day w
+  LEFT JOIN station_pressure_day p ON p.station_id = w.station_id AND p.dt = w.dt;
