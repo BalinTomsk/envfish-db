@@ -2,6 +2,17 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-25: **The forecast documents on schema `env`** (env_service plan step 6b; applied to prod SQL Server + debian-mysql 2026-11-24 23:30 UTC with env_service 0.4.0).
+  script02_Funct: `env.fn_map_location` (dbo.fn_map_location with the pin rules on `env.StationState` / `env.StationDay`,
+  UTC), `env.fn_forecast_stations_json` (on it), `env.fn_fish_reasoning_json` (dbo.fn_fish_reasoning_json on `env.*` and
+  `env.fn_fish_location_today`; pressure in mm Hg: `pressure.mm`, `swingMm`, `change1d` = today's mm - yesterday's,
+  `series[].mm`; no weather blocks and no `water.velocity`, env_service adds the weather from envdata),
+  `env.fn_forecast_plot_meta_json` (the plot's names and links). Functions only: no table (see the 2026-11-24 outage).
+  Tests `unit_test@EnvForecast.sql` 4/4 (failed first): the stations document is byte-identical to the dbo one on 553
+  stations; reasoning matches the dbo score, factors, states, notes and week. envdata view `v_water_day` (the daily
+  means the plot draws; `unit_test@EnvdataRead.sql` test 4, suite 69/69). Prod: `mssql/Docs/ADMIN_WRITE_env_step6b.sql`
+  (proven twice locally; ends with a website error-log check); CTRL: `ctrlLogBag/pending/20261125-03_env_step6b.sql`.
+
 - 2026-11-25: **envdata read views for env_service's REST API** (plan step 6a; applied to debian-mysql envdata 2026-11-24 with env_service 0.3.0; was
   debian-mysql). `v_station_info` (every station: identity + water-body link, no back-off columns; read whole by the
   env_service station cache) and `v_weather_day` (stored weather of any day with that day's pressure state; callers

@@ -77,13 +77,35 @@ BEGIN
     ROLLBACK;
 END //
 
+-- ----------------------------------------------------------------
+-- TEST 4: v_water_day carries the daily means the forecast plot draws (discharge, level, turbidity)
+-- ----------------------------------------------------------------
+DROP PROCEDURE IF EXISTS test_04 //
+CREATE PROCEDURE test_04()
+BEGIN
+    DECLARE v_ok INT;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; SELECT 'TEST 4 FAIL: unexpected SQL error' AS message; END;
+    START TRANSACTION;
+    CALL t_station(90001, 'R04', NULL);
+    INSERT INTO water_reading_day (station_id, dt, n, q_n, q_mean, level_mean, turbidity_mean, oxygen_mean, ph_mean, stamp)
+    VALUES (90001, UTC_DATE() - INTERVAL 2 DAY, 24, 24, 12.5, 1.25, 3.5, 9.1, 7.60, UTC_TIMESTAMP());
+    SELECT COUNT(*) INTO v_ok FROM v_water_day
+     WHERE sid = 90001 AND dt = UTC_DATE() - INTERVAL 2 DAY AND discharge = 12.5 AND level = 1.25 AND turbidity = 3.5
+       AND oxygen = 9.1 AND ph = 7.60 AND readings = 24;
+    SELECT IF(v_ok = 1, 'TEST 4 PASS: v_water_day has the daily means by sid and date',
+                        'TEST 4 FAIL: v_water_day wrong') AS message;
+    ROLLBACK;
+END //
+
 DELIMITER ;
 
 CALL test_01();
 CALL test_02();
 CALL test_03();
+CALL test_04();
 
 DROP PROCEDURE IF EXISTS test_01;
 DROP PROCEDURE IF EXISTS test_02;
 DROP PROCEDURE IF EXISTS test_03;
+DROP PROCEDURE IF EXISTS test_04;
 DROP PROCEDURE IF EXISTS t_station;
