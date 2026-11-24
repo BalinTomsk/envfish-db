@@ -7907,3 +7907,107 @@ RETURN
       FROM dbo.WaterStation w
      WHERE w.lat IS NOT NULL AND w.lon IS NOT NULL AND w.country IS NOT NULL
 GO
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID('env.fn_probability_source') AND type IN ('FN','IF','TF'))
+    DROP FUNCTION env.fn_probability_source
+GO
+-- Which path writes dbo.fish_location.today: 'env' when env.Setting says so, else 'legacy' (also when the row is missing).
+-- Called by: dbo.spTotalUpdateProbability, env.sp_update_probability, env.sp_push_species.
+CREATE FUNCTION env.fn_probability_source()
+RETURNS varchar(16)
+AS
+BEGIN
+    RETURN CASE WHEN EXISTS (SELECT 1 FROM env.Setting WHERE name = 'probability_source' AND value = 'env')
+                THEN 'env' ELSE 'legacy' END;
+END
+GO
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID('env.fn_fish_location_today') AND type IN ('FN','IF','TF'))
+    DROP FUNCTION env.fn_fish_location_today
+GO
+-- dbo.fn_fish_location_today on the env path: the same columns and the same factors (month, lunar, oxygen, flow,
+-- pressure; clamped 0..100), with the water state read from env.StationState (by WaterStation.sid) instead of
+-- CurrentWaterState and the weather-front state from env.StationDay instead of StationPressureDay. Both are pushed by
+-- env_service from MySQL envdata. Oxygen older than 7 days does not count (dbo.spTotalUpdateProbability clears it with an
+-- UPDATE on the legacy path); a flow state counts while its flow_stamp is under 2 days old, a pressure state while its
+-- row was pushed in the last 2 days, as on the legacy path. Keep the two functions in step until step 8 drops the legacy one.
+-- Called by: env.sp_update_probability, env.fn_probability_diff.
+CREATE FUNCTION env.fn_fish_location_today( @month tinyint, @moon_day tinyint, @day date )
+RETURNS TABLE
+AS
+RETURN
+    WITH habitat AS
+    (
+        SELECT r.fish_Id, ri.ri_type, ri.ri_min, ri.ri_low, ri.ri_avg, ri.ri_high, ri.ri_max
+          FROM dbo.fish_Rule r
+          JOIN dbo.real_interval ri ON ri.ri_parent_id = r.id AND ri.ri_type = 33
+         WHERE r.periodStart = -1 AND r.periodEnd = -1
+    )
+    SELECT fl.id, fl.station_Id, fl.fish_Id, fl.probability, fl.today
+         , m.f AS monthFactor, l.f AS lunarFactor
+         , ISNULL(o.koef, 1.00) AS oxygenFactor
+         , CAST(CASE WHEN x.v > 100 THEN 100 WHEN x.v < 0 THEN 0 ELSE x.v END AS int) AS newToday
+         , fw.factor AS flowFactor, fw.flow_state AS flowState
+         , pw.factor AS pressureFactor, ps.state AS pressureState
+      FROM dbo.fish_location fl
+      LEFT JOIN dbo.WaterStation ws ON ws.id = fl.station_Id
+      LEFT JOIN env.StationState ss ON ss.sid = ws.sid
+      LEFT JOIN dbo.fish fsh ON fsh.fish_id = fl.fish_Id
+     CROSS APPLY ( SELECT CASE WHEN ss.ts > DATEADD(DAY, -7, SYSUTCDATETIME()) THEN ss.oxygen END AS oxygen ) ox
+     CROSS APPLY ( SELECT ISNULL(MAX(CASE WHEN p.[month] = @month THEN p.probability END) * 1.0
+                                 / NULLIF(MAX(p.probability), 0), 1.0) AS f
+                     FROM dbo.fish_catch_probability p WHERE p.fish_id = fl.fish_Id ) m
+     CROSS APPLY ( SELECT CASE WHEN fsh.fish_moon_sensitive = 1
+                               THEN ISNULL(MAX(CASE WHEN p.[day] = @moon_day THEN p.probability END) * 1.0
+                                           / NULLIF(MAX(p.probability), 0), 1.0)
+                               ELSE 1.0 END AS f
+                     FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = fl.fish_Id ) l
+     OUTER APPLY ( SELECT TOP 1 k.koef FROM habitat h
+                    CROSS APPLY dbo.fn_habitat_koef(ox.oxygen, h.ri_min, h.ri_low, h.ri_avg, h.ri_high, h.ri_max) k
+                    WHERE h.fish_Id = fl.fish_Id AND h.ri_type = 33 ) o
+     CROSS APPLY ( SELECT CASE WHEN ss.flow_stamp > DATEADD(DAY, -2, SYSUTCDATETIME()) THEN ss.flow_state END AS flow_state ) fs
+     OUTER APPLY ( SELECT fr.factor, fr.spawn_only FROM dbo.flow_response fr
+                    WHERE fr.flow_group = fsh.fish_flow_group AND fr.flow_state = fs.flow_state ) fr
+     CROSS APPLY ( SELECT fs.flow_state
+                        , CAST(CASE WHEN fr.factor IS NULL THEN 1.00
+                                    WHEN fr.spawn_only = 1 AND NOT EXISTS (
+                                         SELECT 1 FROM dbo.fish_Rule r WHERE r.fish_Id = fl.fish_Id AND r.periodStart > 0 AND r.periodEnd > 0
+                                            AND (    (r.periodStart <= r.periodEnd AND @month BETWEEN r.periodStart AND r.periodEnd)
+                                                  OR (r.periodStart >  r.periodEnd AND (@month >= r.periodStart OR @month <= r.periodEnd)) ) )
+                                         THEN 1.00
+                                    ELSE fr.factor END AS decimal(4,2)) AS factor ) fw
+     OUTER APPLY ( SELECT sd.pressure_state AS state, sd.pressure_weight AS weight FROM env.StationDay sd
+                    WHERE sd.sid = ws.sid AND sd.dt = @day AND sd.pushed > DATEADD(DAY, -2, SYSUTCDATETIME()) ) ps
+     OUTER APPLY ( SELECT pr.factor FROM dbo.pressure_response pr
+                    WHERE pr.pressure_group = fsh.fish_pressure_group AND pr.pressure_state = ps.state ) prr
+     CROSS APPLY ( SELECT CAST(1.00 + (ISNULL(prr.factor, 1.00) - 1.00) * ISNULL(ps.weight, 0.00) AS decimal(4,2)) AS factor ) pw
+     CROSS APPLY ( SELECT ROUND(ISNULL(fl.probability, 100) * m.f * l.f * ISNULL(o.koef, 1.00) * fw.factor * pw.factor, 0) AS v ) x
+GO
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID('env.fn_probability_diff') AND type IN ('FN','IF','TF'))
+    DROP FUNCTION env.fn_probability_diff
+GO
+-- The comparison of plan step 5: for today (UTC), every fish_location row whose newToday, flow state or pressure state
+-- differs between the legacy path (dbo.fn_fish_location_today) and the env path (env.fn_fish_location_today).
+-- Expected differences: the US oxygen and multi-series fixes in envdata, data timing (the two pairs of collectors
+-- fetch at different times), and a 6 h refresh rhythm on each side.
+-- Called by: operations, during the comparison days. SELECT COUNT(*) FROM env.fn_probability_diff()
+CREATE FUNCTION env.fn_probability_diff()
+RETURNS TABLE
+AS
+RETURN
+    SELECT o.id, o.station_Id, o.fish_Id
+         , o.newToday AS legacyToday, n.newToday AS envToday
+         , o.flowState AS legacyFlowState, n.flowState AS envFlowState
+         , o.pressureState AS legacyPressureState, n.pressureState AS envPressureState
+         , o.oxygenFactor AS legacyOxygenFactor, n.oxygenFactor AS envOxygenFactor
+      FROM dbo.fn_fish_location_today(MONTH(SYSUTCDATETIME()), dbo.fn_moon_day(SYSUTCDATETIME()), CAST(SYSUTCDATETIME() AS date)) o
+      JOIN env.fn_fish_location_today(MONTH(SYSUTCDATETIME()), dbo.fn_moon_day(SYSUTCDATETIME()), CAST(SYSUTCDATETIME() AS date)) n
+        ON n.id = o.id
+     WHERE o.newToday <> n.newToday
+        OR ISNULL(o.flowState, '') <> ISNULL(n.flowState, '')
+        OR ISNULL(o.pressureState, '') <> ISNULL(n.pressureState, '')
+GO
