@@ -2,6 +2,19 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-25: **Map pins and the General tab's data stamp read env_service's tables** (env_service plan step 7, so they
+  keep working once the Java pushers stop feeding `CurrentWaterState` / `weather_Forecast` / `WaterData`; built + tested
+  locally, NOT applied to prod). script02_Funct: `dbo.fn_map_location` now holds the one implementation of the pin rule
+  on `env.StationState` (a reading with a value in the last 15 days) and `env.StationDay` (a forecast day from today on),
+  UTC; `env.fn_map_location` became a pass-through to it (one implementation; `env.fn_forecast_stations_json` unchanged).
+  `dbo.fn_map_location_trial` uses the same two checks (no `SCHEMABINDING` on either any more: they read the `env` schema).
+  `dbo.fn_lake_view_info`'s `science` node (the river viewer's data stamp) = the newest `env.StationState.ts` of the
+  water body's stations instead of `MAX(WaterData.stamp)`. Tests: `unit_test@MapLocation.sql` seeds `env.StationState` /
+  `env.StationDay` instead of the legacy tables and no longer inserts an explicit `sid` (an IDENTITY: the tests could not
+  run at all), 7/7, the positive cases failing against the old functions; `unit_test@LakeViewInfo.sql` TEST 3 (data stamp
+  from env), failed first. Every other test file's local result is identical before and after. Prod:
+  `mssql/Docs/ADMIN_WRITE_step7_env_readers.sql` (git-ignored; delete once applied), then check `dbo.LogException`.
+
 - 2026-11-25: **The forecast documents on schema `env`** (env_service plan step 6b; applied to prod SQL Server + debian-mysql 2026-11-24 23:30 UTC with env_service 0.4.0).
   script02_Funct: `env.fn_map_location` (dbo.fn_map_location with the pin rules on `env.StationState` / `env.StationDay`,
   UTC), `env.fn_forecast_stations_json` (on it), `env.fn_fish_reasoning_json` (dbo.fn_fish_reasoning_json on `env.*` and
