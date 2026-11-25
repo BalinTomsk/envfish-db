@@ -8011,3 +8011,204 @@ RETURN
         OR ISNULL(o.flowState, '') <> ISNULL(n.flowState, '')
         OR ISNULL(o.pressureState, '') <> ISNULL(n.pressureState, '')
 GO
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID('env.fn_map_location') AND type IN ('FN','IF','TF'))
+    DROP FUNCTION env.fn_map_location
+GO
+-- dbo.fn_map_location on the env path (env_service plan step 6b): a fish's stations with today's score, where a pin
+-- needs WATER (a reading with a value in the last 15 days: env.StationState) and WEATHER (a forecast day from today
+-- on: env.StationDay) and FISH (dbo.fish_location). Same columns and rules as the dbo function, UTC instead of the
+-- server clock. @lat, @lon, @dist are unused, as in the dbo function (kept for the same signature).
+-- Called by: env.fn_forecast_stations_json.
+CREATE FUNCTION env.fn_map_location( @fishName varchar(64), @lat float, @lon float, @country char(3), @dist float )
+RETURNS TABLE
+AS
+RETURN
+    SELECT w.lat, w.lon, f.today, w.LocName AS location, w.sid, w.country, w.state, w.county
+      FROM dbo.vWaterStation w
+      JOIN dbo.fish_location f ON f.station_Id = w.id
+      JOIN dbo.fish s ON s.fish_Id = f.fish_Id
+     WHERE s.fish_name = @fishName AND @country = w.country
+       AND EXISTS ( SELECT 1 FROM env.StationState c
+                     WHERE c.sid = w.sid
+                       AND c.ts > DATEADD(DAY, -15, SYSUTCDATETIME())
+                       AND ( c.discharge IS NOT NULL OR c.oxygen IS NOT NULL OR c.ph IS NOT NULL OR c.elevation IS NOT NULL ) )
+       AND EXISTS ( SELECT 1 FROM env.StationDay d WHERE d.sid = w.sid AND d.dt >= CAST(SYSUTCDATETIME() AS date) )
+GO
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID('env.fn_forecast_stations_json') AND type IN ('FN','IF','TF'))
+    DROP FUNCTION env.fn_forecast_stations_json
+GO
+-- dbo.fn_forecast_stations_json on env.fn_map_location (env_service plan step 6b): the same document, the same rules.
+-- Called by: env_service GET /api/v1/env/forecast/stations (docapi /forecast/stations from step 6c).
+CREATE FUNCTION env.fn_forecast_stations_json( @fish_id uniqueidentifier, @lat float, @lon float
+                                             , @radius_km float, @country char(2), @limit int )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    DECLARE @fishName varchar(64) = (SELECT TOP 1 fish_name FROM dbo.fish WHERE fish_id = @fish_id);
+    IF @fishName IS NULL OR @lat IS NULL OR @lon IS NULL
+        RETURN NULL;
+
+    SET @radius_km = CASE WHEN @radius_km IS NULL THEN 100 WHEN @radius_km < 1 THEN 1 WHEN @radius_km > 500 THEN 500 ELSE @radius_km END;
+    SET @limit = CASE WHEN @limit IS NULL THEN 50 WHEN @limit < 1 THEN 1 WHEN @limit > 200 THEN 200 ELSE @limit END;
+    SET @country = NULLIF(UPPER(LTRIM(RTRIM(@country))), '');
+
+    DECLARE @near TABLE ( sid int PRIMARY KEY, name nvarchar(255), lat float, lon float, country char(2)
+                        , state nvarchar(16), county nvarchar(255), today int, km decimal(7,1) );
+
+    INSERT INTO @near (sid, name, lat, lon, country, state, county, today, km)
+    SELECT m.sid, m.location, m.lat, m.lon, m.country, m.state, m.county, m.today, d.km
+      FROM ( SELECT * FROM env.fn_map_location(@fishName, @lat, @lon, 'CA', 0) WHERE ISNULL(@country, 'CA') = 'CA'
+             UNION ALL
+             SELECT * FROM env.fn_map_location(@fishName, @lat, @lon, 'US', 0) WHERE ISNULL(@country, 'US') = 'US' ) m
+     CROSS APPLY ( SELECT CAST(6371.0 * 2 * ASIN(SQRT( POWER(SIN(RADIANS(m.lat - @lat) / 2), 2)
+                        + COS(RADIANS(@lat)) * COS(RADIANS(m.lat)) * POWER(SIN(RADIANS(m.lon - @lon) / 2), 2) )) AS decimal(7,1)) AS km ) d
+     WHERE m.lat BETWEEN @lat - @radius_km / 111.0 AND @lat + @radius_km / 111.0
+       AND d.km <= @radius_km;
+
+    RETURN (
+    SELECT @fish_id AS fishId, @fishName AS fish, CAST(@lat AS decimal(9,5)) AS lat, CAST(@lon AS decimal(9,5)) AS lon
+         , CAST(@radius_km AS int) AS radiusKm, @country AS country
+         , @limit AS limit, (SELECT COUNT(*) FROM @near) AS total
+         , JSON_QUERY(ISNULL(( SELECT TOP (@limit) n.sid, n.name, CAST(n.lat AS decimal(9,5)) AS lat, CAST(n.lon AS decimal(9,5)) AS lon, n.country, n.state, n.county
+                                    , n.today, n.today / 10 - 1 AS marker, n.km AS distanceKm
+                                 FROM @near n ORDER BY n.km, n.sid FOR JSON PATH, INCLUDE_NULL_VALUES ), '[]')) AS stations
+       FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES );
+END
+GO
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID('env.fn_fish_reasoning_json') AND type IN ('FN','IF','TF'))
+    DROP FUNCTION env.fn_fish_reasoning_json
+GO
+-- dbo.fn_fish_reasoning_json on the env path (env_service plan step 6b). The same document, except:
+--   * the water state and flow come from env.StationState, the pressure picture from env.StationDay, the score from
+--     env.fn_fish_location_today (what writes fish_location.today since the step 5 cut-over);
+--   * pressure in mm Hg (plan decision 2): pressure.mm (was .hpa), pressure.swingMm (was .swingHpa), pressure.change1d
+--     = today's mm minus yesterday's, pressure.series[].mm (was .hpa);
+--   * no "weather" block and no week[].weather: env.StationDay carries no conditions, rain or wind. env_service adds
+--     both from MySQL envdata (v_weather_day). water.velocity is gone (nothing collects it).
+-- NULL for an unknown station, or a fish not listed at that station (dbo.fish_location).
+-- Called by: env_service GET /api/v1/env/forecast/reasoning/{sid} and /forecast/plot/{sid} (its week).
+CREATE FUNCTION env.fn_fish_reasoning_json( @sid int, @fish_id uniqueidentifier, @at datetime2 )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    DECLARE @station uniqueidentifier = (SELECT TOP 1 id FROM dbo.WaterStation WHERE sid = @sid);
+    IF @station IS NULL OR @fish_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM dbo.fish_location WHERE station_Id = @station AND fish_Id = @fish_id)
+        RETURN NULL;
+
+    DECLARE @day0 date = CAST(@at AS date);
+    DECLARE @month tinyint = MONTH(@at);
+    DECLARE @moon_day tinyint = dbo.fn_moon_day(@at);
+
+    RETURN (
+    SELECT ws.sid, COALESCE(NULLIF(ws.locName, ''), NULLIF(ws.locDesc, ''), 'station ' + ws.mli) AS station, ISNULL(l.lake_name, ws.lakeName) AS lakeName, ws.lakeId
+         , RTRIM(ws.country) AS country, ws.state
+         , f.fish_id AS fishId, f.fish_name AS fish
+         , f.fish_moon_sensitive AS moonSensitive, f.fish_migrate_pattern AS migrates
+         , t.probability AS base, t.newToday AS today
+         , CAST(t.monthFactor AS decimal(6,3))       AS [factors.month]
+         , CAST(t.lunarFactor AS decimal(6,3))       AS [factors.lunar]
+         , CAST(t.oxygenFactor AS decimal(6,3))      AS [factors.oxygen]
+         , CAST(t.flowFactor AS decimal(6,3))        AS [factors.flow]
+         , CAST(t.pressureFactor AS decimal(6,3))    AS [factors.pressure]
+         , @moon_day AS [moon.day]
+         , (SELECT p.probability FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = f.fish_id AND p.[day] = @moon_day) AS [moon.value]
+         , (SELECT MAX(p.probability) FROM dbo.fish_lunar_catch_probability p WHERE p.fish_id = f.fish_id) AS [moon.peak]
+         , @month AS [month.month]
+         , (SELECT p.probability FROM dbo.fish_catch_probability p WHERE p.fish_id = f.fish_id AND p.[month] = @month) AS [month.index]
+         , (SELECT MAX(p.probability) FROM dbo.fish_catch_probability p WHERE p.fish_id = f.fish_id) AS [month.peak]
+         , (SELECT TOP 1 p.[month] FROM dbo.fish_catch_probability p WHERE p.fish_id = f.fish_id ORDER BY p.probability DESC, p.[month]) AS [month.peakMonth]
+         , JSON_QUERY(ISNULL(( SELECT r.periodStart AS monthStart, r.periodEnd AS monthEnd FROM dbo.fish_Rule r
+                                WHERE r.fish_Id = f.fish_id AND r.periodStart > 0 AND r.periodEnd > 0
+                                ORDER BY r.periodStart FOR JSON PATH ), '[]')) AS spawn
+         , CAST(CASE WHEN EXISTS ( SELECT 1 FROM dbo.fish_Rule r WHERE r.fish_Id = f.fish_id AND r.periodStart > 0 AND r.periodEnd > 0
+                                     AND (    (r.periodStart <= r.periodEnd AND @month BETWEEN r.periodStart AND r.periodEnd)
+                                           OR (r.periodStart >  r.periodEnd AND (@month >= r.periodStart OR @month <= r.periodEnd)) ) )
+                     THEN 1 ELSE 0 END AS bit) AS inSpawnSeason
+         , es.ts AS [water.stamp]
+         , CAST(es.oxygen AS decimal(9,2)) AS [water.oxygen]
+         , CAST(es.discharge AS decimal(12,3)) AS [water.discharge], CAST(es.turbidity AS decimal(9,2)) AS [water.turbidity]
+         , CAST(es.ph AS decimal(5,2)) AS [water.ph]
+         , t.flowState AS [flow.state], f.fish_flow_group AS [flow.group]
+         , (SELECT fr.note FROM dbo.flow_response fr WHERE fr.flow_group = f.fish_flow_group AND fr.flow_state = t.flowState) AS [flow.note]
+         , (SELECT fr.spawn_only FROM dbo.flow_response fr WHERE fr.flow_group = f.fish_flow_group AND fr.flow_state = t.flowState) AS [flow.spawnOnly]
+         , CAST(es.q_ratio_1d AS decimal(9,3)) AS [flow.ratio1d], CAST(es.q_ratio_2d AS decimal(9,3)) AS [flow.ratio2d]
+         , CAST(es.q_ratio_3_7d AS decimal(9,3)) AS [flow.ratio3to7d], es.days_since_peak AS [flow.daysSincePeak]
+         , es.flow_stamp AS [flow.stamp]
+         , t.pressureState AS [pressure.state], f.fish_pressure_group AS [pressure.group]
+         , (SELECT pr.note FROM dbo.pressure_response pr WHERE pr.pressure_group = f.fish_pressure_group AND pr.pressure_state = t.pressureState) AS [pressure.note]
+         , sd.pressure_mm AS [pressure.mm], CAST(sd.pressure_mm - sy.pressure_mm AS decimal(5,1)) AS [pressure.change1d]
+         , sd.front_dt AS [pressure.frontDate]
+         , sd.swing_mm AS [pressure.swingMm], sd.strength AS [pressure.strength], sd.season AS [pressure.season]
+         , sd.pressure_weight AS [pressure.weight], sd.pushed AS [pressure.stamp]
+         , JSON_QUERY(ISNULL(( SELECT CONVERT(char(10), s3.dt, 23) AS [date], s3.pressure_mm AS mm, s3.pressure_state AS state
+                                 FROM env.StationDay s3
+                                WHERE s3.sid = ws.sid AND s3.dt BETWEEN DATEADD(DAY, -3, @day0) AND DATEADD(DAY, 3, @day0)
+                                ORDER BY s3.dt FOR JSON PATH ), '[]')) AS [pressure.series]
+         , JSON_QUERY(( SELECT CAST(ri.ri_min AS decimal(9,2)) AS [min], CAST(ri.ri_low AS decimal(9,2)) AS low
+                             , CAST(ri.ri_avg AS decimal(9,2)) AS [avg], CAST(ri.ri_high AS decimal(9,2)) AS high
+                             , CAST(ri.ri_max AS decimal(9,2)) AS [max]
+                          FROM dbo.fish_Rule r JOIN dbo.real_interval ri ON ri.ri_parent_id = r.id AND ri.ri_type = 33
+                         WHERE r.fish_Id = f.fish_id AND r.periodStart = -1 AND r.periodEnd = -1
+                           FOR JSON PATH, WITHOUT_ARRAY_WRAPPER )) AS [ranges.oxygen]
+         , JSON_QUERY(( SELECT CONVERT(char(10), d.dt, 23) AS [date], d.md AS moonDay
+                             , CAST(w.monthFactor AS decimal(6,3)) AS monthFactor, CAST(w.lunarFactor AS decimal(6,3)) AS lunarFactor
+                             , CAST(w.oxygenFactor AS decimal(6,3)) AS oxygenFactor, CAST(w.flowFactor AS decimal(6,3)) AS flowFactor
+                             , CAST(w.pressureFactor AS decimal(6,3)) AS pressureFactor, w.pressureState
+                             , w.newToday AS probability
+                          FROM ( VALUES (0), (1), (2), (3), (4), (5), (6) ) n(i)
+                         CROSS APPLY ( SELECT DATEADD(DAY, n.i, @day0) AS dt ) d0
+                         CROSS APPLY ( SELECT d0.dt, dbo.fn_moon_day(DATEADD(DAY, n.i, @at)) AS md ) d
+                         CROSS APPLY ( SELECT x.* FROM env.fn_fish_location_today(MONTH(d.dt), d.md, d.dt) x
+                                        WHERE x.station_Id = @station AND x.fish_Id = @fish_id ) w
+                         ORDER BY n.i FOR JSON PATH )) AS week
+      FROM dbo.WaterStation ws
+      JOIN dbo.fish f ON f.fish_id = @fish_id
+      LEFT JOIN dbo.Lake l ON l.Lake_id = ws.lakeId
+      LEFT JOIN env.StationState es ON es.sid = ws.sid
+      LEFT JOIN env.StationDay sd ON sd.sid = ws.sid AND sd.dt = @day0
+      LEFT JOIN env.StationDay sy ON sy.sid = ws.sid AND sy.dt = DATEADD(DAY, -1, @day0)
+     CROSS APPLY ( SELECT TOP 1 x.* FROM env.fn_fish_location_today(@month, @moon_day, @day0) x
+                    WHERE x.station_Id = @station AND x.fish_Id = @fish_id ) t
+     WHERE ws.id = @station
+       FOR JSON PATH, WITHOUT_ARRAY_WRAPPER );
+END
+GO
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID('env.fn_forecast_plot_meta_json') AND type IN ('FN','IF','TF'))
+    DROP FUNCTION env.fn_forecast_plot_meta_json
+GO
+-- The SQL Server half of the forecast plot (dbo.fn_forecast_plot_json's names and links); env_service adds the series
+-- and the calendar from MySQL envdata and the 7-day score from env.fn_fish_reasoning_json (env_service plan step 6b).
+-- {sid, place, fish, country, state, lakeid, lakename}: place = the station's description ('unknown' when it has none),
+-- country trimmed, lakeid lower-case (null when the station has no water body), lakename null when that lake row is missing.
+-- NULL for an unknown station, or a fish not listed at that station (the map never links such a pair).
+-- Called by: env_service GET /api/v1/env/forecast/plot/{sid}.
+CREATE FUNCTION env.fn_forecast_plot_meta_json( @sid int, @fish_id uniqueidentifier )
+RETURNS nvarchar(max)
+AS
+BEGIN
+    DECLARE @station uniqueidentifier = (SELECT TOP 1 id FROM dbo.WaterStation WHERE sid = @sid);
+    IF @station IS NULL OR @fish_id IS NULL
+       OR NOT EXISTS (SELECT 1 FROM dbo.fish_location WHERE station_Id = @station AND fish_Id = @fish_id)
+        RETURN NULL;
+    RETURN (
+    SELECT TOP 1 ws.sid
+         , ISNULL(REPLACE(ws.locDesc, '"', ''''), 'unknown') AS place
+         , (SELECT fish_name FROM dbo.fish WHERE fish_id = @fish_id) AS fish
+         , RTRIM(ws.country) AS country, ws.[state] AS state
+         , LOWER(CONVERT(varchar(36), ws.lakeid)) AS lakeid
+         , REPLACE(l.lake_name, '"', '''') AS lakename
+      FROM dbo.WaterStation ws
+      LEFT JOIN dbo.lake l ON l.lake_id = ws.lakeid
+     WHERE ws.id = @station
+       FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES );
+END
+GO

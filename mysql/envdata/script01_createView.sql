@@ -128,3 +128,16 @@ SELECT w.station_id AS sid, w.dt, w.tm
      , p.state AS pressure_state, p.d1_mm, p.front_dt, p.swing_mm, p.strength
   FROM weather_day w
   LEFT JOIN station_pressure_day p ON p.station_id = w.station_id AND p.dt = w.dt;
+
+-- ------------------------------------------------------------------------------------------------------------
+-- v_water_day: per station and day, the daily means of water_reading_day (kept 30 days; the last 3 days are
+-- re-aggregated by every sp_fill_flow_state run, so today trails the newest reading by up to 6 h).
+-- discharge m3/s, level m, oxygen mg/L, turbidity as delivered. The caller filters WHERE sid = ? AND dt BETWEEN ? AND ?
+-- (a primary-key range).
+-- Called by: env_service (REST: /api/v1/env/forecast/plot/{sid}, its discharge / level / turbidity series).
+-- ------------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_water_day AS
+SELECT d.station_id AS sid, d.dt, d.n AS readings
+     , d.q_mean AS discharge, d.level_mean AS level, d.turbidity_mean AS turbidity, d.oxygen_mean AS oxygen, d.ph_mean AS ph
+     , d.stamp
+  FROM water_reading_day d;
