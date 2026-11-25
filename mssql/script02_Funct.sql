@@ -2331,7 +2331,6 @@ GO
 **/
 CREATE function dbo.fn_map_location_trial( @fishName  varchar(64), @lat float, @lon float, @country char(2), @state char(2) )
   RETURNS  TABLE
-  WITH SCHEMABINDING
 AS
 RETURN   --lat, lon, today, location, sid, country, state, county
     SELECT w.lat,  w.lon,  f.today, w.LocName as location, w.sid, w.country, w.state, w.county
@@ -2342,14 +2341,15 @@ RETURN   --lat, lon, today, location, sid, country, state, county
                   AND ( w.lat between (@lat-3.0) AND (@lat+3.0) ) AND (w.lon between (@lon-3.0) AND (@lon+3.0) ) ) )
         AND EXISTS( SELECT TOP 1 1 FROM dbo.fish s WHERE fish_name = @fishName and f.fish_id = s.fish_id )
 		-- Same rule as dbo.fn_map_location: water AND weather AND fish. Kept in step deliberately --
-		-- a trial user must not be shown pins a paying one would not get, or vice versa.
-		AND EXISTS( SELECT 1 FROM dbo.CurrentWaterState c
-		             WHERE c.mli = w.mli
-		               AND c.stamp > DATEADD(day, -15, GETDATE())
+		-- a trial user must not be shown pins a paying one would not get, or vice versa. Water and
+		-- weather are env_service's (env.StationState / env.StationDay), UTC.
+		AND EXISTS( SELECT 1 FROM env.StationState c
+		             WHERE c.sid = w.sid
+		               AND c.ts > DATEADD(DAY, -15, SYSUTCDATETIME())
 		               AND ( c.discharge IS NOT NULL
 		                  OR c.oxygen IS NOT NULL OR c.ph IS NOT NULL OR c.elevation IS NOT NULL ) )
-		AND EXISTS( SELECT 1 FROM dbo.weather_Forecast wf
-		             WHERE wf.mli = w.mli AND wf.dt >= CAST(GETDATE() AS date) )
+		AND EXISTS( SELECT 1 FROM env.StationDay d
+		             WHERE d.sid = w.sid AND d.dt >= CAST(SYSUTCDATETIME() AS date) )
 		/*
      UNION ALL
     select  spot_lat, spot_lon, 0, '', b.spot_sid, 'CA', 'ON', ''        -- also display fish spots
@@ -2368,7 +2368,6 @@ GO
 **/
 CREATE function [dbo].[fn_map_location]( @fishName  varchar(64), @lat float, @lon float, @country char(3), @dist float )
   RETURNS  TABLE
-  WITH SCHEMABINDING
 AS
 RETURN   --lat, lon, today, location, sid, country, state, county
     SELECT  w.lat, w.lon, f.today, w.LocName AS location, w.sid, w.country, w.state, w.county 
@@ -2383,14 +2382,15 @@ RETURN   --lat, lon, today, location, sid, country, state, county
 		-- EVER arrived. The ~127 US gauges that publish a row a day carrying no measurement at all
 		-- satisfied that and got a pin over an empty water panel, so it now has to be a RECENT
 		-- reading that actually carries a value.
-		AND EXISTS( SELECT 1 FROM dbo.CurrentWaterState c
-		             WHERE c.mli = w.mli
-		               AND c.stamp > DATEADD(day, -15, GETDATE())
+		-- Water and weather are env_service's (env.StationState / env.StationDay), UTC.
+		AND EXISTS( SELECT 1 FROM env.StationState c
+		             WHERE c.sid = w.sid
+		               AND c.ts > DATEADD(DAY, -15, SYSUTCDATETIME())
 		               AND ( c.discharge IS NOT NULL
 		                  OR c.oxygen IS NOT NULL OR c.ph IS NOT NULL OR c.elevation IS NOT NULL ) )
 		-- WEATHER was not a condition at all, so a station with no forecast still got a pin.
-		AND EXISTS( SELECT 1 FROM dbo.weather_Forecast wf
-		             WHERE wf.mli = w.mli AND wf.dt >= CAST(GETDATE() AS date) )
+		AND EXISTS( SELECT 1 FROM env.StationDay d
+		             WHERE d.sid = w.sid AND d.dt >= CAST(SYSUTCDATETIME() AS date) )
 		/*
      UNION ALL
     select  spot_lat, spot_lon, 0, '', a.spot_sid, 'CA', 'ON', ''                -- also display fish spots
@@ -3859,9 +3859,9 @@ BEGIN
     ( 
         SELECT * FROM
         (
-			 SELECT max(CAST(wd.stamp AS DATE)) AS dt 
-				FROM WaterData wd JOIN WaterStation ws ON wd.mli = ws.mli 
-				WHERE lakeid = @lake_id
+			 SELECT max(CAST(c.ts AS DATE)) AS dt            -- the newest reading of its stations (env_service, UTC)
+				FROM env.StationState c JOIN dbo.WaterStation ws ON c.sid = ws.sid
+				WHERE ws.lakeid = @lake_id
 		) t FOR XML RAW ('science')
     ) y(val)
 	-- fish spots
@@ -8025,16 +8025,9 @@ CREATE FUNCTION env.fn_map_location( @fishName varchar(64), @lat float, @lon flo
 RETURNS TABLE
 AS
 RETURN
-    SELECT w.lat, w.lon, f.today, w.LocName AS location, w.sid, w.country, w.state, w.county
-      FROM dbo.vWaterStation w
-      JOIN dbo.fish_location f ON f.station_Id = w.id
-      JOIN dbo.fish s ON s.fish_Id = f.fish_Id
-     WHERE s.fish_name = @fishName AND @country = w.country
-       AND EXISTS ( SELECT 1 FROM env.StationState c
-                     WHERE c.sid = w.sid
-                       AND c.ts > DATEADD(DAY, -15, SYSUTCDATETIME())
-                       AND ( c.discharge IS NOT NULL OR c.oxygen IS NOT NULL OR c.ph IS NOT NULL OR c.elevation IS NOT NULL ) )
-       AND EXISTS ( SELECT 1 FROM env.StationDay d WHERE d.sid = w.sid AND d.dt >= CAST(SYSUTCDATETIME() AS date) )
+    -- dbo.fn_map_location reads env.StationState / env.StationDay itself (plan step 7): one implementation.
+    SELECT lat, lon, today, location, sid, country, state, county
+      FROM dbo.fn_map_location(@fishName, @lat, @lon, @country, @dist)
 GO
 
 --------------------------------------------------------------------------------------------------------------------------------------------------

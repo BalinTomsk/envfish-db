@@ -52,3 +52,27 @@ IF @ok = 1 PRINT 'TEST 2 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: all four 
 ELSE RAISERROR('TEST 2 FAIL [%dms]: one or more name nodes missing/mismatched', 16, -1, @ElapsedMs);
 ROLLBACK TRAN TestLakeViewInfo2
 GO
+-- ---------------------------------------------------------------------------- TEST 3: the data stamp comes from env.StationState
+BEGIN TRAN TestLakeViewInfo3
+    DECLARE @test_name sysname = N'TestLakeViewInfo3 [fn_lake_view_info] : science date = newest env.StationState reading of the lake''s stations';
+DECLARE @tStart datetime2, @ElapsedMs int; DECLARE @ok int = 0;
+BEGIN TRY  SET NOCOUNT ON; SET @tStart = SYSUTCDATETIME();
+DECLARE @Lake uniqueidentifier = NEWID(), @St uniqueidentifier = NEWID(), @St2 uniqueidentifier = NEWID();
+INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (@Lake, 2, N'UT View Info River 3');
+-- sid is an IDENTITY in the live table: let it be assigned and find the rows by MLI
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, lakeId, lakeName, supported)
+VALUES (@St,  'UT_LVI_1', 44.1, -79.1, 'CA', N'unit-test station', 2, N'UT LVI 1', N'UT County', @Lake, N'UT View Info River 3', 1),
+       (@St2, 'UT_LVI_2', 44.2, -79.2, 'CA', N'unit-test station', 2, N'UT LVI 2', N'UT County', @Lake, N'UT View Info River 3', 1);
+DECLARE @Sid1 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = 'UT_LVI_1'), @Sid2 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = 'UT_LVI_2');
+-- no dbo.WaterData rows at all: the date must come from env_service's states, the newer of the two
+INSERT INTO env.StationState (sid, mli, ts, discharge) VALUES (@Sid1, 'UT_LVI_1', '2026-11-20T08:00:00', 1.0),
+                                                              (@Sid2, 'UT_LVI_2', '2026-11-24T23:30:00', 2.0);
+DECLARE @doc xml = (SELECT CAST(doc AS xml) FROM dbo.fn_lake_view_info(@Lake));
+IF @doc.value('(/root/science/science/@dt)[1]', 'varchar(10)') = '2026-11-24' SET @ok = 1;
+END TRY
+BEGIN CATCH SELECT ERROR_NUMBER() AS ErrorNumber, @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage; END CATCH
+SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
+IF @ok = 1 PRINT 'TEST 3 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: data stamp = newest env.StationState reading';
+ELSE RAISERROR('TEST 3 FAIL [%dms]: science date not taken from env.StationState', 16, -1, @ElapsedMs);
+ROLLBACK TRAN TestLakeViewInfo3
+GO

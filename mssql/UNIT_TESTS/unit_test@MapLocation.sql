@@ -2,6 +2,7 @@ SET QUOTED_IDENTIFIER ON
 GO
 /*
   Unit tests for dbo.fn_map_location -- the station points plotted on the FORECAST map.
+  Water and weather come from env.StationState / env.StationDay (env_service, plan step 7): the tests seed those.
   Caller: FishTracker Forecast/Planning.aspx.cs (FishTracker.Forecast.MapFrame.LoadMapLocation),
   "SELECT lat, lon, today, location, sid, country, state, county FROM dbo.fn_map_location(...)".
 
@@ -53,18 +54,19 @@ SELECT TOP 1 @Fish1 = fish_id, @FishName1 = fish_name FROM dbo.fish ORDER BY fis
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake1, 2, N'UT MAP Lake 1');
 INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake1, @Fish1);
-INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
-VALUES (@St1, @Mli1, 44.10, -79.10, 'CA', N'unit-test station', 2, N'UT MAP Station 1', N'UT County', 940101, @Lake1, N'UT MAP Lake 1', 1);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, lakeId, lakeName, supported)
+VALUES (@St1, @Mli1, 44.10, -79.10, 'CA', N'unit-test station', 2, N'UT MAP Station 1', N'UT County', @Lake1, N'UT MAP Lake 1', 1);
+-- sid is an IDENTITY in the live table: let it be assigned and find the row by MLI
+DECLARE @Sid940101 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = @Mli1);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@St1, @Fish1, 55, GETUTCDATE());
 
 -- a real reading, and a forecast for today
-INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES (@Mli1, GETDATE(), 3.5);
-INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
-VALUES (@St1, @Mli1, CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+INSERT INTO env.StationState (sid, mli, ts, discharge) VALUES (@Sid940101, @Mli1, SYSUTCDATETIME(), 3.5);
+INSERT INTO env.StationDay (sid, dt) VALUES (@Sid940101, CAST(SYSUTCDATETIME() AS date));
 
 -- 2. execute unit test
 
-SELECT @rows1 = COUNT(*) FROM dbo.fn_map_location(@FishName1, 44.10, -79.10, 'CA', 0) WHERE sid = 940101;
+SELECT @rows1 = COUNT(*) FROM dbo.fn_map_location(@FishName1, 44.10, -79.10, 'CA', 0) WHERE sid = @Sid940101;
 
 END TRY
 BEGIN CATCH
@@ -110,15 +112,17 @@ SELECT TOP 1 @Fish2 = fish_id, @FishName2 = fish_name FROM dbo.fish ORDER BY fis
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake2, 2, N'UT MAP Lake 2');
 INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake2, @Fish2);
-INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
-VALUES (@St2, @Mli2, 44.20, -79.20, 'CA', N'unit-test station', 2, N'UT MAP Station 2', N'UT County', 940102, @Lake2, N'UT MAP Lake 2', 1);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, lakeId, lakeName, supported)
+VALUES (@St2, @Mli2, 44.20, -79.20, 'CA', N'unit-test station', 2, N'UT MAP Station 2', N'UT County', @Lake2, N'UT MAP Lake 2', 1);
+-- sid is an IDENTITY in the live table: let it be assigned and find the row by MLI
+DECLARE @Sid940102 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = @Mli2);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@St2, @Fish2, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES (@Mli2, GETDATE(), 3.5);
--- deliberately NO dbo.weather_Forecast row
+INSERT INTO env.StationState (sid, mli, ts, discharge) VALUES (@Sid940102, @Mli2, SYSUTCDATETIME(), 3.5);
+-- deliberately NO env.StationDay row
 
 -- 2. execute unit test
 
-SELECT @rows2 = COUNT(*) FROM dbo.fn_map_location(@FishName2, 44.20, -79.20, 'CA', 0) WHERE sid = 940102;
+SELECT @rows2 = COUNT(*) FROM dbo.fn_map_location(@FishName2, 44.20, -79.20, 'CA', 0) WHERE sid = @Sid940102;
 
 END TRY
 BEGIN CATCH
@@ -166,19 +170,20 @@ SELECT TOP 1 @Fish3 = fish_id, @FishName3 = fish_name FROM dbo.fish ORDER BY fis
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake3, 2, N'UT MAP Lake 3');
 INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake3, @Fish3);
-INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
-VALUES (@St3, @Mli3, 44.30, -79.30, 'CA', N'unit-test station', 2, N'UT MAP Station 3', N'UT County', 940103, @Lake3, N'UT MAP Lake 3', 1);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, lakeId, lakeName, supported)
+VALUES (@St3, @Mli3, 44.30, -79.30, 'CA', N'unit-test station', 2, N'UT MAP Station 3', N'UT County', @Lake3, N'UT MAP Lake 3', 1);
+-- sid is an IDENTITY in the live table: let it be assigned and find the row by MLI
+DECLARE @Sid940103 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = @Mli3);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@St3, @Fish3, 55, GETUTCDATE());
 
-INSERT INTO dbo.WaterData (mli, stamp, discharge, turbidity, oxygen, ph, elevation)
-VALUES (@Mli3, GETDATE(), NULL, NULL, NULL, NULL, NULL);
+INSERT INTO env.StationState (sid, mli, ts, discharge, turbidity, oxygen, ph, elevation)
+VALUES (@Sid940103, @Mli3, SYSUTCDATETIME(), NULL, NULL, NULL, NULL, NULL);
 
-INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
-VALUES (@St3, @Mli3, CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+INSERT INTO env.StationDay (sid, dt) VALUES (@Sid940103, CAST(SYSUTCDATETIME() AS date));
 
 -- 2. execute unit test
 
-SELECT @rows3 = COUNT(*) FROM dbo.fn_map_location(@FishName3, 44.30, -79.30, 'CA', 0) WHERE sid = 940103;
+SELECT @rows3 = COUNT(*) FROM dbo.fn_map_location(@FishName3, 44.30, -79.30, 'CA', 0) WHERE sid = @Sid940103;
 
 END TRY
 BEGIN CATCH
@@ -226,16 +231,17 @@ SELECT TOP 1 @Other4 = fish_id, @OtherName4 = fish_name FROM dbo.fish WHERE fish
 
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake4, 2, N'UT MAP Lake 4');
 INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake4, @Fish4);
-INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
-VALUES (@St4, @Mli4, 44.40, -79.40, 'CA', N'unit-test station', 2, N'UT MAP Station 4', N'UT County', 940104, @Lake4, N'UT MAP Lake 4', 1);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, locDesc, locType, locName, county, lakeId, lakeName, supported)
+VALUES (@St4, @Mli4, 44.40, -79.40, 'CA', N'unit-test station', 2, N'UT MAP Station 4', N'UT County', @Lake4, N'UT MAP Lake 4', 1);
+-- sid is an IDENTITY in the live table: let it be assigned and find the row by MLI
+DECLARE @Sid940104 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = @Mli4);
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@St4, @Fish4, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES (@Mli4, GETDATE(), 3.5);
-INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
-VALUES (@St4, @Mli4, CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+INSERT INTO env.StationState (sid, mli, ts, discharge) VALUES (@Sid940104, @Mli4, SYSUTCDATETIME(), 3.5);
+INSERT INTO env.StationDay (sid, dt) VALUES (@Sid940104, CAST(SYSUTCDATETIME() AS date));
 
 -- 2. execute unit test : ask for the OTHER species
 
-SELECT @rows4 = COUNT(*) FROM dbo.fn_map_location(@OtherName4, 44.40, -79.40, 'CA', 0) WHERE sid = 940104;
+SELECT @rows4 = COUNT(*) FROM dbo.fn_map_location(@OtherName4, 44.40, -79.40, 'CA', 0) WHERE sid = @Sid940104;
 
 END TRY
 BEGIN CATCH
@@ -279,16 +285,17 @@ SET @tStart = SYSUTCDATETIME();
 SELECT TOP 1 @Fish = fish_id, @FishName = fish_name FROM dbo.fish ORDER BY fish_id;
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake, 2, N'UT MAP Lake');
 INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake, @Fish);
-INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
-VALUES (@StA, 'UT_MAP_5', 49.8, -92.8, 'CA', 'ON', N'unit-test station', 2, N'UT MAP Station 5', N'UT County', 940105, @Lake, N'UT MAP Lake', 1);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, lakeId, lakeName, supported)
+VALUES (@StA, 'UT_MAP_5', 49.8, -92.8, 'CA', 'ON', N'unit-test station', 2, N'UT MAP Station 5', N'UT County', @Lake, N'UT MAP Lake', 1);
+-- sid is an IDENTITY in the live table: let it be assigned and find the row by MLI
+DECLARE @Sid940105 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = 'UT_MAP_5');
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StA, @Fish, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES ('UT_MAP_5', GETDATE(), 3.5);
-INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
-VALUES (@StA, 'UT_MAP_5', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+INSERT INTO env.StationState (sid, mli, ts, discharge) VALUES (@Sid940105, 'UT_MAP_5', SYSUTCDATETIME(), 3.5);
+INSERT INTO env.StationDay (sid, dt) VALUES (@Sid940105, CAST(SYSUTCDATETIME() AS date));
 
 -- 2. execute unit test : visitor at 43.5, -80.5 (Kitchener, ON)
 
-SELECT @rowsA = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', 'ON') WHERE sid = 940105;
+SELECT @rowsA = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', 'ON') WHERE sid = @Sid940105;
 
 END TRY
 BEGIN CATCH
@@ -331,16 +338,17 @@ SET @tStart = SYSUTCDATETIME();
 SELECT TOP 1 @Fish = fish_id, @FishName = fish_name FROM dbo.fish ORDER BY fish_id;
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake, 2, N'UT MAP Lake');
 INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake, @Fish);
-INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
-VALUES (@StA, 'UT_MAP_6', 45.4, -78.0, 'CA', 'QC', N'unit-test station', 2, N'UT MAP Station 6', N'UT County', 940106, @Lake, N'UT MAP Lake', 1);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, lakeId, lakeName, supported)
+VALUES (@StA, 'UT_MAP_6', 45.4, -78.0, 'CA', 'QC', N'unit-test station', 2, N'UT MAP Station 6', N'UT County', @Lake, N'UT MAP Lake', 1);
+-- sid is an IDENTITY in the live table: let it be assigned and find the row by MLI
+DECLARE @Sid940106 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = 'UT_MAP_6');
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StA, @Fish, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES ('UT_MAP_6', GETDATE(), 3.5);
-INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
-VALUES (@StA, 'UT_MAP_6', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+INSERT INTO env.StationState (sid, mli, ts, discharge) VALUES (@Sid940106, 'UT_MAP_6', SYSUTCDATETIME(), 3.5);
+INSERT INTO env.StationDay (sid, dt) VALUES (@Sid940106, CAST(SYSUTCDATETIME() AS date));
 
 -- 2. execute unit test : visitor at 43.5, -80.5 (Kitchener, ON)
 
-SELECT @rowsA = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', 'ON') WHERE sid = 940106;
+SELECT @rowsA = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', 'ON') WHERE sid = @Sid940106;
 
 END TRY
 BEGIN CATCH
@@ -383,23 +391,25 @@ SET @tStart = SYSUTCDATETIME();
 SELECT TOP 1 @Fish = fish_id, @FishName = fish_name FROM dbo.fish ORDER BY fish_id;
 INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake, 2, N'UT MAP Lake');
 INSERT INTO dbo.lake_fish (lake_fish_id, lake_id, fish_id) VALUES (NEWID(), @Lake, @Fish);
-INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
-VALUES (@StA, 'UT_MAP_7', 44.0, -80.0, 'CA', 'ON', N'unit-test station', 2, N'UT MAP Station 7', N'UT County', 940107, @Lake, N'UT MAP Lake', 1);
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, lakeId, lakeName, supported)
+VALUES (@StA, 'UT_MAP_7', 44.0, -80.0, 'CA', 'ON', N'unit-test station', 2, N'UT MAP Station 7', N'UT County', @Lake, N'UT MAP Lake', 1);
+-- sid is an IDENTITY in the live table: let it be assigned and find the row by MLI
+DECLARE @Sid940107 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = 'UT_MAP_7');
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StA, @Fish, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES ('UT_MAP_7', GETDATE(), 3.5);
-INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
-VALUES (@StA, 'UT_MAP_7', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
-INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, sid, lakeId, lakeName, supported)
-VALUES (@StB, 'UT_MAP_8', 42.5, -79.5, 'US', 'NY', N'unit-test station', 2, N'UT MAP Station 8', N'UT County', 940108, @Lake, N'UT MAP Lake', 1);
+INSERT INTO env.StationState (sid, mli, ts, discharge) VALUES (@Sid940107, 'UT_MAP_7', SYSUTCDATETIME(), 3.5);
+INSERT INTO env.StationDay (sid, dt) VALUES (@Sid940107, CAST(SYSUTCDATETIME() AS date));
+INSERT INTO dbo.WaterStation (id, MLI, lat, lon, country, state, locDesc, locType, locName, county, lakeId, lakeName, supported)
+VALUES (@StB, 'UT_MAP_8', 42.5, -79.5, 'US', 'NY', N'unit-test station', 2, N'UT MAP Station 8', N'UT County', @Lake, N'UT MAP Lake', 1);
+-- sid is an IDENTITY in the live table: let it be assigned and find the row by MLI
+DECLARE @Sid940108 int = (SELECT sid FROM dbo.WaterStation WHERE MLI = 'UT_MAP_8');
 INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp) VALUES (@StB, @Fish, 55, GETUTCDATE());
-INSERT INTO dbo.WaterData (mli, stamp, discharge) VALUES ('UT_MAP_8', GETDATE(), 3.5);
-INSERT INTO dbo.weather_Forecast (link, mli, dt, tm, tmHigh, tmLow, gpfDay, gpfNight)
-VALUES (@StB, 'UT_MAP_8', CAST(GETDATE() AS date), '00:00:00', 22.0, 11.0, 0, 0);
+INSERT INTO env.StationState (sid, mli, ts, discharge) VALUES (@Sid940108, 'UT_MAP_8', SYSUTCDATETIME(), 3.5);
+INSERT INTO env.StationDay (sid, dt) VALUES (@Sid940108, CAST(SYSUTCDATETIME() AS date));
 
 -- 2. execute unit test : visitor at 43.5, -80.5 (Kitchener, ON)
 
-SELECT @rowsA = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', '') WHERE sid = 940107;
-SELECT @rowsB = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', '') WHERE sid = 940108;
+SELECT @rowsA = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', '') WHERE sid = @Sid940107;
+SELECT @rowsB = COUNT(*) FROM dbo.fn_map_location_trial(@FishName, 43.5, -80.5, 'CA', '') WHERE sid = @Sid940108;
 
 END TRY
 BEGIN CATCH
