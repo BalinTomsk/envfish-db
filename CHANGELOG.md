@@ -2,6 +2,28 @@
 
 Split out of `AGENTS.md` for readability. Newest entries first.
 
+- 2026-11-26: **Step 8 of the env_service plan: the legacy water/weather objects are gone from the schema sources**
+  (nothing reads or writes them since step 7 on 2026-11-25: the portals and docapi read env_service, the collectors
+  write MySQL envdata, the fish model / map pins / data stamp read `env.StationState` / `env.StationDay`). Removed from
+  script01/02 (129 batches, deletions only): tables `WaterData`, `weather_Forecast`, `ows_meteo`, `CurrentWaterState`,
+  `StationPressureDay`, `weather_gov_station`, `weather_station_coverage`, `StationFailure` with their constraints,
+  indexes and triggers (`TR_insWaterData`, `TR_CurrentWaterState`, `TR_ows_meteo`, `trg_WaterStation_AI_ows_meteo`);
+  views `vw_WaterData`, `vScienceView`, `vMapView`, `vwWaterStation`, `vwWeatherForecastToDay`,
+  `fn_get_koef_fish_station_oxygen|ph|velocity`; the dbo functions and procedures that read or fed them (incl.
+  `fn_fish_location_today`, `fn_fish_reasoning_json`, `fn_forecast_plot_json`, `fn_forecast_stations_json`,
+  `fn_lake_weather_json`, `fn_plot_weather`, `fn_station_weather_today`, `fn_catch_weather_snapshot`,
+  `spTotalUpdateProbability`, `sp_fill_flow_state`, `sp_fill_pressure_state`, the ingest and cleanup procedures) and
+  `env.fn_probability_diff`. Inventory from `sys.sql_expression_dependencies` plus a text search on prod; the only
+  outside references were comments. Tests: 15 files that tested only these objects deleted; the batches that used them
+  trimmed from CatchMemo, EnvForecast, EnvProbability, FlowResponse, LakeJson, SchemaReferences, WaterStation503Backoff.
+  A fresh build from the edited sources runs clean, with no leftover object and no unresolved reference to one.
+  **Open:** FishLocationToday, FlowFactor, MoonGate, PressureFactor and FishSpawnProbability still test the fish model
+  through the dropped dbo functions; they are to be ported to the env twins (`env.fn_fish_location_today`,
+  `env.fn_fish_reasoning_json`, `env.sp_update_probability`). Prod: `mssql/Docs/ADMIN_WRITE_step8_drop_legacy_water_weather.sql`
+  (git-ignored, deleted once applied): **APPLIED to prod 2026-11-26 ~04:15 UTC** after the owner's database backup (805 -> 728
+  objects, none of the list left, no unresolved reference; map pins, plot, data stamp and env_service's hand-over fine;
+  dbo.LogException empty).
+
 - 2026-11-25: **Map pins and the General tab's data stamp read env_service's tables** (env_service plan step 7, so they
   keep working once the Java pushers stop feeding `CurrentWaterState` / `weather_Forecast` / `WaterData`; built + tested
   locally, NOT applied to prod). script02_Funct: `dbo.fn_map_location` now holds the one implementation of the pin rule

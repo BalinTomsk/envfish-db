@@ -45,9 +45,3 @@ IF @@TRANCOUNT > 0 ROLLBACK TRAN FR_Test5
 IF @ok = 0 RAISERROR ('TEST 5 FAIL: fish_flow_group must reject Z', 16, -1)
 ELSE PRINT 'TEST 5 PASS: fish_flow_group rejects a letter outside A..I'
 GO
--- ============================================================================ TEST 6
-IF (SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.CurrentWaterState')
-       AND name IN ('flow_state','q_ratio_1d','q_ratio_2d','q_ratio_3_7d','q_median_30d','days_since_peak','flow_stamp')) <> 7
-     RAISERROR ('TEST 6 FAIL: CurrentWaterState must have the 7 flow columns', 16, -1)
-ELSE PRINT 'TEST 6 PASS: CurrentWaterState has the 7 flow columns'
-GO
