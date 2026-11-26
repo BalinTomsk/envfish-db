@@ -5,14 +5,13 @@ GO
   Unit tests for the Catch Log (catch memo) feature: dbo.catch_memo, dbo.catch_memo_photo,
   dbo.catch_pending_fish, dbo.sp_add_catch_memo, dbo.fn_catch_memo_list, dbo.fn_catch_memo_get,
   dbo.sp_add_catch_pending_fish, dbo.sp_set_catch_pending_fish_status, dbo.fn_lake_fish_list,
-  dbo.fn_catch_weather_snapshot, dbo.sp_add_catch_memo_photo, dbo.sp_del_catch_memo_photo,
+  dbo.sp_add_catch_memo_photo, dbo.sp_del_catch_memo_photo,
   dbo.fn_catch_memo_photo_list, dbo.sp_NewGuidV7, dbo.sp_clone_catch_memo,
   dbo.fn_catch_memo_pending_clone_id.
 
   Uses real tables (catch_memo / catch_pending_fish have no FKs, so no parent setup is
   needed for them; lake_fish needs a real fish + fish_family row as fixtures for the
-  pending-fish dedup tests; the weather tests need a real dbo.Lake + dbo.WaterStation +
-  dbo.weather_Forecast + dbo.CurrentWaterState row). Each test is its own named transaction,
+  pending-fish dedup tests). Each test is its own named transaction,
   rolled back at the end of its own batch - database state restored, and one test's failure
   cannot affect another's fixtures.
 
@@ -27,14 +26,12 @@ GO
   TEST  9 - sp_add_catch_pending_fish dedups a repeat suggestion (no duplicate queue row)
   TEST 10 - sp_set_catch_pending_fish_status marks a suggestion approved
   TEST 11 - fn_lake_fish_list returns the species assigned to a water body
-  TEST 12 - fn_catch_weather_snapshot returns the forecast row (air + water temp) for a
-            lake's station + date
-  TEST 13 - fn_catch_weather_snapshot returns no row for a lake with no weather station
+  TEST 12, 13 - removed with dbo.fn_catch_weather_snapshot (env_service step 8)
   TEST 14 - sp_add_catch_memo stores the weather + water temp snapshot and
             fn_catch_memo_list surfaces it
   TEST 15 - fn_catch_memo_list flags the max-weight catch as personal best (unit-normalized)
   TEST 16 - fn_catch_memo_list never flags a personal best when the catch has no fish_id
-  TEST 17 - fn_catch_weather_snapshot never attaches today's water temp to an old catch date
+  TEST 17 - removed with dbo.fn_catch_weather_snapshot (env_service step 8)
   TEST 18 - sp_add_catch_memo_photo stores description/author and fn_catch_memo_photo_list
             returns them
   TEST 19 - sp_del_catch_memo_photo by a non-admin only hides the photo (row kept, excluded

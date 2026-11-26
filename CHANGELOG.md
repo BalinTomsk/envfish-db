@@ -17,9 +17,11 @@ Split out of `AGENTS.md` for readability. Newest entries first.
   outside references were comments. Tests: 15 files that tested only these objects deleted; the batches that used them
   trimmed from CatchMemo, EnvForecast, EnvProbability, FlowResponse, LakeJson, SchemaReferences, WaterStation503Backoff.
   A fresh build from the edited sources runs clean, with no leftover object and no unresolved reference to one.
-  **Open:** FishLocationToday, FlowFactor, MoonGate, PressureFactor and FishSpawnProbability still test the fish model
-  through the dropped dbo functions; they are to be ported to the env twins (`env.fn_fish_location_today`,
-  `env.fn_fish_reasoning_json`, `env.sp_update_probability`). Prod: `mssql/Docs/ADMIN_WRITE_step8_drop_legacy_water_weather.sql`
+  FishLocationToday, FlowFactor, MoonGate, PressureFactor and FishSpawnProbability now test the fish model through the
+  env twins (`env.fn_fish_location_today`, `env.fn_fish_reasoning_json`, `env.sp_update_probability` with
+  `probability_source = 'env'` set inside the test): seeds go to `env.StationState` / `env.StationDay` (pressure in
+  mm Hg), and the FlowFactor / MoonGate / PressureFactor stations now fill every NOT NULL column (they never built on a
+  fresh database before). 34 of 34 pass on a fresh build. Prod: `mssql/Docs/ADMIN_WRITE_step8_drop_legacy_water_weather.sql`
   (git-ignored, deleted once applied): **APPLIED to prod 2026-11-26 ~04:15 UTC** after the owner's database backup (805 -> 728
   objects, none of the list left, no unresolved reference; map pins, plot, data stamp and env_service's hand-over fine;
   dbo.LogException empty).

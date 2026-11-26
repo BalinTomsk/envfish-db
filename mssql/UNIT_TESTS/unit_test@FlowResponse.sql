@@ -1,14 +1,13 @@
 SET QUOTED_IDENTIFIER ON
 GO
 /*
-  Unit tests: discharge-response schema (dbo.flow_response, dbo.fish.fish_flow_group, CurrentWaterState flow columns).
+  Unit tests: discharge-response schema (dbo.flow_response, dbo.fish.fish_flow_group).
 
   TEST  1 - flow_response has every group x state (9 x 7 = 63 rows)
   TEST  2 - group I (lake fish) is factor 1 in every state
   TEST  3 - STABLE is 1 for every group, and no factor is above 1.3
   TEST  4 - only group G rows are spawn_only
   TEST  5 - fish_flow_group rejects a letter outside A..I
-  TEST  6 - CurrentWaterState has the seven flow columns
 */
 PRINT 'Unit tests for discharge-response schema';
 GO
