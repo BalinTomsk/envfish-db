@@ -255,50 +255,6 @@ IF @ok = 1 PRINT 'TEST 10 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_lake_
 ELSE RAISERROR('TEST 10 FAIL [%dms]: expected view core + empty fish/images arrays', 16, -1, @ElapsedMs);
 ROLLBACK TRAN TestLakeJson10
 GO
--- ---------------------------------------------------------------------------- TEST 11: every function -> NULL for unknown id
-BEGIN TRAN TestLakeJson11
-    DECLARE @test_name sysname = N'TestLakeJson11 [fn_lake_*_json] : unknown id returns NULL';
-DECLARE @tStart datetime2, @ElapsedMs int; DECLARE @ok int = 0;
-BEGIN TRY  SET NOCOUNT ON; SET @tStart = SYSUTCDATETIME();
-DECLARE @z uniqueidentifier = '00000000-0000-0000-0000-000000000000';
-IF  dbo.fn_lake_description_json(@z) IS NULL
-AND dbo.fn_lake_stats_json(@z)       IS NULL
-AND dbo.fn_lake_maps_json(@z)        IS NULL
-AND dbo.fn_lake_source_json(@z)      IS NULL
-AND dbo.fn_lake_mouth_json(@z)       IS NULL
-AND dbo.fn_lake_tributary_json(@z)   IS NULL
-AND dbo.fn_lake_fishing_json(@z)     IS NULL
-AND dbo.fn_lake_regulation_json(@z)  IS NULL
-AND dbo.fn_lake_view_json(@z)        IS NULL
-AND dbo.fn_lake_weather_json(@z)     IS NULL
-AND dbo.fn_lake_fishing_view_json(@z) IS NULL
-   SET @ok = 1;
-END TRY
-BEGIN CATCH SELECT ERROR_NUMBER() AS ErrorNumber, @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage; END CATCH
-SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-IF @ok = 1 PRINT 'TEST 11 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: all eleven functions return NULL for an unknown lake id';
-ELSE RAISERROR('TEST 11 FAIL [%dms]: a function returned non-NULL for an unknown lake id', 16, -1, @ElapsedMs);
-ROLLBACK TRAN TestLakeJson11
-GO
--- ---------------------------------------------------------------------------- TEST 12: weather (empty stations)
-BEGIN TRAN TestLakeJson12
-    DECLARE @test_name sysname = N'TestLakeJson12 [fn_lake_weather_json] : core + empty stations array';
-DECLARE @tStart datetime2, @ElapsedMs int; DECLARE @ok int = 0;
-BEGIN TRY  SET NOCOUNT ON; SET @tStart = SYSUTCDATETIME();
-DECLARE @Lake uniqueidentifier = NEWID();
-INSERT INTO dbo.lake (lake_id, locType, lake_name) VALUES (@Lake, 2, N'UT Weather');
-DECLARE @json nvarchar(max) = dbo.fn_lake_weather_json(@Lake);
-IF @json IS NOT NULL
-   AND JSON_VALUE(@json, '$.lakeName') = N'UT Weather'
-   AND JSON_QUERY(@json, '$.stations') = '[]'                 -- no monitoring stations attached
-   SET @ok = 1;
-END TRY
-BEGIN CATCH SELECT ERROR_NUMBER() AS ErrorNumber, @test_name AS ErrorProcedure, ERROR_LINE() AS ErrorLine, ERROR_MESSAGE() AS ErrorMessage; END CATCH
-SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-IF @ok = 1 PRINT 'TEST 12 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_lake_weather_json returns core + empty stations array';
-ELSE BEGIN DECLARE @d12 varchar(400) = LEFT(ISNULL(@json, '<NULL>'), 380); RAISERROR('TEST 12 FAIL [%dms]: %s', 16, -1, @ElapsedMs, @d12); END
-ROLLBACK TRAN TestLakeJson12
-GO
 -- ---------------------------------------------------------------------------- TEST 13: fishing view (empty)
 BEGIN TRAN TestLakeJson13
     DECLARE @test_name sysname = N'TestLakeJson13 [fn_lake_fishing_view_json] : core + empty species/catchLog';

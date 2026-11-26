@@ -5,14 +5,13 @@ GO
   Unit tests for the Catch Log (catch memo) feature: dbo.catch_memo, dbo.catch_memo_photo,
   dbo.catch_pending_fish, dbo.sp_add_catch_memo, dbo.fn_catch_memo_list, dbo.fn_catch_memo_get,
   dbo.sp_add_catch_pending_fish, dbo.sp_set_catch_pending_fish_status, dbo.fn_lake_fish_list,
-  dbo.fn_catch_weather_snapshot, dbo.sp_add_catch_memo_photo, dbo.sp_del_catch_memo_photo,
+  dbo.sp_add_catch_memo_photo, dbo.sp_del_catch_memo_photo,
   dbo.fn_catch_memo_photo_list, dbo.sp_NewGuidV7, dbo.sp_clone_catch_memo,
   dbo.fn_catch_memo_pending_clone_id.
 
   Uses real tables (catch_memo / catch_pending_fish have no FKs, so no parent setup is
   needed for them; lake_fish needs a real fish + fish_family row as fixtures for the
-  pending-fish dedup tests; the weather tests need a real dbo.Lake + dbo.WaterStation +
-  dbo.weather_Forecast + dbo.CurrentWaterState row). Each test is its own named transaction,
+  pending-fish dedup tests). Each test is its own named transaction,
   rolled back at the end of its own batch - database state restored, and one test's failure
   cannot affect another's fixtures.
 
@@ -27,14 +26,12 @@ GO
   TEST  9 - sp_add_catch_pending_fish dedups a repeat suggestion (no duplicate queue row)
   TEST 10 - sp_set_catch_pending_fish_status marks a suggestion approved
   TEST 11 - fn_lake_fish_list returns the species assigned to a water body
-  TEST 12 - fn_catch_weather_snapshot returns the forecast row (air + water temp) for a
-            lake's station + date
-  TEST 13 - fn_catch_weather_snapshot returns no row for a lake with no weather station
+  TEST 12, 13 - removed with dbo.fn_catch_weather_snapshot (env_service step 8)
   TEST 14 - sp_add_catch_memo stores the weather + water temp snapshot and
             fn_catch_memo_list surfaces it
   TEST 15 - fn_catch_memo_list flags the max-weight catch as personal best (unit-normalized)
   TEST 16 - fn_catch_memo_list never flags a personal best when the catch has no fish_id
-  TEST 17 - fn_catch_weather_snapshot never attaches today's water temp to an old catch date
+  TEST 17 - removed with dbo.fn_catch_weather_snapshot (env_service step 8)
   TEST 18 - sp_add_catch_memo_photo stores description/author and fn_catch_memo_photo_list
             returns them
   TEST 19 - sp_del_catch_memo_photo by a non-admin only hides the photo (row kept, excluded
@@ -538,88 +535,6 @@ ROLLBACK TRAN CM_Test11
 GO
 
 -- ============================================================================
--- TEST 12: fn_catch_weather_snapshot returns the forecast row for a lake's station + date
--- ============================================================================
-BEGIN TRAN CM_Test12
-    declare @test_name sysname = N'CM_Test12 [fn_catch_weather_snapshot] : returns the forecast row for a lake''s station + date'
-DECLARE @tStart datetime2, @ElapsedMs int;
-DECLARE @WTemp float, @WPress float, @WText nvarchar(64), @WIcon nvarchar(255), @WaterTemp float;
-BEGIN TRY  SET NOCOUNT ON;
-SET @tStart = SYSUTCDATETIME();
-
--- 1. prepare data for unit test
-
-DECLARE @Lake12    uniqueidentifier = NEWID();
-DECLARE @Station12 uniqueidentifier = NEWID();
-DECLARE @Mli12     varchar(64) = 'UT_MLI_012';
-DECLARE @Today12   date = CAST(GETDATE() AS DATE);
-INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake12, 1, N'UT Lake 12');
-INSERT INTO dbo.WaterStation (id, mli, lakeName, locType, locName, locDesc, county, lat, lon, country, state, agency, stamp, supported, sid, lakeId)
-VALUES (@Station12, @Mli12, N'UT Lake 12', 1, N'UT Station 12', N'UT Desc', N'UT County', 45.0, -75.0, 'CA', 'ON', 'TEST', GETUTCDATE(), 1, 900012, @Lake12);
-INSERT INTO dbo.weather_Forecast (link, tmHigh, tmLow, gpfDay, gpfNight, dt, mli, pressure, shortText, icon)
-VALUES (@Station12, 18.0, 10.0, 0, 0, @Today12, @Mli12, 1013, N'Partly Cloudy', N'02d');
-INSERT INTO dbo.CurrentWaterState (mli, stamp, oxygen, sid, iterstamp)
-VALUES (@Mli12, GETUTCDATE(), 8.5, 900012, GETUTCDATE());
-
--- 2. execute unit test
-
-SELECT @WTemp=weather_temp, @WPress=weather_pressure, @WText=weather_text, @WIcon=weather_icon, @WaterTemp=water_temp
-FROM dbo.fn_catch_weather_snapshot(@Lake12, @Today12);
-
-END TRY
-BEGIN CATCH
-    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
-         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
-END CATCH
-SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-
--- 3. result verification
-
-IF @WTemp IS NULL OR @WTemp <> 18.0 OR @WPress <> 1013 OR @WText <> N'Partly Cloudy' OR @WIcon <> N'02d' OR @WaterTemp IS NOT NULL
-   RAISERROR ('TEST 12 FAIL [%dms]: unexpected snapshot values', 16, -1, @ElapsedMs)
-ELSE
-    print 'TEST 12 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: fn_catch_weather_snapshot returned the forecast row'
-
-ROLLBACK TRAN CM_Test12
-GO
-
--- ============================================================================
--- TEST 13: fn_catch_weather_snapshot returns no row for a lake with no weather station
--- ============================================================================
-BEGIN TRAN CM_Test13
-    declare @test_name sysname = N'CM_Test13 [fn_catch_weather_snapshot] : returns no row for a lake with no weather station'
-DECLARE @tStart datetime2, @ElapsedMs int;
-DECLARE @NoSnapCnt int;
-BEGIN TRY  SET NOCOUNT ON;
-SET @tStart = SYSUTCDATETIME();
-
--- 1. prepare data for unit test
-
-DECLARE @Lake13 uniqueidentifier = NEWID();
-INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake13, 1, N'UT Lake 13');
-
--- 2. execute unit test
-
-SELECT @NoSnapCnt = COUNT(*) FROM dbo.fn_catch_weather_snapshot(@Lake13, '2026-06-29');
-
-END TRY
-BEGIN CATCH
-    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
-         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
-END CATCH
-SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-
--- 3. result verification
-
-IF @NoSnapCnt IS NULL OR @NoSnapCnt <> 0
-   RAISERROR ('TEST 13 FAIL [%dms]: expected 0 rows for a lake with no weather station', 16, -1, @ElapsedMs)
-ELSE
-    print 'TEST 13 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: lake with no weather station returned no row'
-
-ROLLBACK TRAN CM_Test13
-GO
-
--- ============================================================================
 -- TEST 14: sp_add_catch_memo stores the weather snapshot and fn_catch_memo_list surfaces it
 -- ============================================================================
 BEGIN TRAN CM_Test14
@@ -750,49 +665,6 @@ ELSE
     print 'TEST 16 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: free-text species catch never flagged as personal best'
 
 ROLLBACK TRAN CM_Test16
-GO
-
--- ============================================================================
--- TEST 17: fn_catch_weather_snapshot never attaches a station water temp (stations report none)
--- ============================================================================
-BEGIN TRAN CM_Test17
-    declare @test_name sysname = N'CM_Test17 [fn_catch_weather_snapshot] : never attaches a station water temp'
-DECLARE @tStart datetime2, @ElapsedMs int;
-DECLARE @WaterTemp float;
-BEGIN TRY  SET NOCOUNT ON;
-SET @tStart = SYSUTCDATETIME();
-
--- 1. prepare data for unit test
-
-DECLARE @Lake17    uniqueidentifier = NEWID();
-DECLARE @Station17 uniqueidentifier = NEWID();
-DECLARE @Mli17     varchar(64) = 'UT_MLI_017';
-INSERT INTO dbo.Lake (Lake_id, locType, lake_name) VALUES (@Lake17, 1, N'UT Lake 17');
-INSERT INTO dbo.WaterStation (id, mli, lakeName, locType, locName, locDesc, county, lat, lon, country, state, agency, stamp, supported, sid, lakeId)
-VALUES (@Station17, @Mli17, N'UT Lake 17', 1, N'UT Station 17', N'UT Desc', N'UT County', 45.0, -75.0, 'CA', 'ON', 'TEST', GETUTCDATE(), 1, 900017, @Lake17);
--- the station has a current reading, but water temperature is no longer one of them
-INSERT INTO dbo.CurrentWaterState (mli, stamp, oxygen, sid, iterstamp)
-VALUES (@Mli17, GETUTCDATE(), 8.5, 900017, GETUTCDATE());
-
--- 2. execute unit test
-
-SELECT @WaterTemp = water_temp FROM dbo.fn_catch_weather_snapshot(@Lake17, CAST(GETDATE() AS DATE));
-
-END TRY
-BEGIN CATCH
-    SELECT ERROR_NUMBER() AS ErrorNumber,    ERROR_SEVERITY() AS ErrorSeverity, ERROR_STATE()   AS ErrorState
-         , @test_name     AS ErrorProcedure, ERROR_LINE()     AS ErrorLine,     ERROR_MESSAGE() AS ErrorMessage
-END CATCH
-SET @ElapsedMs = DATEDIFF(millisecond, @tStart, SYSUTCDATETIME());
-
--- 3. result verification
-
-IF @WaterTemp IS NOT NULL
-   RAISERROR ('TEST 17 FAIL [%dms]: snapshot carried a station water temp', 16, -1, @ElapsedMs)
-ELSE
-    print 'TEST 17 PASS [' + CAST(@ElapsedMs AS varchar) + 'ms]: snapshot carries no station water temp'
-
-ROLLBACK TRAN CM_Test17
 GO
 
 -- ============================================================================

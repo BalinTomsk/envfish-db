@@ -1,14 +1,13 @@
 SET QUOTED_IDENTIFIER ON
 GO
 /*
-  Unit tests: discharge-response schema (dbo.flow_response, dbo.fish.fish_flow_group, CurrentWaterState flow columns).
+  Unit tests: discharge-response schema (dbo.flow_response, dbo.fish.fish_flow_group).
 
   TEST  1 - flow_response has every group x state (9 x 7 = 63 rows)
   TEST  2 - group I (lake fish) is factor 1 in every state
   TEST  3 - STABLE is 1 for every group, and no factor is above 1.3
   TEST  4 - only group G rows are spawn_only
   TEST  5 - fish_flow_group rejects a letter outside A..I
-  TEST  6 - CurrentWaterState has the seven flow columns
 */
 PRINT 'Unit tests for discharge-response schema';
 GO
@@ -44,10 +43,4 @@ BEGIN CATCH SET @ok = CASE WHEN ERROR_NUMBER() = 547 THEN 1 ELSE 0 END; END CATC
 IF @@TRANCOUNT > 0 ROLLBACK TRAN FR_Test5
 IF @ok = 0 RAISERROR ('TEST 5 FAIL: fish_flow_group must reject Z', 16, -1)
 ELSE PRINT 'TEST 5 PASS: fish_flow_group rejects a letter outside A..I'
-GO
--- ============================================================================ TEST 6
-IF (SELECT COUNT(*) FROM sys.columns WHERE object_id = OBJECT_ID('dbo.CurrentWaterState')
-       AND name IN ('flow_state','q_ratio_1d','q_ratio_2d','q_ratio_3_7d','q_median_30d','days_since_peak','flow_stamp')) <> 7
-     RAISERROR ('TEST 6 FAIL: CurrentWaterState must have the 7 flow columns', 16, -1)
-ELSE PRINT 'TEST 6 PASS: CurrentWaterState has the 7 flow columns'
 GO

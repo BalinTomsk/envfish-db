@@ -1,7 +1,7 @@
 SET QUOTED_IDENTIFIER ON
 GO
 /*
-  Unit tests for dbo.sp_upsert_fish_catch_probability and the month factor of dbo.spTotalUpdateProbability.
+  Unit tests for dbo.sp_upsert_fish_catch_probability and the month factor of env.sp_update_probability.
   Uses real tables dbo.fish, dbo.fish_catch_probability, dbo.WaterStation, dbo.fish_location.
   Transaction is rolled back at end - database state restored.
 
@@ -16,7 +16,7 @@ GO
   TEST  4 - sp_upsert_fish_catch_probability processes all months atomically
   TEST  5 - sp_upsert_fish_catch_probability with a real fish from the database
   TEST  6 - sp_upsert_fish_catch_probability performance (10 upserts < 1000ms)
-  TEST  7 - spTotalUpdateProbability applies the month factor (this month / peak month)
+  TEST  7 - env.sp_update_probability applies the month factor (this month / peak month)
   TEST  8 - (duplicate of TEST 1)
   TEST  9 - (duplicate of TEST 2)
   TEST 10 - (duplicate of TEST 3)
@@ -171,7 +171,7 @@ BEGIN TRY
     DELETE FROM dbo.fish_catch_probability WHERE fish_id = @TestFishId;
 
     -- ----------------------------------------------------------------
-    -- TEST 7: spTotalUpdateProbability applies the month factor (this month / peak month) to probability
+    -- TEST 7: env.sp_update_probability applies the month factor (this month / peak month) to probability
     -- ----------------------------------------------------------------
     SET @tStart = SYSUTCDATETIME();
     DECLARE @Fish7         uniqueidentifier = NEWID();
@@ -195,7 +195,11 @@ BEGIN TRY
     INSERT INTO dbo.fish_location (station_Id, fish_Id, today, stamp, probability)
     VALUES (@Station7, @Fish7, 77, @OldStamp7, 20);
 
-    EXEC @ReturnValue7 = dbo.spTotalUpdateProbability;
+    -- the env procedure writes only while env.Setting probability_source = 'env'; its result row goes to @Rows7
+    DELETE FROM env.Setting WHERE name = 'probability_source';
+    INSERT INTO env.Setting (name, value) VALUES ('probability_source', 'env');
+    DECLARE @Rows7 TABLE (n int);
+    INSERT INTO @Rows7 EXEC @ReturnValue7 = env.sp_update_probability;
 
     DECLARE @ActualToday7 int, @ActualProbability7 int, @ActualStamp7 datetime2(7);
     SELECT @ActualToday7 = today, @ActualProbability7 = probability, @ActualStamp7 = stamp
